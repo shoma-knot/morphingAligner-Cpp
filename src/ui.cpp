@@ -1,6 +1,7 @@
 #include "ui.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <exception>
 #include <string>
@@ -73,35 +74,89 @@ void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vect
     constexpr float kScaleW = 90.0f;
     const float     plot_w  = ImGui::GetContentRegionAvail().x - kScaleW;
 
-    if (ImPlot::BeginPlot("##spec", ImVec2(plot_w, height))) {
-        ImPlot::SetupAxes("時間 [s]", "周波数 [Hz]");
-        // Once (not Always) so the user can zoom/pan to place anchors precisely.
+    // Free the right mouse button for deleting anchors: NoMenus disables the
+    // default context menu, NoBoxSelect the right-drag zoom selection.
+    if (ImPlot::BeginPlot("##spec", ImVec2(plot_w, height), ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect)) {
+        // Lock the frequency axis so the scroll wheel over the plot area only
+        // zooms time (X). The Y range is driven by our own state (`tr.y_min/max`)
+        // so we can still zoom it manually when the axis itself is hovered.
+        ImPlot::SetupAxes("時間 [s]", "周波数 [Hz]", ImPlotAxisFlags_None, ImPlotAxisFlags_Lock);
+        // X once (then free to zoom/pan); Y always follows our stored view.
         ImPlot::SetupAxisLimits(ImAxis_X1, 0, sp.duration, ImPlotCond_Once);
-        ImPlot::SetupAxisLimits(ImAxis_Y1, 0, sp.fs / 2.0, ImPlotCond_Once);
-        // Keep both axes within the data range: no panning/zooming past
-        // [0, duration] x [0, fs/2] (stops zoom-out at the full spectrogram).
+        ImPlot::SetupAxisLimits(ImAxis_Y1, tr.y_min, tr.y_max, ImPlotCond_Always);
+        // Keep the time axis within [0, duration]: no panning/zooming past the
+        // data range (stops zoom-out at the full waveform).
         ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0, sp.duration);
-        ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, 0, sp.fs / 2.0);
         // Pre-baked texture: one quad regardless of the bin * frame count.
         ImPlot::PlotImage(
           "##env", static_cast<ImTextureID>(tr.tex), ImPlotPoint(0, 0), ImPlotPoint(sp.duration, sp.fs / 2.0));
 
         const ImPlotRect lim = ImPlot::GetPlotLimits();
 
+        // ────────────────────────────────────────────────────────────────
+        // FIXME(freq-axis-input): 周波数軸のズーム/パンを手組みしている箇所。
+        //
+        // ホイールを X 専用ズームにするため Y 軸を Lock しており、ImPlot が Y を
+        // 一切駆動しなくなる。そのため Y の表示範囲を tr.y_min/tr.y_max に自前で
+        // 保持し、毎フレーム SetupAxisLimits(Always) で再適用している。この二重
+        // 管理は壊れやすい:
+        //   - IsPlotHovered() ゲート: base/target の2段プロットをまたぐ中ドラッグ
+        //     でホバーが切り替わり、もう片方のプロットがパンし始めることがある。
+        //   - Y 側の新しい操作（fit・links・2本目のY軸）や Lock の解除で、ImPlot
+        //     の軸状態と自前状態が静かにデシンクする。
+        //   - ズーム/パンの計算は Y が線形・非反転・[0, fs/2] である前提。
+        // 拡張するなら、この手組みを伸ばすより ImPlot に軸を任せる方向（軸ごとの
+        // 入力フラグ / リンクされた limits 等）を優先すること。
+        // ────────────────────────────────────────────────────────────────
+
+        // 周波数軸ラベル上でのホイールは、カーソル位置を中心に Y をズームする。
+        // （プロット領域上のホイールは Y が Lock されているので X しか動かない）
+        ImGuiIO& io = ImGui::GetIO();
+        if (ImPlot::IsAxisHovered(ImAxis_Y1) && io.MouseWheel != 0.0f) {
+            const double yc     = ImPlot::GetPlotMousePos().y;
+            const double factor = std::pow(1.0 - ImPlot::GetInputMap().ZoomRate, static_cast<double>(io.MouseWheel));
+            double       lo     = std::max(0.0, yc + (tr.y_min - yc) * factor);
+            double       hi     = std::min(sp.fs / 2.0, yc + (tr.y_max - yc) * factor);
+            if (hi - lo > 1.0) {    // keep at least a 1 Hz span
+                tr.y_min = lo;
+                tr.y_max = hi;
+            }
+        }
+
+        // 中ドラッグで周波数軸もパンする（X は ImPlot がネイティブにパンする。Y は
+        // Lock しているので、縦方向のドラッグ量ぶん自前の表示範囲をずらす。カーソル
+        // 下の点がカーソルに追従する grab 方式）。
+        if (ImPlot::IsPlotHovered() && ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+            const double h     = ImPlot::GetPlotSize().y;
+            double       delta = io.MouseDelta.y / h * (tr.y_max - tr.y_min);
+            delta              = std::clamp(delta, -tr.y_min, sp.fs / 2.0 - tr.y_max);
+            tr.y_min += delta;
+            tr.y_max += delta;
+        }
+        // ─── FIXME(freq-axis-input) ここまで ─────────────────────────────
+
         // Draggable time anchors. DragLineX stays interactive (movable) rather
         // than being baked into the draw list.
-        bool any_active = false;
+        bool any_active     = false;
+        int  hovered_anchor = -1;
         for (std::size_t i = 0; i < app.anchors.size(); ++i) {
             double* xp      = is_base ? &app.anchors[i].base_t : &app.anchors[i].target_t;
             bool    hovered = false, held = false;
             ImPlot::DragLineX(
               static_cast<int>(i), xp, kAnchorCol, 2.0f, ImPlotDragToolFlags_None, nullptr, &hovered, &held);
-            any_active |= hovered || held;
+            if (hovered || held) {
+                any_active     = true;
+                hovered_anchor = static_cast<int>(i);
+            }
         }
 
+        // Right-click on a hovered anchor deletes the whole pair (both panels).
+        if (hovered_anchor >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+            app.anchors.erase(app.anchors.begin() + hovered_anchor);
+        }
         // Left-click on empty plot area adds a new anchor pair at that time
         // (same time on both tracks initially).
-        if (ImPlot::IsPlotHovered() && !any_active && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        else if (ImPlot::IsPlotHovered() && !any_active && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             const double t = std::clamp(ImPlot::GetPlotMousePos().x, 0.0, sp.duration);
             app.anchors.push_back(Anchor { t, t });
         }
@@ -143,7 +198,7 @@ void draw_left_panel(App& app) {
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Text("アンカー: %d", static_cast<int>(app.anchors.size()));
-    ImGui::TextDisabled("スペクトログラムを左クリックで追加");
+    ImGui::TextDisabled("左クリックで追加 / 右クリックで削除");
     ImGui::BeginDisabled(app.anchors.empty());
     if (ImGui::Button("アンカーを全消去", ImVec2(-1, 0))) app.anchors.clear();
     ImGui::EndDisabled();

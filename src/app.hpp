@@ -23,6 +23,8 @@ struct Track {
     std::string  status;     // last message for this track
     Spectrogram  spec;       // spectral envelope
     unsigned int tex = 0;    // baked GPU texture
+    double       y_min = 0;  // frequency-axis view range [Hz]; zoomable over the
+    double       y_max = 0;  // axis, reset to [0, fs/2] on load
 
     explicit Track(std::string n) : name(std::move(n)) {}
     ~Track();    // frees the GL texture (defined in app.cpp)

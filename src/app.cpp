@@ -70,6 +70,8 @@ void load_track(Track& tr) {
     try {
         tr.spec   = analyze_file(picked);
         tr.tex    = make_spectrogram_texture(tr.spec);
+        tr.y_min  = 0.0;                  // reset the frequency-axis view
+        tr.y_max  = tr.spec.fs / 2.0;
         tr.path   = picked;
         tr.status = "読み込み完了";
     } catch (const std::exception& e) {
