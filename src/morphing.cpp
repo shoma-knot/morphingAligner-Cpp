@@ -122,9 +122,11 @@ double morph_f0(const F0Sample& b, const F0Sample& t, double fo) {
     return b.value > 0.0 ? b.value : t.value;
 }
 
-// スペクトログラム/非周期性を (時刻, 周波数) で bilinear サンプルする。
-double sample(const std::vector<std::vector<double>>& S, int f0_len, int nbin, int fft_size, int fs,
-              double t_sec, double f_hz) {
+// スペクトログラム/非周期性を (時刻, 周波数) で **log 領域**で bilinear 補間し、log 値を
+// 返す（MATLAB は log(spectrogram)/log(ap) を時間・周波数とも interp1 で補間）。値は
+// [lo, hi] にクランプしてから log を取る（sp: lo=1e-20, ap: [1e-5,1]）。
+double sample_log(const std::vector<std::vector<double>>& S, int f0_len, int nbin, int fft_size, int fs,
+                  double t_sec, double f_hz, double lo, double hi) {
     const double ff = t_sec / kFrameSec;
     const int    i0 = std::clamp(static_cast<int>(std::floor(ff)), 0, f0_len - 1);
     const int    i1 = std::min(i0 + 1, f0_len - 1);
@@ -135,8 +137,9 @@ double sample(const std::vector<std::vector<double>>& S, int f0_len, int nbin, i
     const int    b1 = std::min(b0 + 1, nbin - 1);
     const double br = std::clamp(bb - b0, 0.0, 1.0);
 
-    const double v0 = S[i0][b0] + (S[i0][b1] - S[i0][b0]) * br;
-    const double v1 = S[i1][b0] + (S[i1][b1] - S[i1][b0]) * br;
+    const auto   lg = [&](double v) { return std::log(std::clamp(v, lo, hi)); };
+    const double v0 = lg(S[i0][b0]) + (lg(S[i0][b1]) - lg(S[i0][b0])) * br;
+    const double v1 = lg(S[i1][b0]) + (lg(S[i1][b1]) - lg(S[i1][b0])) * br;
     return v0 + (v1 - v0) * fr;
 }
 
@@ -290,15 +293,16 @@ MorphResult morphing(const std::string& base_path, const std::string& target_pat
                 const double fb = (1.0 - s) * wbL[b] + s * wbR[b];
                 const double ft = (1.0 - s) * wtL[b] + s * wtR[b];
 
-                const double sb = sample(B.sp, B.f0_len, nbin, fft_size, fs, taub, fb);
-                const double st = sample(T.sp, T.f0_len, nbin, fft_size, fs, taut, ft);
-                spo[m][b]       = std::exp((1.0 - sl) * std::log(std::max(sb, 1e-20))
-                                     + sl * std::log(std::max(st, 1e-20)));
+                // スペクトルは log 領域で補間・合成（sample_log が log 値を返す）。
+                constexpr double kHi = 1e300;    // 実質上限なし
+                const double     lsb = sample_log(B.sp, B.f0_len, nbin, fft_size, fs, taub, fb, 1e-20, kHi);
+                const double     lst = sample_log(T.sp, T.f0_len, nbin, fft_size, fs, taut, ft, 1e-20, kHi);
+                spo[m][b]            = std::exp((1.0 - sl) * lsb + sl * lst);
 
-                // 非周期性は log 領域で合成（MATLAB: clamp[1e-5,1]→log→重み和→exp）。
-                const double ab = std::clamp(sample(B.ap, B.f0_len, nbin, fft_size, fs, taub, fb), 1e-5, 1.0);
-                const double at = std::clamp(sample(T.ap, T.f0_len, nbin, fft_size, fs, taut, ft), 1e-5, 1.0);
-                apo[m][b]       = std::exp((1.0 - ap) * std::log(ab) + ap * std::log(at));
+                // 非周期性も log 領域で補間・合成（clamp[1e-5,1]）。
+                const double lab = sample_log(B.ap, B.f0_len, nbin, fft_size, fs, taub, fb, 1e-5, 1.0);
+                const double lat = sample_log(T.ap, T.f0_len, nbin, fft_size, fs, taut, ft, 1e-5, 1.0);
+                apo[m][b]        = std::exp((1.0 - ap) * lab + ap * lat);
             }
         }
 
