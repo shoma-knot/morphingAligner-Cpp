@@ -78,6 +78,10 @@ void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vect
         // Once (not Always) so the user can zoom/pan to place anchors precisely.
         ImPlot::SetupAxisLimits(ImAxis_X1, 0, sp.duration, ImPlotCond_Once);
         ImPlot::SetupAxisLimits(ImAxis_Y1, 0, sp.fs / 2.0, ImPlotCond_Once);
+        // Keep both axes within the data range: no panning/zooming past
+        // [0, duration] x [0, fs/2] (stops zoom-out at the full spectrogram).
+        ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0, sp.duration);
+        ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, 0, sp.fs / 2.0);
         // Pre-baked texture: one quad regardless of the bin * frame count.
         ImPlot::PlotImage(
           "##env", static_cast<ImTextureID>(tr.tex), ImPlotPoint(0, 0), ImPlotPoint(sp.duration, sp.fs / 2.0));
