@@ -89,11 +89,37 @@ Analysis analyze(const std::string& path) {
     return A;
 }
 
-// 時刻に最も近いフレームの F0（有声/無声境界を跨いで補間しないよう最近傍）。
-double f0_at(const Analysis& A, double t_sec) {
-    int i = static_cast<int>(std::lround(t_sec / kFrameSec));
-    i     = std::clamp(i, 0, A.f0_len - 1);
-    return A.f0[i];
+// 時刻 t での F0 サンプル。MATLAB に合わせ、値は log(F0) を時間方向に線形補間、有声度
+// (VUV) は 0/1 を線形補間した割合を返す。無声フレーム(F0=0)は log を取らず値に含めない。
+struct F0Sample {
+    double value;    // F0 [Hz]（両隣無声なら 0）
+    double vuv;      // 有声割合 [0,1]
+};
+
+F0Sample f0_sample(const Analysis& A, double t_sec) {
+    const double ff = t_sec / kFrameSec;
+    const int    i0 = std::clamp(static_cast<int>(std::floor(ff)), 0, A.f0_len - 1);
+    const int    i1 = std::min(i0 + 1, A.f0_len - 1);
+    const double fr = std::clamp(ff - i0, 0.0, 1.0);
+
+    const double a = A.f0[i0], b = A.f0[i1];
+    const double v0 = a > 0.0 ? 1.0 : 0.0, v1 = b > 0.0 ? 1.0 : 0.0;
+
+    double value = 0.0;
+    if (a > 0.0 && b > 0.0) value = std::exp((1.0 - fr) * std::log(a) + fr * std::log(b));
+    else if (a > 0.0) value = a;
+    else if (b > 0.0) value = b;
+
+    return { value, (1.0 - fr) * v0 + fr * v1 };
+}
+
+// F0 のモーフィング（値は log 補間、有声度は重み和を 0.99 で閾値: MATLAB 準拠）。
+double morph_f0(const F0Sample& b, const F0Sample& t, double fo) {
+    const double vm = (1.0 - fo) * b.vuv + fo * t.vuv;
+    if (vm < 0.99) return 0.0;    // 無声
+    if (b.value > 0.0 && t.value > 0.0)
+        return std::exp((1.0 - fo) * std::log(b.value) + fo * std::log(t.value));
+    return b.value > 0.0 ? b.value : t.value;
 }
 
 // スペクトログラム/非周期性を (時刻, 周波数) で bilinear サンプルする。
@@ -114,14 +140,6 @@ double sample(const std::vector<std::vector<double>>& S, int f0_len, int nbin, i
     return v0 + (v1 - v0) * fr;
 }
 
-// F0 のモーフィング（log 補間、voicing は重み閾値）。
-double morph_f0(double fb, double ft, double r) {
-    const bool   vb = fb > 0.0, vt = ft > 0.0;
-    const double vm = (1.0 - r) * (vb ? 1.0 : 0.0) + r * (vt ? 1.0 : 0.0);
-    if (vm < 0.5) return 0.0;    // 無声
-    if (vb && vt) return std::exp((1.0 - r) * std::log(fb) + r * std::log(ft));
-    return vb ? fb : ft;
-}
 
 // 1つの時間アンカーの周波数アンカーから、全ビン分の「モーフ周波数 → base/target 周波数」
 // 写像を作る。MATLAB に合わせ log 周波数で処理する: モーフ後のアンカー位置を
@@ -261,7 +279,7 @@ MorphResult morphing(const std::string& base_path, const std::string& target_pat
             const double taub = ta[seg].base_t + s * (ta[seg + 1].base_t - ta[seg].base_t);
             const double taut = ta[seg].target_t + s * (ta[seg + 1].target_t - ta[seg].target_t);
 
-            f0o[m] = morph_f0(f0_at(B, taub), f0_at(T, taut), fo);
+            f0o[m] = morph_f0(f0_sample(B, taub), f0_sample(T, taut), fo);
 
             // 周波数写像は区間の左右アンカーをビンごとに s 補間（時間方向に連続）。
             const std::vector<double>& wbL = warpB[seg];
