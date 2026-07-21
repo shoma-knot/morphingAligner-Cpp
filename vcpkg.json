@@ -9,6 +9,7 @@
     },
     "implot",
     "glfw3",
-    "tinyfiledialogs"
+    "tinyfiledialogs",
+    "nlohmann-json"
   ]
 }

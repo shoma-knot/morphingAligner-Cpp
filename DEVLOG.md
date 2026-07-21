@@ -99,6 +99,21 @@
 - 番号は時間アンカー内の並び順（`j+1`）を `Annotation` で表示。base/target が同番号＝対応。
   表示範囲（`GetPlotLimits`）外の点はラベルを出さない。
 
+### アンカーの保存/読み込み（`session.cpp`）
+- `nlohmann-json` で JSON 保存/読み込み。スキーマ:
+  ```json
+  { "version":1,
+    "waves": {"base":"...","target":"..."},
+    "anchors":[ {"time":{"base":..,"target":..},
+                 "freqs":[{"base":..,"target":..}]} ] }
+  ```
+- freqs は base/target のペア配列（内部モデルと一致、長さ食い違いが起きない）。
+- 読み込みは JSON パース → waves 取得 → 音声の存在確認 → アンカー検証 → 音声復元 →
+  アンカー適用の順。音声が見つからない/開けない場合はエラー表示して中止（状態を壊さない）。
+- `load_track` からパス指定版 `load_track_from_path` を抽出し共用。
+- 左パネルに保存/読み込みボタン。既定パスはカレントディレクトリ
+  （実行ファイルのパス取得は OS 固有になるため移植性優先）。
+
 ## ビルド / 実行
 
 ```sh

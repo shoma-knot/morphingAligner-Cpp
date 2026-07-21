@@ -58,8 +58,12 @@ struct App {
     Track               base { "base" };
     Track               target { "target" };
     std::vector<Anchor> anchors;    // base<->target time correspondences
+    std::string         session_status;    // セッション保存/読み込みの結果メッセージ
 };
 
-// Open a file dialog for `tr`, analyse it, and (re)build its GPU texture.
-// On failure the track is reset and `tr.status` describes the error.
+// ファイルダイアログで `tr` を選び、解析してテクスチャを (再)生成する。
 void load_track(Track& tr);
+
+// 指定パスを解析してテクスチャを (再)生成する。成功で true、失敗時は tr を初期化し
+// `tr.status` にエラーを入れる。セッション読み込みからも使う。
+bool load_track_from_path(Track& tr, const std::string& path);

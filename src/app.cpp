@@ -57,26 +57,31 @@ Track::~Track() {
     if (tex) glDeleteTextures(1, &tex);
 }
 
-void load_track(Track& tr) {
-    static const char* filters[] = { "*.wav", "*.flac", "*.mp3", "*.ogg" };
-    const std::string  title     = tr.name + " 音声を選択";
-    const char*        picked    = tinyfd_openFileDialog(title.c_str(), "", 4, filters, "音声ファイル", 0);
-    if (!picked) return;    // cancelled
-
+bool load_track_from_path(Track& tr, const std::string& path) {
     if (tr.tex) {
         glDeleteTextures(1, &tr.tex);
         tr.tex = 0;
     }
     try {
-        tr.spec   = analyze_file(picked);
+        tr.spec   = analyze_file(path);
         tr.tex    = make_spectrogram_texture(tr.spec);
         tr.y_min  = 0.0;                  // reset the frequency-axis view
         tr.y_max  = tr.spec.fs / 2.0;
-        tr.path   = picked;
+        tr.path   = path;
         tr.status = "読み込み完了";
+        return true;
     } catch (const std::exception& e) {
         tr.spec = {};
         tr.path.clear();
         tr.status = std::string { "読み込み失敗: " } + e.what();
+        return false;
     }
+}
+
+void load_track(Track& tr) {
+    static const char* filters[] = { "*.wav", "*.flac", "*.mp3", "*.ogg" };
+    const std::string  title     = tr.name + " 音声を選択";
+    const char*        picked    = tinyfd_openFileDialog(title.c_str(), "", 4, filters, "音声ファイル", 0);
+    if (!picked) return;    // cancelled
+    load_track_from_path(tr, picked);
 }

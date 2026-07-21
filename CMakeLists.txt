@@ -13,6 +13,7 @@ find_package(implot CONFIG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(tinyfiledialogs CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
 add_subdirectory(third-party/miniaudio_cpp)
 set(WORLD_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(third-party/world)
@@ -26,5 +27,6 @@ target_link_libraries(main PRIVATE
     glfw
     OpenGL::GL
     tinyfiledialogs::tinyfiledialogs
+    nlohmann_json::nlohmann_json
     miniaudio_cpp
     world::core)

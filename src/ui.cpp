@@ -3,16 +3,27 @@
 #include <algorithm>
 #include <cmath>
 #include <exception>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 #include <imgui.h>
 #include <implot.h>
+#include <tinyfiledialogs.h>
 
 #include "anchors.hpp"
 #include "app.hpp"
+#include "session.hpp"
 
 namespace {
+
+// セッションの既定保存パス。実行ファイルのパス取得は OS 固有になるため、移植性を優先
+// してカレントディレクトリ（多くは起動ディレクトリ＝バイナリのある場所）を使う。
+std::string default_session_path() {
+    std::error_code ec;
+    const auto      dir = std::filesystem::current_path(ec);
+    return ec ? "session.json" : (dir / "session.json").string();
+}
 
 // 左パネル内の、トラック1つ分の読み込み/再生操作と情報表示。
 void draw_track_controls(App& app, Track& tr, const char* label) {
@@ -158,6 +169,26 @@ void draw_left_panel(App& app) {
     ImGui::BeginDisabled(app.anchors.empty());
     if (ImGui::Button("アンカーを全消去", ImVec2(-1, 0))) app.anchors.clear();
     ImGui::EndDisabled();
+
+    // ── セッション（アンカー）の保存/読み込み ─────────────────
+    ImGui::Spacing();
+    ImGui::Separator();
+    static const char* kJsonFilter[] = { "*.json" };
+    // 既定の保存先はカレントディレクトリ。読み込みも同じ場所から開始。
+    static const std::string kDefaultPath = default_session_path();
+
+    // 保存は base/target が両方読み込まれているとき（waves パスが有効）だけ許可。
+    ImGui::BeginDisabled(!(app.base.loaded() && app.target.loaded()));
+    if (ImGui::Button("セッション保存", ImVec2(-1, 0))) {
+        if (const char* p = tinyfd_saveFileDialog("セッションを保存", kDefaultPath.c_str(), 1, kJsonFilter, "JSON"))
+            save_session(app, p, app.session_status);
+    }
+    ImGui::EndDisabled();
+    if (ImGui::Button("セッション読み込み", ImVec2(-1, 0))) {
+        if (const char* p = tinyfd_openFileDialog("セッションを読み込み", kDefaultPath.c_str(), 1, kJsonFilter, "JSON", 0))
+            load_session(app, p, app.session_status);
+    }
+    if (!app.session_status.empty()) ImGui::TextWrapped("%s", app.session_status.c_str());
 }
 
 void draw_right_panel(App& app) {
