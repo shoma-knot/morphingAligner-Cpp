@@ -13,6 +13,7 @@
 
 #include "anchors.hpp"
 #include "app.hpp"
+#include "morphing.hpp"
 #include "session.hpp"
 
 namespace {
@@ -189,6 +190,37 @@ void draw_left_panel(App& app) {
             load_session(app, p, app.session_status);
     }
     if (!app.session_status.empty()) ImGui::TextWrapped("%s", app.session_status.c_str());
+
+    // ── モーフィング ─────────────────────────────────────────
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextUnformatted("モーフィング");
+    ImGui::SliderFloat("率(0=base,1=target)", &app.morph_rate, 0.0f, 1.0f, "%.2f");
+    ImGui::BeginDisabled(!(app.base.loaded() && app.target.loaded()));
+    // 注: morphing() は同期実行（Harvest 等で数秒かかり UI が一瞬固まる）。
+    if (ImGui::Button("生成して再生", ImVec2(-1, 0))) {
+        const MorphResult mr = morphing(app.base.path, app.target.path, app.anchors, app.morph_rate);
+        if (!mr.ok()) {
+            app.morph_status = mr.error;
+        } else {
+            std::error_code   ec;
+            const auto        dir = std::filesystem::current_path(ec);
+            const std::string out = (ec ? std::filesystem::path("morph.wav") : dir / "morph.wav").string();
+            std::string       werr;
+            if (write_wav(out, mr.wave, mr.fs, werr)) {
+                app.morph_status = "生成: " + out;
+                try {
+                    app.engine.play_oneshot(out);
+                } catch (const std::exception& e) {
+                    app.morph_status = std::string { "再生失敗: " } + e.what();
+                }
+            } else {
+                app.morph_status = "WAV 書き込み失敗: " + werr;
+            }
+        }
+    }
+    ImGui::EndDisabled();
+    if (!app.morph_status.empty()) ImGui::TextWrapped("%s", app.morph_status.c_str());
 }
 
 void draw_right_panel(App& app) {

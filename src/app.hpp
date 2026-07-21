@@ -59,6 +59,8 @@ struct App {
     Track               target { "target" };
     std::vector<Anchor> anchors;    // base<->target time correspondences
     std::string         session_status;    // セッション保存/読み込みの結果メッセージ
+    float               morph_rate = 0.5f;    // モーフィング率（0=base, 1=target）
+    std::string         morph_status;         // モーフィングの結果メッセージ
 };
 
 // ファイルダイアログで `tr` を選び、解析してテクスチャを (再)生成する。

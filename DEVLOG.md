@@ -114,6 +114,23 @@
 - 左パネルに保存/読み込みボタン。既定パスはカレントディレクトリ
   （実行ファイルのパス取得は OS 固有になるため移植性優先）。
 
+### モーフィング（`morphing.cpp`）
+Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋率 r で実装。
+- 解析: `ma::decoder`→mono→WORLD Harvest(F0)+CheapTrick(sp)+D4C(ap)。base/target は
+  同一 fs 前提（fft_size も一致）。
+- 時間軸: 時間アンカーを base_t 昇順に整列＋両端に境界(0,0)/(dur,dur)を追加。
+  セグメント長を log 補間して morphed timeline を作り、逆写像で各元の時刻を得る。
+- F0: log 補間、voicing は重み閾値。無声側が優勢なら 0。
+- 周波数軸: 区間の左アンカーの周波数アンカーから log/線形の折れ線を作り、モーフ周波数
+  → base/target 周波数へ逆写像。sp は log 補間、ap は線形補間。
+- 合成: WORLD Synthesis。`write_wav`(16bit PCM) で出力。
+- API: `MorphResult morphing(base_path, target_path, anchors, rate)`。
+- UI: 左パネルに率スライダ＋「生成して再生」（cwd/morph.wav に書いて play_oneshot）。
+- ヘッドレス検証済み（JVS 2話者、r=0→base長, r=1→target長, 全ケース有限出力）。
+- 既知の制約: (1)同期実行で数秒 UI が固まる。(2)周波数ワープは区間の左アンカーの
+  周波数集合を使う（時間方向は区分定数＝境界で不連続）。(3)fs 不一致は未対応。
+  (4)F0 は最近傍フレームサンプル。
+
 ## ビルド / 実行
 
 ```sh
