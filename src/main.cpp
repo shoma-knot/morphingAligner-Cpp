@@ -184,10 +184,20 @@ void draw_left_panel(App& app) {
 // Colour of the time-axis anchors.
 constexpr ImVec4 kAnchorCol { 1.0f, 0.35f, 0.2f, 1.0f };
 
+// Screen-space position of an anchor on the edge facing the other panel,
+// used to draw the cross-panel connectors.
+struct EdgePoint {
+    ImVec2 pos;
+    bool   visible;    // false when the anchor time is outside the zoomed view
+};
+
 // One spectral-envelope spectrogram of the given pixel height, with the
 // draggable time anchors overlaid. `is_base` selects which side of each
-// anchor pair this plot edits.
-void draw_spectrogram(App& app, Track& tr, bool is_base, float height) {
+// anchor pair this plot edits. `out_edges` receives, per anchor, the pixel
+// position on the edge facing the other panel (empty if nothing was drawn).
+void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vector<EdgePoint>& out_edges) {
+    out_edges.clear();
+
     ImGui::PushID(&tr);
     ImGui::TextUnformatted(tr.name.c_str());
 
@@ -213,6 +223,8 @@ void draw_spectrogram(App& app, Track& tr, bool is_base, float height) {
         ImPlot::PlotImage(
           "##env", static_cast<ImTextureID>(tr.tex), ImPlotPoint(0, 0), ImPlotPoint(sp.duration, sp.fs / 2.0));
 
+        const ImPlotRect lim = ImPlot::GetPlotLimits();
+
         // Draggable time anchors. DragLineX stays interactive (movable) rather
         // than being baked into the draw list.
         bool any_active = false;
@@ -221,7 +233,6 @@ void draw_spectrogram(App& app, Track& tr, bool is_base, float height) {
             bool    hovered = false, held = false;
             ImPlot::DragLineX(
               static_cast<int>(i), xp, kAnchorCol, 2.0f, ImPlotDragToolFlags_None, nullptr, &hovered, &held);
-            ImPlot::TagX(*xp, kAnchorCol, "%.2f", *xp);
             any_active |= hovered || held;
         }
 
@@ -230,6 +241,20 @@ void draw_spectrogram(App& app, Track& tr, bool is_base, float height) {
         if (ImPlot::IsPlotHovered() && !any_active && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             const double t = std::clamp(ImPlot::GetPlotMousePos().x, 0.0, sp.duration);
             app.anchors.push_back(Anchor { t, t });
+        }
+
+        // Capture each anchor's pixel position for the connectors. The vertical
+        // position is pinned to the plot's pixel edge facing the other panel
+        // (base: bottom, target: top) so frequency-axis zoom never moves it;
+        // only the horizontal position follows the (zoomable) time axis.
+        const ImVec2 plot_pos  = ImPlot::GetPlotPos();
+        const ImVec2 plot_size = ImPlot::GetPlotSize();
+        const float  edge_py   = is_base ? plot_pos.y + plot_size.y : plot_pos.y;
+        out_edges.resize(app.anchors.size());
+        for (std::size_t i = 0; i < app.anchors.size(); ++i) {
+            const double x       = is_base ? app.anchors[i].base_t : app.anchors[i].target_t;
+            out_edges[i].pos     = ImVec2(ImPlot::PlotToPixels(x, 0.0).x, edge_py);
+            out_edges[i].visible = x >= lim.X.Min && x <= lim.X.Max;
         }
         ImPlot::EndPlot();
     }
@@ -246,9 +271,20 @@ void draw_right_panel(App& app) {
     const float avail_h  = ImGui::GetContentRegionAvail().y;
     const float each_h   = std::max(140.0f, (avail_h - labels_h - 12.0f) / 2.0f);
 
-    draw_spectrogram(app, app.base, /*is_base=*/true, each_h);
+    static std::vector<EdgePoint> base_edges, target_edges;
+    draw_spectrogram(app, app.base, /*is_base=*/true, each_h, base_edges);
     ImGui::Spacing();
-    draw_spectrogram(app, app.target, /*is_base=*/false, each_h);
+    draw_spectrogram(app, app.target, /*is_base=*/false, each_h, target_edges);
+
+    // Connect corresponding base/target anchors across the gap between panels.
+    if (base_edges.size() == target_edges.size()) {
+        ImDrawList* dl  = ImGui::GetForegroundDrawList();
+        const ImU32 col = ImGui::ColorConvertFloat4ToU32(kAnchorCol);
+        for (std::size_t i = 0; i < base_edges.size(); ++i) {
+            if (base_edges[i].visible && target_edges[i].visible)
+                dl->AddLine(base_edges[i].pos, target_edges[i].pos, col, 1.5f);
+        }
+    }
 }
 
 }    // namespace
