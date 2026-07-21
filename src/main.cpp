@@ -60,6 +60,9 @@ int main() {
     // Free the left mouse button for anchor placement / dragging by moving the
     // plot pan gesture onto the middle button.
     ImPlot::GetInputMap().Pan = ImGuiMouseButton_Middle;
+    // 既定では Ctrl は OverrideMod（押下中は入力を無視して DnD ソース化）に割り当た
+    // っている。Ctrl+左クリックを周波数アンカー追加に使うため無効化する。
+    ImPlot::GetInputMap().OverrideMod = ImGuiMod_None;
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);

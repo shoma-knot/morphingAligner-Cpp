@@ -86,6 +86,19 @@
   `ImGui::GetForegroundDrawList()->AddLine` でスクリーン空間に結線。
   ズームで時間が表示範囲外（`GetPlotLimits` の X 範囲外）の端点はスキップ。
 
+### 周波数軸アンカー（`ui.cpp`）
+- 時間アンカー線の上に打つ周波数対応。`FreqAnchor{base_f,target_f}` を `Anchor::freqs` に保持。
+- 各パネルの線上に **`ImPlot::DragPoint`** で表示。X は親の時間アンカー時刻に毎フレーム固定し、
+  Y（周波数）だけ動かす。`ImPlotDragToolFlags_Delayed` でドラッグ中も X が線上に留まる。
+- 操作モードを Ctrl で切替（同じ x 上の線と点でドラッグ対象が競合するため）:
+  - Ctrl なし … 時間線ドラッグ可 / 周波数点ロック（`NoInputs`）
+  - Ctrl あり … 時間線ロック（`NoInputs`）/ 周波数点ドラッグ可
+  - Ctrl+左クリック（点以外の線上, ピクセル距離で最寄り線を判定）で追加、
+    Ctrl+左ドラッグで移動、Ctrl+右クリックで削除。
+- `main.cpp` で `GetInputMap().OverrideMod = ImGuiMod_None`（既定の Ctrl=DnD/入力無視を解除）。
+- 番号は時間アンカー内の並び順（`j+1`）を `Annotation` で表示。base/target が同番号＝対応。
+  表示範囲（`GetPlotLimits`）外の点はラベルを出さない。
+
 ## ビルド / 実行
 
 ```sh

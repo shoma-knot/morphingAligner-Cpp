@@ -135,28 +135,89 @@ void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vect
         }
         // ─── FIXME(freq-axis-input) ここまで ─────────────────────────────
 
-        // Draggable time anchors. DragLineX stays interactive (movable) rather
-        // than being baked into the draw list.
+        // ドラッグ可能な時間アンカー（縦線）と、その線上に乗る周波数アンカー（点）。
+        // DragLineX / DragPoint は draw list に焼かず、掴んで動かせる。
+        //
+        // 同じ x 上に線と点があり、ドラッグ対象が競合するため Ctrl で役割を切り替える:
+        //   Ctrl なし … 時間線をドラッグ可 / 周波数点はロック
+        //   Ctrl あり … 時間線をロック     / 周波数点をドラッグ可（＋線上で追加）
+        // Ctrl 中に線を NoInputs にすると線上でも IsPlotHovered() が true になり、
+        // 周波数アンカーの追加検出もできる。
+        // 点は Delayed（描画を1フレーム遅延）にする。DragPoint がマウス位置で更新した
+        // x を即描画せず、こちらが渡す「線に固定した x」で描画するので、ドラッグ中も
+        // 点が線上に留まる（更新された x は捨て、y だけ採用）。
+        const ImPlotDragToolFlags line_flags  = io.KeyCtrl ? ImPlotDragToolFlags_NoInputs : ImPlotDragToolFlags_None;
+        const ImPlotDragToolFlags point_flags = io.KeyCtrl ? ImPlotDragToolFlags_Delayed : ImPlotDragToolFlags_NoInputs;
+
         bool any_active     = false;
-        int  hovered_anchor = -1;
+        int  hovered_anchor = -1;    // ホバー中の時間アンカー index（線）
+        int  hover_fi = -1, hover_fj = -1;    // ホバー中の周波数アンカー (anchor, freq) index
         for (std::size_t i = 0; i < app.anchors.size(); ++i) {
-            double* xp      = is_base ? &app.anchors[i].base_t : &app.anchors[i].target_t;
+            Anchor& a       = app.anchors[i];
+            double* xp      = is_base ? &a.base_t : &a.target_t;
             bool    hovered = false, held = false;
-            ImPlot::DragLineX(
-              static_cast<int>(i), xp, kAnchorCol, 2.0f, ImPlotDragToolFlags_None, nullptr, &hovered, &held);
+            ImPlot::DragLineX(static_cast<int>(i), xp, kAnchorCol, 2.0f, line_flags, nullptr, &hovered, &held);
             if (hovered || held) {
                 any_active     = true;
                 hovered_anchor = static_cast<int>(i);
             }
+
+            // この時間アンカー線上の周波数アンカー。X は線（アンカー時刻）に固定し、
+            // Y（周波数）だけドラッグで動かす。時間アンカーを動かせば一緒に横移動する。
+            for (std::size_t j = 0; j < a.freqs.size(); ++j) {
+                double    fx     = is_base ? a.base_t : a.target_t;    // 線に固定（毎フレーム再設定）
+                double*   fy     = is_base ? &a.freqs[j].base_f : &a.freqs[j].target_f;
+                const int fid    = (static_cast<int>(i) + 1) * 4096 + static_cast<int>(j);
+                bool      fh = false, fheld = false;
+                ImPlot::DragPoint(fid, &fx, fy, kAnchorCol, 5.0f, point_flags, nullptr, &fh, &fheld);
+                *fy = std::clamp(*fy, 0.0, sp.fs / 2.0);    // 範囲内に維持（fx は捨てて線上に固定）
+                if (fh || fheld) {
+                    any_active = true;
+                    hover_fi   = static_cast<int>(i);
+                    hover_fj   = static_cast<int>(j);
+                }
+
+                // 時間アンカー内の並び順（1始まり）を点の脇に表示。base/target で同じ
+                // 番号になり対応が分かる。表示範囲外の点はラベルを出さない（端に張り付か
+                // せない）ため、現在の表示範囲内にあるときだけ描画する。
+                const double lx = is_base ? a.base_t : a.target_t;    // 線に固定した x
+                const bool   in_view =
+                  lx >= lim.X.Min && lx <= lim.X.Max && *fy >= lim.Y.Min && *fy <= lim.Y.Max;
+                if (in_view)
+                    ImPlot::Annotation(lx, *fy, kAnchorCol, ImVec2(8, -8), false, "%d", static_cast<int>(j) + 1);
+            }
         }
 
-        // Right-click on a hovered anchor deletes the whole pair (both panels).
-        if (hovered_anchor >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+        // Ctrl+右クリック: ホバー中の周波数アンカーを削除。
+        if (io.KeyCtrl && hover_fj >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+            auto& fs = app.anchors[hover_fi].freqs;
+            fs.erase(fs.begin() + hover_fj);
+        }
+        // 右クリック: ホバー中の時間アンカー（ペア＝両パネル＋周波数アンカー）を削除。
+        else if (hovered_anchor >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
             app.anchors.erase(app.anchors.begin() + hovered_anchor);
         }
-        // Left-click on empty plot area adds a new anchor pair at that time
-        // (same time on both tracks initially).
-        else if (ImPlot::IsPlotHovered() && !any_active && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        // Ctrl+左クリック（点以外の線上）: カーソルに最も近い時間アンカー線上に、
+        // クリックした周波数で周波数アンカー（ペア）を追加する。点の上（any_active）は
+        // ドラッグ移動なので追加しない。
+        else if (io.KeyCtrl && !any_active && ImPlot::IsPlotHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            int   nearest = -1;
+            float best_px = 8.0f;    // 許容ピクセル距離
+            for (std::size_t i = 0; i < app.anchors.size(); ++i) {
+                const double at = is_base ? app.anchors[i].base_t : app.anchors[i].target_t;
+                const float  d  = std::fabs(ImPlot::PlotToPixels(at, 0.0).x - io.MousePos.x);
+                if (d < best_px) {
+                    best_px = d;
+                    nearest = static_cast<int>(i);
+                }
+            }
+            if (nearest >= 0) {
+                const double f = std::clamp(ImPlot::GetPlotMousePos().y, 0.0, sp.fs / 2.0);
+                app.anchors[nearest].freqs.push_back(FreqAnchor { f, f });
+            }
+        }
+        // 左クリック（何もない所）: その時刻に新しい時間アンカー（ペア）を追加。
+        else if (!io.KeyCtrl && ImPlot::IsPlotHovered() && !any_active && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             const double t = std::clamp(ImPlot::GetPlotMousePos().x, 0.0, sp.duration);
             app.anchors.push_back(Anchor { t, t });
         }
@@ -199,6 +260,8 @@ void draw_left_panel(App& app) {
     ImGui::Separator();
     ImGui::Text("アンカー: %d", static_cast<int>(app.anchors.size()));
     ImGui::TextDisabled("左クリックで追加 / 右クリックで削除");
+    ImGui::TextDisabled("Ctrl+左クリックで周波数アンカー追加/ドラッグで移動");
+    ImGui::TextDisabled("Ctrl+右クリックで周波数アンカー削除");
     ImGui::BeginDisabled(app.anchors.empty());
     if (ImGui::Button("アンカーを全消去", ImVec2(-1, 0))) app.anchors.clear();
     ImGui::EndDisabled();
