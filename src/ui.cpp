@@ -199,7 +199,9 @@ void draw_left_panel(App& app) {
     ImGui::BeginDisabled(!(app.base.loaded() && app.target.loaded()));
     // 注: morphing() は同期実行（Harvest 等で数秒かかり UI が一瞬固まる）。
     if (ImGui::Button("生成して再生", ImVec2(-1, 0))) {
-        const MorphResult mr = morphing(app.base.path, app.target.path, app.anchors, app.morph_rate);
+        // UI は一律操作: 全軸に同じ率を渡す。
+        const MorphResult mr =
+          morphing(app.base.path, app.target.path, app.anchors, MorphRates::uniform(app.morph_rate));
         if (!mr.ok()) {
             app.morph_status = mr.error;
         } else {

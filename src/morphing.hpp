@@ -21,10 +21,22 @@ struct MorphResult {
     bool ok() const { return error.empty(); }
 };
 
-// base/target を解析し、anchors による時間/周波数ワープと率 rate（0=base, 1=target）の
-// 補間でモーフィングした音声を合成する。失敗時は結果の error にメッセージを入れる。
+// 軸ごとのモーフィング率（各 0=base, 1=target）。UI から一律にしたい場合は全て同値にする。
+struct MorphRates {
+    double tx = 0.5;    // 時間軸
+    double fx = 0.5;    // 周波数軸
+    double fo = 0.5;    // F0
+    double sl = 0.5;    // スペクトルレベル
+    double ap = 0.5;    // 非周期性
+
+    // 全軸を同じ率にした MorphRates を作る。
+    static MorphRates uniform(double r) { return { r, r, r, r, r }; }
+};
+
+// base/target を解析し、anchors による時間/周波数ワープと軸ごとの率でモーフィングした
+// 音声を合成する。失敗時は結果の error にメッセージを入れる。
 MorphResult morphing(const std::string& base_path, const std::string& target_path,
-                     const std::vector<Anchor>& anchors, double rate);
+                     const std::vector<Anchor>& anchors, const MorphRates& rates);
 
 // wave を 16bit PCM モノラル WAV として path に書き出す。成功で true。
 bool write_wav(const std::string& path, const std::vector<double>& wave, int fs, std::string& err);

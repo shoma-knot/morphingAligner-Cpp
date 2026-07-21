@@ -115,7 +115,9 @@
   （実行ファイルのパス取得は OS 固有になるため移植性優先）。
 
 ### モーフィング（`morphing.cpp`）
-Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋率 r で実装。
+Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋軸ごとの率
+(tx=時間 / fx=周波数 / fo=F0 / sl=スペクトル / ap=非周期性)で実装。UI は一律スライダ
+（`MorphRates::uniform(r)` で全軸同値を渡す）。
 - 解析: `ma::decoder`→mono→WORLD Harvest(F0)+CheapTrick(sp)+D4C(ap)。base/target は
   同一 fs 前提（fft_size も一致）。
 - 時間軸: 時間アンカーを base_t 昇順に整列＋両端に境界(0,0)/(dur,dur)を追加。
@@ -124,7 +126,9 @@ Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋�
 - 周波数軸: 区間の左アンカーの周波数アンカーから log/線形の折れ線を作り、モーフ周波数
   → base/target 周波数へ逆写像。sp は log 補間、ap は線形補間。
 - 合成: WORLD Synthesis。WAV 出力は miniaudio のエンコーダ（`ma::write_wav`, 32bit float）。
-- API: `MorphResult morphing(base_path, target_path, anchors, rate)`。
+- API: `MorphResult morphing(base_path, target_path, anchors, const MorphRates&)`。
+  各軸は該当箇所で対応する率を使用（tx=timeline, fo=morph_f0, fx=周波数折れ線,
+  sl=sp のlog補間, ap=ap の線形補間）。
 - UI: 左パネルに率スライダ＋「生成して再生」（cwd/morph.wav に書いて play_oneshot）。
 - ヘッドレス検証済み（JVS 2話者、r=0→base長, r=1→target長, 全ケース有限出力）。
 - 既知の制約: (1)同期実行で数秒 UI が固まる。(2)周波数ワープは区間の左アンカーの

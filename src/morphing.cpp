@@ -133,7 +133,7 @@ struct TimeAnchor {
 }    // namespace
 
 MorphResult morphing(const std::string& base_path, const std::string& target_path,
-                     const std::vector<Anchor>& anchors, double rate) {
+                     const std::vector<Anchor>& anchors, const MorphRates& rates) {
     MorphResult R;
     try {
         const Analysis B = analyze(base_path);
@@ -151,7 +151,13 @@ MorphResult morphing(const std::string& base_path, const std::string& target_pat
         const int    fft_size = B.fft_size;
         const int    nbin     = B.nbin;
         const double nyquist  = fs / 2.0;
-        const double r        = std::clamp(rate, 0.0, 1.0);
+
+        // 軸ごとの率（それぞれ [0,1] にクランプ）。
+        const double tx = std::clamp(rates.tx, 0.0, 1.0);    // 時間軸
+        const double fx = std::clamp(rates.fx, 0.0, 1.0);    // 周波数軸
+        const double fo = std::clamp(rates.fo, 0.0, 1.0);    // F0
+        const double sl = std::clamp(rates.sl, 0.0, 1.0);    // スペクトルレベル
+        const double ap = std::clamp(rates.ap, 0.0, 1.0);    // 非周期性
 
         // ── 時間アンカーを base_t 昇順に整列し、両端に境界 (0,0),(dur,dur) を足す ──
         std::vector<const Anchor*> sorted;
@@ -175,7 +181,7 @@ MorphResult morphing(const std::string& base_path, const std::string& target_pat
         for (int k = 0; k < K - 1; ++k) {
             const double db = std::max(ta[k + 1].base_t - ta[k].base_t, 1e-6);
             const double dt = std::max(ta[k + 1].target_t - ta[k].target_t, 1e-6);
-            tm[k + 1]       = tm[k] + std::exp((1.0 - r) * std::log(db) + r * std::log(dt));
+            tm[k + 1]       = tm[k] + std::exp((1.0 - tx) * std::log(db) + tx * std::log(dt));
         }
         const double total = tm[K - 1];
         const int    M     = std::max(1, static_cast<int>(std::floor(total / kFrameSec)) + 1);
@@ -199,7 +205,7 @@ MorphResult morphing(const std::string& base_path, const std::string& target_pat
             const double taub = ta[seg].base_t + s * (ta[seg + 1].base_t - ta[seg].base_t);
             const double taut = ta[seg].target_t + s * (ta[seg + 1].target_t - ta[seg].target_t);
 
-            f0o[m] = morph_f0(f0_at(B, taub), f0_at(T, taut), r);
+            f0o[m] = morph_f0(f0_at(B, taub), f0_at(T, taut), fo);
 
             // この区間の左アンカーの周波数アンカーから、周波数ワープの折れ線を作る。
             // bf/tf: base/target のアンカー周波数、fam: モーフ後のアンカー周波数。
@@ -221,7 +227,7 @@ MorphResult morphing(const std::string& base_path, const std::string& target_pat
             }
             bf.push_back(nyquist);
             tf.push_back(nyquist);
-            for (std::size_t i = 0; i < bf.size(); ++i) fam.push_back((1.0 - r) * bf[i] + r * tf[i]);
+            for (std::size_t i = 0; i < bf.size(); ++i) fam.push_back((1.0 - fx) * bf[i] + fx * tf[i]);
 
             // 各ビンについて、モーフ周波数 fm を折れ線で base/target 周波数へ逆写像しサンプル。
             int j = 0;
@@ -235,12 +241,12 @@ MorphResult morphing(const std::string& base_path, const std::string& target_pat
 
                 const double sb = sample(B.sp, B.f0_len, nbin, fft_size, fs, taub, fb);
                 const double st = sample(T.sp, T.f0_len, nbin, fft_size, fs, taut, ft);
-                spo[m][b]       = std::exp((1.0 - r) * std::log(std::max(sb, 1e-20))
-                                     + r * std::log(std::max(st, 1e-20)));
+                spo[m][b]       = std::exp((1.0 - sl) * std::log(std::max(sb, 1e-20))
+                                     + sl * std::log(std::max(st, 1e-20)));
 
                 const double ab = sample(B.ap, B.f0_len, nbin, fft_size, fs, taub, fb);
                 const double at = sample(T.ap, T.f0_len, nbin, fft_size, fs, taut, ft);
-                apo[m][b]       = std::clamp((1.0 - r) * ab + r * at, 0.0, 1.0);
+                apo[m][b]       = std::clamp((1.0 - ap) * ab + ap * at, 0.0, 1.0);
             }
         }
 
