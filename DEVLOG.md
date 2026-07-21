@@ -123,17 +123,18 @@ Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋�
 - 時間軸: 時間アンカーを base_t 昇順に整列＋両端に境界(0,0)/(dur,dur)を追加。
   セグメント長を log 補間して morphed timeline を作り、逆写像で各元の時刻を得る。
 - F0: log 補間、voicing は重み閾値。無声側が優勢なら 0。
-- 周波数軸: 区間の左アンカーの周波数アンカーから log/線形の折れ線を作り、モーフ周波数
-  → base/target 周波数へ逆写像。sp は log 補間、ap は線形補間。
+- 周波数軸: 各時間アンカーごとに「モーフ周波数→base/target 周波数」の全ビン写像を前計算し
+  （`build_freq_warp`）、区間内で左右アンカーをビンごとに `s` 補間（時間方向に連続、MATLAB の
+  `(1-lambda)*last + lambda*next` 相当）。周波数アンカーの本数が時間アンカー間で違っても可。
+  sp は log 補間、ap は線形補間。
 - 合成: WORLD Synthesis。WAV 出力は miniaudio のエンコーダ（`ma::write_wav`, 32bit float）。
 - API: `MorphResult morphing(base_path, target_path, anchors, const MorphRates&)`。
   各軸は該当箇所で対応する率を使用（tx=timeline, fo=morph_f0, fx=周波数折れ線,
   sl=sp のlog補間, ap=ap の線形補間）。
 - UI: 左パネルに率スライダ＋「生成して再生」（cwd/morph.wav に書いて play_oneshot）。
 - ヘッドレス検証済み（JVS 2話者、r=0→base長, r=1→target長, 全ケース有限出力）。
-- 既知の制約: (1)同期実行で数秒 UI が固まる。(2)周波数ワープは区間の左アンカーの
-  周波数集合を使う（時間方向は区分定数＝境界で不連続）。(3)fs 不一致は未対応。
-  (4)F0 は最近傍フレームサンプル。
+- 既知の制約: (1)同期実行で数秒 UI が固まる。(2)fs 不一致は未対応。(3)F0 は最近傍
+  フレームサンプル。MATLAB との差分は下の「## MATLAB版との差分」を参照。
 
 ## ビルド / 実行
 
