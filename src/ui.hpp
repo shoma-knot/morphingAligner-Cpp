@@ -1,13 +1,13 @@
 #pragma once
 
 /// @file ui.hpp
-/// @brief Per-frame drawing of the two panels.
+/// @brief 2つのパネルの毎フレーム描画。
 
 struct App;
 
-// Left panel: per-track load/play controls and the anchor list.
+// 左パネル: トラックごとの読み込み/再生操作とアンカー一覧。
 void draw_left_panel(App& app);
 
-// Right panel: base and target spectral-envelope spectrograms stacked
-// vertically, with draggable time anchors and the cross-panel connectors.
+// 右パネル: base/target のスペクトル包絡スペクトログラムを縦に並べ、ドラッグ可能な
+// 時間アンカーとパネル間の対応線を重ねて描く。
 void draw_right_panel(App& app);
