@@ -196,4 +196,21 @@ std::uint64_t decoder::frame_count() const { return impl_->frames; }
 std::uint32_t decoder::channels()    const { return impl_->ch; }
 std::uint32_t decoder::sample_rate() const { return impl_->rate; }
 
+// ── WAV writer ──────────────────────────────────────────────
+
+void write_wav(std::string_view path, const float* frames,
+               std::uint64_t frame_count, std::uint32_t channels,
+               std::uint32_t sample_rate) {
+    ma_encoder_config cfg = ma_encoder_config_init(
+        ma_encoding_format_wav, ma_format_f32, channels, sample_rate);
+    ma_encoder enc;
+    check(ma_encoder_init_file(std::string{path}.c_str(), &cfg, &enc),
+          "encoder init");
+    ma_uint64 written = 0;
+    ma_result r =
+        ma_encoder_write_pcm_frames(&enc, frames, frame_count, &written);
+    ma_encoder_uninit(&enc);
+    check(r, "encoder write");
+}
+
 } // namespace ma

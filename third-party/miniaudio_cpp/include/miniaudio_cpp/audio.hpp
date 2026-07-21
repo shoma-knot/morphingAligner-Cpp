@@ -131,4 +131,12 @@ class decoder {
     std::unique_ptr<decoder_impl> impl_;
 };
 
+// ── WAV writer (offline) ────────────────────────────────────
+
+/// Write interleaved float PCM to a WAV file (32-bit float format).
+/// Throws ma::error on failure.
+void write_wav(std::string_view path, const float* frames,
+               std::uint64_t frame_count, std::uint32_t channels,
+               std::uint32_t sample_rate);
+
 } // namespace ma

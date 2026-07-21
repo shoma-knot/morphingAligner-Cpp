@@ -4,7 +4,6 @@
 #include <cmath>
 #include <cstdint>
 #include <exception>
-#include <fstream>
 #include <vector>
 
 #include <miniaudio_cpp/audio.hpp>
@@ -264,38 +263,15 @@ MorphResult morphing(const std::string& base_path, const std::string& target_pat
 }
 
 bool write_wav(const std::string& path, const std::vector<double>& wave, int fs, std::string& err) {
-    std::ofstream os(path, std::ios::binary);
-    if (!os) {
-        err = "ファイルを開けません";
+    try {
+        std::vector<float> f(wave.size());
+        for (std::size_t i = 0; i < wave.size(); ++i)
+            f[i] = static_cast<float>(std::clamp(wave[i], -1.0, 1.0));
+        ma::write_wav(path, f.data(), static_cast<std::uint64_t>(f.size()), /*channels=*/1,
+                      static_cast<std::uint32_t>(fs));
+        return true;
+    } catch (const std::exception& e) {
+        err = e.what();
         return false;
     }
-    const std::uint32_t n          = static_cast<std::uint32_t>(wave.size());
-    const std::uint16_t channels   = 1;
-    const std::uint16_t bits       = 16;
-    const std::uint32_t byte_rate  = static_cast<std::uint32_t>(fs) * channels * bits / 8;
-    const std::uint16_t block_algn = channels * bits / 8;
-    const std::uint32_t data_bytes = n * bits / 8;
-
-    auto w32 = [&](std::uint32_t v) { os.write(reinterpret_cast<const char*>(&v), 4); };
-    auto w16 = [&](std::uint16_t v) { os.write(reinterpret_cast<const char*>(&v), 2); };
-
-    os.write("RIFF", 4);
-    w32(36 + data_bytes);
-    os.write("WAVE", 4);
-    os.write("fmt ", 4);
-    w32(16);
-    w16(1);    // PCM
-    w16(channels);
-    w32(static_cast<std::uint32_t>(fs));
-    w32(byte_rate);
-    w16(block_algn);
-    w16(bits);
-    os.write("data", 4);
-    w32(data_bytes);
-    for (double v : wave) {
-        const double        c = std::clamp(v, -1.0, 1.0);
-        const std::int16_t  s = static_cast<std::int16_t>(std::lround(c * 32767.0));
-        w16(static_cast<std::uint16_t>(s));
-    }
-    return static_cast<bool>(os);
 }

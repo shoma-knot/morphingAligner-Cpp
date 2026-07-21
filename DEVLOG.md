@@ -123,7 +123,7 @@ Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋�
 - F0: log 補間、voicing は重み閾値。無声側が優勢なら 0。
 - 周波数軸: 区間の左アンカーの周波数アンカーから log/線形の折れ線を作り、モーフ周波数
   → base/target 周波数へ逆写像。sp は log 補間、ap は線形補間。
-- 合成: WORLD Synthesis。`write_wav`(16bit PCM) で出力。
+- 合成: WORLD Synthesis。WAV 出力は miniaudio のエンコーダ（`ma::write_wav`, 32bit float）。
 - API: `MorphResult morphing(base_path, target_path, anchors, rate)`。
 - UI: 左パネルに率スライダ＋「生成して再生」（cwd/morph.wav に書いて play_oneshot）。
 - ヘッドレス検証済み（JVS 2話者、r=0→base長, r=1→target長, 全ケース有限出力）。
