@@ -295,9 +295,10 @@ MorphResult morphing(const std::string& base_path, const std::string& target_pat
                 spo[m][b]       = std::exp((1.0 - sl) * std::log(std::max(sb, 1e-20))
                                      + sl * std::log(std::max(st, 1e-20)));
 
-                const double ab = sample(B.ap, B.f0_len, nbin, fft_size, fs, taub, fb);
-                const double at = sample(T.ap, T.f0_len, nbin, fft_size, fs, taut, ft);
-                apo[m][b]       = std::clamp((1.0 - ap) * ab + ap * at, 0.0, 1.0);
+                // 非周期性は log 領域で合成（MATLAB: clamp[1e-5,1]→log→重み和→exp）。
+                const double ab = std::clamp(sample(B.ap, B.f0_len, nbin, fft_size, fs, taub, fb), 1e-5, 1.0);
+                const double at = std::clamp(sample(T.ap, T.f0_len, nbin, fft_size, fs, taut, ft), 1e-5, 1.0);
+                apo[m][b]       = std::exp((1.0 - ap) * std::log(ab) + ap * std::log(at));
             }
         }
 
