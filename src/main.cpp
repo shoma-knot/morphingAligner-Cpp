@@ -98,11 +98,19 @@ struct Track {
     }
 };
 
+// A time-axis correspondence: one vertical anchor on each spectrogram.
+// Created with both times equal; dragged apart later to define the mapping.
+struct Anchor {
+    double base_t;
+    double target_t;
+};
+
 // Application state shared across the frame.
 struct App {
-    ma::engine engine;    // audio output device (shared by both tracks)
-    Track      base { "base" };
-    Track      target { "target" };
+    ma::engine          engine;    // audio output device (shared by both tracks)
+    Track               base { "base" };
+    Track               target { "target" };
+    std::vector<Anchor> anchors;    // base<->target time correspondences
 };
 
 void load_track(Track& tr) {
@@ -163,10 +171,23 @@ void draw_left_panel(App& app) {
     ImGui::Separator();
     ImGui::Spacing();
     draw_track_controls(app, app.target, "Target");
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Text("アンカー: %d", static_cast<int>(app.anchors.size()));
+    ImGui::TextDisabled("スペクトログラムを左クリックで追加");
+    ImGui::BeginDisabled(app.anchors.empty());
+    if (ImGui::Button("アンカーを全消去", ImVec2(-1, 0))) app.anchors.clear();
+    ImGui::EndDisabled();
 }
 
-// One spectral-envelope spectrogram of the given pixel height.
-void draw_spectrogram(Track& tr, float height) {
+// Colour of the time-axis anchors.
+constexpr ImVec4 kAnchorCol { 1.0f, 0.35f, 0.2f, 1.0f };
+
+// One spectral-envelope spectrogram of the given pixel height, with the
+// draggable time anchors overlaid. `is_base` selects which side of each
+// anchor pair this plot edits.
+void draw_spectrogram(App& app, Track& tr, bool is_base, float height) {
     ImGui::PushID(&tr);
     ImGui::TextUnformatted(tr.name.c_str());
 
@@ -185,11 +206,31 @@ void draw_spectrogram(Track& tr, float height) {
 
     if (ImPlot::BeginPlot("##spec", ImVec2(plot_w, height))) {
         ImPlot::SetupAxes("時間 [s]", "周波数 [Hz]");
-        ImPlot::SetupAxisLimits(ImAxis_X1, 0, sp.duration, ImPlotCond_Always);
-        ImPlot::SetupAxisLimits(ImAxis_Y1, 0, sp.fs / 2.0, ImPlotCond_Always);
+        // Once (not Always) so the user can zoom/pan to place anchors precisely.
+        ImPlot::SetupAxisLimits(ImAxis_X1, 0, sp.duration, ImPlotCond_Once);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, 0, sp.fs / 2.0, ImPlotCond_Once);
         // Pre-baked texture: one quad regardless of the bin * frame count.
         ImPlot::PlotImage(
           "##env", static_cast<ImTextureID>(tr.tex), ImPlotPoint(0, 0), ImPlotPoint(sp.duration, sp.fs / 2.0));
+
+        // Draggable time anchors. DragLineX stays interactive (movable) rather
+        // than being baked into the draw list.
+        bool any_active = false;
+        for (std::size_t i = 0; i < app.anchors.size(); ++i) {
+            double* xp      = is_base ? &app.anchors[i].base_t : &app.anchors[i].target_t;
+            bool    hovered = false, held = false;
+            ImPlot::DragLineX(
+              static_cast<int>(i), xp, kAnchorCol, 2.0f, ImPlotDragToolFlags_None, nullptr, &hovered, &held);
+            ImPlot::TagX(*xp, kAnchorCol, "%.2f", *xp);
+            any_active |= hovered || held;
+        }
+
+        // Left-click on empty plot area adds a new anchor pair at that time
+        // (same time on both tracks initially).
+        if (ImPlot::IsPlotHovered() && !any_active && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            const double t = std::clamp(ImPlot::GetPlotMousePos().x, 0.0, sp.duration);
+            app.anchors.push_back(Anchor { t, t });
+        }
         ImPlot::EndPlot();
     }
     ImGui::SameLine();
@@ -205,9 +246,9 @@ void draw_right_panel(App& app) {
     const float avail_h  = ImGui::GetContentRegionAvail().y;
     const float each_h   = std::max(140.0f, (avail_h - labels_h - 12.0f) / 2.0f);
 
-    draw_spectrogram(app.base, each_h);
+    draw_spectrogram(app, app.base, /*is_base=*/true, each_h);
     ImGui::Spacing();
-    draw_spectrogram(app.target, each_h);
+    draw_spectrogram(app, app.target, /*is_base=*/false, each_h);
 }
 
 }    // namespace
@@ -237,6 +278,10 @@ int main() {
     ImPlot::CreateContext();
     ImGui::StyleColorsDark();
     load_japanese_font();
+
+    // Free the left mouse button for anchor placement / dragging by moving the
+    // plot pan gesture onto the middle button.
+    ImPlot::GetInputMap().Pan = ImGuiMouseButton_Middle;
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
