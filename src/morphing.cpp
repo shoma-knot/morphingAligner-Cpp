@@ -124,15 +124,19 @@ double morph_f0(double fb, double ft, double r) {
 }
 
 // 1つの時間アンカーの周波数アンカーから、全ビン分の「モーフ周波数 → base/target 周波数」
-// 写像を作る。fam_i=(1-fx)bf_i+fx tf_i を折れ線ノードとし、各ビンの fm を線形逆写像する。
+// 写像を作る。MATLAB に合わせ log 周波数で処理する: モーフ後のアンカー位置を
+// exp((1-fx)log bf + fx log tf)（幾何平均）とし、各ビンの fm を log 周波数で線形逆写像。
 // MATLAB の freqAxisOnObj(:,jj) 相当（時間アンカーごとに1本の写像ベクトルを持たせる）。
 void build_freq_warp(const std::vector<FreqAnchor>* freqs, double fx, int nbin, int fft_size, int fs,
                      double nyquist, std::vector<double>& outB, std::vector<double>& outT) {
-    std::vector<double> bf { 0.0 }, tf { 0.0 };
+    // log を取るため 0Hz を避ける下限。低域端ノードに使う。
+    constexpr double kFloor = 1.0;    // Hz
+
+    std::vector<double> bf { kFloor }, tf { kFloor };
     if (freqs != nullptr) {
         std::vector<std::pair<double, double>> fp;
         for (const FreqAnchor& f : *freqs)
-            if (f.base_f > 0.0 && f.base_f < nyquist && f.target_f > 0.0 && f.target_f < nyquist)
+            if (f.base_f > kFloor && f.base_f < nyquist && f.target_f > kFloor && f.target_f < nyquist)
                 fp.emplace_back(f.base_f, f.target_f);
         std::sort(fp.begin(), fp.end());
         for (const auto& p : fp) {
@@ -143,19 +147,31 @@ void build_freq_warp(const std::vector<FreqAnchor>* freqs, double fx, int nbin, 
     bf.push_back(nyquist);
     tf.push_back(nyquist);
 
-    std::vector<double> fam(bf.size());
-    for (std::size_t i = 0; i < bf.size(); ++i) fam[i] = (1.0 - fx) * bf[i] + fx * tf[i];
+    // 折れ線ノードを log 周波数で保持。モーフ位置は log の重み和（＝幾何平均）。
+    const std::size_t   n = bf.size();
+    std::vector<double> lbf(n), ltf(n), lfam(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        lbf[i]  = std::log(bf[i]);
+        ltf[i]  = std::log(tf[i]);
+        lfam[i] = (1.0 - fx) * lbf[i] + fx * ltf[i];
+    }
 
     outB.resize(nbin);
     outT.resize(nbin);
     int j = 0;
     for (int b = 0; b < nbin; ++b) {
         const double fm = static_cast<double>(b) * fs / fft_size;
-        while (j < static_cast<int>(fam.size()) - 2 && fm > fam[j + 1]) ++j;
-        const double denom = std::max(fam[j + 1] - fam[j], 1e-9);
-        const double g     = std::clamp((fm - fam[j]) / denom, 0.0, 1.0);
-        outB[b]            = bf[j] + g * (bf[j + 1] - bf[j]);
-        outT[b]            = tf[j] + g * (tf[j + 1] - tf[j]);
+        if (fm <= kFloor) {    // DC〜下限は恒等（log 不可のため）
+            outB[b] = fm;
+            outT[b] = fm;
+            continue;
+        }
+        const double lm = std::log(fm);
+        while (j < static_cast<int>(n) - 2 && lm > lfam[j + 1]) ++j;
+        const double denom = std::max(lfam[j + 1] - lfam[j], 1e-9);
+        const double g     = std::clamp((lm - lfam[j]) / denom, 0.0, 1.0);
+        outB[b]            = std::exp(lbf[j] + g * (lbf[j + 1] - lbf[j]));
+        outT[b]            = std::exp(ltf[j] + g * (ltf[j + 1] - ltf[j]));
     }
 }
 
