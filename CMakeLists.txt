@@ -1,0 +1,30 @@
+cmake_minimum_required(VERSION 3.0.0)
+project(morphingAlignerCpp VERSION 0.1.0)
+set(CMAKE_CXX_STANDARD 17)
+cmake_policy(SET CMP0074 NEW)
+
+set(CMAKE_CXX_FLAGS "-fPIC -O2")
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(LIBRARY_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/lib)
+set(EXECUTABLE_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/bin)
+
+find_package(imgui CONFIG REQUIRED)
+find_package(implot CONFIG REQUIRED)
+find_package(glfw3 CONFIG REQUIRED)
+find_package(OpenGL REQUIRED)
+find_package(tinyfiledialogs CONFIG REQUIRED)
+add_subdirectory(third-party/miniaudio_cpp)
+set(WORLD_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory(third-party/world)
+
+
+file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*)
+add_executable(main ${SOURCES})
+target_link_libraries(main PRIVATE
+    imgui::imgui
+    implot::implot
+    glfw
+    OpenGL::GL
+    tinyfiledialogs::tinyfiledialogs
+    miniaudio_cpp
+    world::core)
