@@ -24,8 +24,13 @@
 ## ファイル構成（自作分）
 
 - `src/analysis.hpp` / `src/analysis.cpp` — 音声ファイル → スペクトル包絡スペクトログラムの解析（GL非依存）
-- `src/main.cpp` — GUI（ウィンドウ、パネル、描画、再生）
+- `src/app.hpp` / `src/app.cpp` — 状態モデル（`Anchor`/`Track`/`App`）、`load_track`、
+  テクスチャ生成、共有 `kColormap`
+- `src/ui.hpp` / `src/ui.cpp` — 描画（`draw_left_panel`/`draw_right_panel` と内部ヘルパ、
+  `EdgePoint`/`kAnchorCol`）
+- `src/main.cpp` — プラットフォーム初期化（GLFW/ImGui/ImPlot）、フォント、メインループ
 - `CMakeLists.txt` / `vcpkg.json` / `CMakePresets.json` / `vcpkg-configuration.json` — ビルド構成
+  - `src/*` を再帰 glob（`CONFIGURE_DEPENDS`）するのでファイル追加時の CMake 変更は不要。
 
 ## 実装済み機能
 
