@@ -20,7 +20,6 @@ constexpr ImPlotColormap kColormap = ImPlotColormap_Viridis;
 struct Track {
     std::string  name;       // "base" / "target", shown in dialog + labels
     std::string  path;       // loaded file ("" = none)
-    std::string  status;     // last message for this track
     Spectrogram  spec;       // spectral envelope
     unsigned int tex = 0;    // baked GPU texture
     double       y_min = 0;  // frequency-axis view range [Hz]; zoomable over the
@@ -58,14 +57,12 @@ struct App {
     Track               base { "base" };
     Track               target { "target" };
     std::vector<Anchor> anchors;    // base<->target time correspondences
-    std::string         session_status;    // セッション保存/読み込みの結果メッセージ
     float               morph_rate = 0.5f;    // モーフィング率（0=base, 1=target）
-    std::string         morph_status;         // モーフィングの結果メッセージ
 };
 
 // ファイルダイアログで `tr` を選び、解析してテクスチャを (再)生成する。
 void load_track(Track& tr);
 
-// 指定パスを解析してテクスチャを (再)生成する。成功で true、失敗時は tr を初期化し
-// `tr.status` にエラーを入れる。セッション読み込みからも使う。
+// 指定パスを解析してテクスチャを (再)生成する。成功で true、失敗時は tr を初期化する。
+// 結果は applog に出力。セッション読み込みからも使う。
 bool load_track_from_path(Track& tr, const std::string& path);

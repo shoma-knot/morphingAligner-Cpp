@@ -13,6 +13,7 @@
 
 #include "anchors.hpp"
 #include "app.hpp"
+#include "log.hpp"
 #include "morphing.hpp"
 #include "session.hpp"
 
@@ -38,7 +39,7 @@ void draw_track_controls(App& app, Track& tr, const char* label) {
         try {
             app.engine.play_oneshot(tr.path);
         } catch (const std::exception& e) {
-            tr.status = std::string { "再生失敗: " } + e.what();
+            applog::add(tr.name + " 再生失敗: " + e.what());
         }
     }
     ImGui::EndDisabled();
@@ -49,7 +50,6 @@ void draw_track_controls(App& app, Track& tr, const char* label) {
     } else {
         ImGui::TextDisabled("未読み込み");
     }
-    if (!tr.status.empty()) ImGui::TextWrapped("%s", tr.status.c_str());
     ImGui::PopID();
 }
 
@@ -149,8 +149,6 @@ void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vect
     ImGui::PopID();
 }
 
-}    // namespace
-
 void draw_left_panel(App& app) {
     ImGui::TextUnformatted("操作");
     ImGui::Separator();
@@ -182,14 +180,13 @@ void draw_left_panel(App& app) {
     ImGui::BeginDisabled(!(app.base.loaded() && app.target.loaded()));
     if (ImGui::Button("セッション保存", ImVec2(-1, 0))) {
         if (const char* p = tinyfd_saveFileDialog("セッションを保存", kDefaultPath.c_str(), 1, kJsonFilter, "JSON"))
-            save_session(app, p, app.session_status);
+            save_session(app, p);
     }
     ImGui::EndDisabled();
     if (ImGui::Button("セッション読み込み", ImVec2(-1, 0))) {
         if (const char* p = tinyfd_openFileDialog("セッションを読み込み", kDefaultPath.c_str(), 1, kJsonFilter, "JSON", 0))
-            load_session(app, p, app.session_status);
+            load_session(app, p);
     }
-    if (!app.session_status.empty()) ImGui::TextWrapped("%s", app.session_status.c_str());
 
     // ── モーフィング ─────────────────────────────────────────
     ImGui::Spacing();
@@ -200,29 +197,29 @@ void draw_left_panel(App& app) {
     // 注: morphing() は同期実行（Harvest 等で数秒かかり UI が一瞬固まる）。
     if (ImGui::Button("生成して再生", ImVec2(-1, 0))) {
         // UI は一律操作: 全軸に同じ率を渡す。
+        applog::add("モーフィング生成中... (rate=" + std::to_string(app.morph_rate) + ")");
         const MorphResult mr =
           morphing(app.base.path, app.target.path, app.anchors, MorphRates::uniform(app.morph_rate));
         if (!mr.ok()) {
-            app.morph_status = mr.error;
+            applog::add(mr.error);
         } else {
             std::error_code   ec;
             const auto        dir = std::filesystem::current_path(ec);
             const std::string out = (ec ? std::filesystem::path("morph.wav") : dir / "morph.wav").string();
             std::string       werr;
             if (write_wav(out, mr.wave, mr.fs, werr)) {
-                app.morph_status = "生成: " + out;
+                applog::add("モーフィング生成: " + out);
                 try {
                     app.engine.play_oneshot(out);
                 } catch (const std::exception& e) {
-                    app.morph_status = std::string { "再生失敗: " } + e.what();
+                    applog::add(std::string { "再生失敗: " } + e.what());
                 }
             } else {
-                app.morph_status = "WAV 書き込み失敗: " + werr;
+                applog::add("WAV 書き込み失敗: " + werr);
             }
         }
     }
     ImGui::EndDisabled();
-    if (!app.morph_status.empty()) ImGui::TextWrapped("%s", app.morph_status.c_str());
 }
 
 void draw_right_panel(App& app) {
@@ -236,4 +233,51 @@ void draw_right_panel(App& app) {
     draw_spectrogram(app, app.target, /*is_base=*/false, each_h, target_edges);
 
     draw_anchor_connectors(base_edges, target_edges);
+}
+
+// 画面下部の動作ログ領域。applog の内容を古い順に表示し、最下部にいるときは自動追従。
+void draw_log_panel() {
+    ImGui::TextUnformatted("ログ");
+    ImGui::Separator();
+
+    ImGui::BeginChild("log_scroll", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+    for (const std::string& line : applog::lines()) ImGui::TextUnformatted(line.c_str());
+    if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) ImGui::SetScrollHereY(1.0f);
+    ImGui::EndChild();
+}
+
+}    // namespace
+
+void draw_root(App& app) {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->WorkPos);
+    ImGui::SetNextWindowSize(vp->WorkSize);
+    ImGui::Begin("root", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove
+                   | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoCollapse);
+
+    // 縦 8:2 分割: 上=操作/表示（左1:右4）、下=動作ログ。
+    const float avail_h = ImGui::GetContentRegionAvail().y;
+    const float log_h   = std::max(100.0f, avail_h * 0.2f);
+    const float top_h   = avail_h - log_h - ImGui::GetStyle().ItemSpacing.y;
+
+    ImGui::BeginChild("top", ImVec2(0, top_h), false);
+    {
+        const float avail  = ImGui::GetContentRegionAvail().x;
+        const float left_w = avail * (1.0f / 5.0f);
+        ImGui::BeginChild("left", ImVec2(left_w, 0), true);
+        draw_left_panel(app);
+        ImGui::EndChild();
+        ImGui::SameLine();
+        ImGui::BeginChild("right", ImVec2(0, 0), true);
+        draw_right_panel(app);
+        ImGui::EndChild();
+    }
+    ImGui::EndChild();
+
+    ImGui::BeginChild("log", ImVec2(0, 0), true);
+    draw_log_panel();
+    ImGui::EndChild();
+
+    ImGui::End();
 }

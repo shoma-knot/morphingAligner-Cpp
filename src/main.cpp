@@ -10,6 +10,7 @@
 #include <GLFW/glfw3.h>
 
 #include "app.hpp"
+#include "log.hpp"
 #include "ui.hpp"
 
 namespace {
@@ -69,6 +70,7 @@ int main() {
 
     try {
         App app;
+        applog::add("起動しました");
 
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
@@ -77,29 +79,7 @@ int main() {
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
 
-            // Single full-viewport window split 1:4 into two columns.
-            const ImGuiViewport* vp = ImGui::GetMainViewport();
-            ImGui::SetNextWindowPos(vp->WorkPos);
-            ImGui::SetNextWindowSize(vp->WorkSize);
-            ImGui::Begin(
-              "root", nullptr,
-              ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove
-                | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoCollapse);
-
-            const float avail  = ImGui::GetContentRegionAvail().x;
-            const float left_w = avail * (1.0f / 5.0f);
-
-            ImGui::BeginChild("left", ImVec2(left_w, 0), true);
-            draw_left_panel(app);
-            ImGui::EndChild();
-
-            ImGui::SameLine();
-
-            ImGui::BeginChild("right", ImVec2(0, 0), true);
-            draw_right_panel(app);
-            ImGui::EndChild();
-
-            ImGui::End();
+            draw_root(app);
 
             ImGui::Render();
             int w, h;

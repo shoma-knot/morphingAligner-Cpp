@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include "app.hpp"
+#include "log.hpp"
 
 using json = nlohmann::json;
 
@@ -21,7 +22,7 @@ bool file_readable(const std::string& path) {
 
 }    // namespace
 
-bool save_session(const App& app, const std::string& path, std::string& msg) {
+bool save_session(const App& app, const std::string& path) {
     json j;
     j["version"] = kSchemaVersion;
     j["waves"]   = { { "base", app.base.path }, { "target", app.target.path } };
@@ -40,18 +41,18 @@ bool save_session(const App& app, const std::string& path, std::string& msg) {
 
     std::ofstream os(path);
     if (!os) {
-        msg = "保存失敗: ファイルを開けません";
+        applog::add("セッション保存失敗: ファイルを開けません: " + path);
         return false;
     }
     os << j.dump(2) << '\n';
-    msg = "保存しました: " + path;
+    applog::add("セッション保存しました: " + path);
     return true;
 }
 
-bool load_session(App& app, const std::string& path, std::string& msg) {
+bool load_session(App& app, const std::string& path) {
     std::ifstream is(path);
     if (!is) {
-        msg = "読み込み失敗: ファイルを開けません";
+        applog::add("セッション読み込み失敗: ファイルを開けません: " + path);
         return false;
     }
 
@@ -59,7 +60,7 @@ bool load_session(App& app, const std::string& path, std::string& msg) {
     try {
         is >> j;
     } catch (const std::exception& e) {
-        msg = std::string { "読み込み失敗: JSON 解析エラー: " } + e.what();
+        applog::add(std::string { "セッション読み込み失敗: JSON 解析エラー: " } + e.what());
         return false;
     }
 
@@ -68,17 +69,17 @@ bool load_session(App& app, const std::string& path, std::string& msg) {
         base_path   = j.at("waves").at("base").get<std::string>();
         target_path = j.at("waves").at("target").get<std::string>();
     } catch (const std::exception& e) {
-        msg = std::string { "読み込み失敗: waves が不正: " } + e.what();
+        applog::add(std::string { "セッション読み込み失敗: waves が不正: " } + e.what());
         return false;
     }
 
     // 音声ファイルの存在を先に確認（片方だけ復元して中途半端な状態になるのを防ぐ）。
     if (!file_readable(base_path)) {
-        msg = "読み込み失敗: base 音声が見つかりません: " + base_path;
+        applog::add("セッション読み込み失敗: base 音声が見つかりません: " + base_path);
         return false;
     }
     if (!file_readable(target_path)) {
-        msg = "読み込み失敗: target 音声が見つかりません: " + target_path;
+        applog::add("セッション読み込み失敗: target 音声が見つかりません: " + target_path);
         return false;
     }
 
@@ -94,21 +95,15 @@ bool load_session(App& app, const std::string& path, std::string& msg) {
             anchors.push_back(std::move(a));
         }
     } catch (const std::exception& e) {
-        msg = std::string { "読み込み失敗: anchors が不正: " } + e.what();
+        applog::add(std::string { "セッション読み込み失敗: anchors が不正: " } + e.what());
         return false;
     }
 
-    // 音声を復元（デコード失敗などはここで検出）。
-    if (!load_track_from_path(app.base, base_path)) {
-        msg = "読み込み失敗: base 音声を開けません: " + base_path;
-        return false;
-    }
-    if (!load_track_from_path(app.target, target_path)) {
-        msg = "読み込み失敗: target 音声を開けません: " + target_path;
-        return false;
-    }
+    // 音声を復元（デコード失敗などはここで検出。詳細は load_track_from_path が applog に出す）。
+    if (!load_track_from_path(app.base, base_path)) return false;
+    if (!load_track_from_path(app.target, target_path)) return false;
 
     app.anchors = std::move(anchors);
-    msg         = "読み込みました: " + path;
+    applog::add("セッション読み込みました: " + path);
     return true;
 }

@@ -158,6 +158,13 @@ Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋�
    `(1-r, r)`（機能的にはその部分集合）。
 6. 境界: MATLAB は線形 extrap／現状は端クランプ（軽微）。
 
+### 動作ログ領域（`log.cpp` / `ui.cpp`）
+- グローバルな `applog`（`add`/`lines`/`clear`、`[HH:MM:SS]` 付き）を導入。
+- `Track::status`・`App::session_status`・`App::morph_status` を廃止し、読み込み/再生/セッション/
+  モーフィングの結果はすべて `applog::add` に集約（各パネルの個別ステータス表示は撤去）。
+- レイアウトを `draw_root` に集約し縦 **8:2**（上=操作/表示 左1:右4、下=ログ）。ログは横スクロール可、
+  最下部にいるとき自動追従。`ui.hpp` の公開は `draw_root` のみ。`main.cpp` は `draw_root(app)` を呼ぶだけ。
+
 ## ビルド / 実行
 
 ```sh

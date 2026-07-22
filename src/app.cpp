@@ -9,6 +9,8 @@
 #include <GLFW/glfw3.h>
 #include <tinyfiledialogs.h>
 
+#include "log.hpp"
+
 namespace {
 
 // Bake the dB spectrogram into an RGBA OpenGL texture once. Drawing it then
@@ -63,17 +65,17 @@ bool load_track_from_path(Track& tr, const std::string& path) {
         tr.tex = 0;
     }
     try {
-        tr.spec   = analyze_file(path);
-        tr.tex    = make_spectrogram_texture(tr.spec);
-        tr.y_min  = 0.0;                  // reset the frequency-axis view
-        tr.y_max  = tr.spec.fs / 2.0;
-        tr.path   = path;
-        tr.status = "読み込み完了";
+        tr.spec  = analyze_file(path);
+        tr.tex   = make_spectrogram_texture(tr.spec);
+        tr.y_min = 0.0;                  // reset the frequency-axis view
+        tr.y_max = tr.spec.fs / 2.0;
+        tr.path  = path;
+        applog::add(tr.name + " 読み込み完了: " + path);
         return true;
     } catch (const std::exception& e) {
         tr.spec = {};
         tr.path.clear();
-        tr.status = std::string { "読み込み失敗: " } + e.what();
+        applog::add(tr.name + " 読み込み失敗: " + e.what());
         return false;
     }
 }
