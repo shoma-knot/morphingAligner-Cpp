@@ -138,6 +138,14 @@ Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋�
 - 既知の制約: (1)同期実行で数秒 UI が固まる。(2)fs 不一致は未対応。(3)F0 は最近傍
   フレームサンプル。MATLAB との差分は下の「## MATLAB版との差分」を参照。
 
+### スペクトログラムの周波数軸を ERB 尺度に（`freqscale.hpp` ほか）
+- 表示の周波数軸を **ERB レート**尺度に（低域が広がり聴覚的に自然）。`freqscale::hz_to_erb`/
+  `erb_to_hz`（Glasberg & Moore 1990）に変換を集約。
+- テクスチャ(`app.cpp`)は各行を ERB 等間隔で再サンプル。Y軸座標は ERB レート、目盛りは
+  `SetupAxisFormat` で Hz 表示。目盛り位置は **1-2-5 系列**（100,200,500,1000,…）で高域の密集を回避。
+- `tr.y_min/y_max` と周波数アンカーの表示/入力（`DragPoint`）も ERB 基準に（アンカー値自体は Hz 保持
+  なのでセッション互換。モーフィング処理は Hz のままで無関係）。
+
 ## MATLAB版との差分
 
 `generalizedTCmorphing.m` を精読して現状実装と比較した結果（2026-07-21）。

@@ -9,6 +9,7 @@
 #include <implot.h>
 
 #include "app.hpp"
+#include "freqscale.hpp"
 
 namespace {
 
@@ -40,9 +41,12 @@ void draw_freq_points(App& app, bool is_base, const Spectrogram& sp, const ImPlo
             double    fx  = is_base ? a.base_t : a.target_t;    // 線に固定（毎フレーム再設定）
             double*   fy  = is_base ? &a.freqs[j].base_f : &a.freqs[j].target_f;
             const int fid = (static_cast<int>(i) + 1) * 4096 + static_cast<int>(j);
-            bool      h = false, held = false;
-            ImPlot::DragPoint(fid, &fx, fy, kAnchorCol, 5.0f, flags, nullptr, &h, &held);
-            *fy = std::clamp(*fy, 0.0, sp.fs / 2.0);    // 範囲内に維持（fx は捨てて線上に固定）
+            // Y軸は ERB レートなので、保持している Hz を ERB にして DragPoint に渡し、
+            // ドラッグ結果（ERB）を Hz に戻す。
+            double ey = freqscale::hz_to_erb(*fy);
+            bool   h = false, held = false;
+            ImPlot::DragPoint(fid, &fx, &ey, kAnchorCol, 5.0f, flags, nullptr, &h, &held);
+            *fy = std::clamp(freqscale::erb_to_hz(ey), 0.0, sp.fs / 2.0);    // 範囲内に維持（fx は捨てて線上固定）
             if (h || held) {
                 any_active = true;
                 hover_fi   = static_cast<int>(i);
@@ -50,12 +54,13 @@ void draw_freq_points(App& app, bool is_base, const Spectrogram& sp, const ImPlo
             }
 
             // 時間アンカー内の並び順（1始まり）を点の脇に表示。base/target 同番号＝対応。
-            // 表示範囲外の点はラベルを出さない。
-            const double lx = is_base ? a.base_t : a.target_t;
+            // 表示範囲外の点はラベルを出さない。位置は ERB 座標。
+            const double lx  = is_base ? a.base_t : a.target_t;
+            const double eyl = freqscale::hz_to_erb(*fy);
             const bool   in_view =
-              lx >= lim.X.Min && lx <= lim.X.Max && *fy >= lim.Y.Min && *fy <= lim.Y.Max;
+              lx >= lim.X.Min && lx <= lim.X.Max && eyl >= lim.Y.Min && eyl <= lim.Y.Max;
             if (in_view)
-                ImPlot::Annotation(lx, *fy, kAnchorCol, ImVec2(8, -8), false, "%d", static_cast<int>(j) + 1);
+                ImPlot::Annotation(lx, eyl, kAnchorCol, ImVec2(8, -8), false, "%d", static_cast<int>(j) + 1);
         }
     }
 }
@@ -97,7 +102,8 @@ void handle_freq_input(App& app, bool is_base, const Spectrogram& sp, ImGuiIO& i
             }
         }
         if (nearest >= 0) {
-            const double f = std::clamp(ImPlot::GetPlotMousePos().y, 0.0, sp.fs / 2.0);
+            // クリック位置(Y=ERB)を Hz に変換して追加。
+            const double f = std::clamp(freqscale::erb_to_hz(ImPlot::GetPlotMousePos().y), 0.0, sp.fs / 2.0);
             app.anchors[nearest].freqs.push_back(FreqAnchor { f, f });
         }
     }

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <exception>
 #include <filesystem>
 #include <string>
@@ -13,11 +14,17 @@
 
 #include "anchors.hpp"
 #include "app.hpp"
+#include "freqscale.hpp"
 #include "log.hpp"
 #include "morphing.hpp"
 #include "session.hpp"
 
 namespace {
+
+// Y軸（ERB レート）の目盛りを実周波数 [Hz] で表示するフォーマッタ。
+int erb_hz_formatter(double erb, char* buff, int size, void*) {
+    return std::snprintf(buff, size, "%.0f", freqscale::erb_to_hz(erb));
+}
 
 // セッションの既定保存パス。実行ファイルのパス取得は OS 固有になるため、移植性を優先
 // してカレントディレクトリ（多くは起動ディレクトリ＝バイナリのある場所）を使う。
@@ -68,10 +75,13 @@ void handle_freq_axis_input(Track& tr, const Spectrogram& sp) {
     //     でホバーが切り替わり、もう片方のプロットがパンし始めることがある。
     //   - Y 側の新しい操作（fit・links・2本目のY軸）や Lock の解除で、ImPlot
     //     の軸状態と自前状態が静かにデシンクする。
-    //   - ズーム/パンの計算は Y が線形・非反転・[0, fs/2] である前提。
+    //   - ズーム/パンの計算は Y が線形・非反転・[0, ERB(fs/2)] である前提
+    //     （Y軸座標は ERB レート。tr.y_min/max も ERB 単位）。
     // 拡張するなら、この手組みを伸ばすより ImPlot に軸を任せる方向（軸ごとの
     // 入力フラグ / リンクされた limits 等）を優先すること。
     // ────────────────────────────────────────────────────────────────
+
+    const double erb_max = freqscale::hz_to_erb(sp.fs / 2.0);    // Y軸の上限（ERB）
 
     // 周波数軸ラベル上でのホイールは、カーソル位置を中心に Y をズームする。
     // （プロット領域上のホイールは Y が Lock されているので X しか動かない）
@@ -80,8 +90,8 @@ void handle_freq_axis_input(Track& tr, const Spectrogram& sp) {
         const double yc     = ImPlot::GetPlotMousePos().y;
         const double factor = std::pow(1.0 - ImPlot::GetInputMap().ZoomRate, static_cast<double>(io.MouseWheel));
         double       lo     = std::max(0.0, yc + (tr.y_min - yc) * factor);
-        double       hi     = std::min(sp.fs / 2.0, yc + (tr.y_max - yc) * factor);
-        if (hi - lo > 1.0) {    // keep at least a 1 Hz span
+        double       hi     = std::min(erb_max, yc + (tr.y_max - yc) * factor);
+        if (hi - lo > 0.05) {    // 最小スパン（ERB 単位）
             tr.y_min = lo;
             tr.y_max = hi;
         }
@@ -93,7 +103,7 @@ void handle_freq_axis_input(Track& tr, const Spectrogram& sp) {
     if (ImPlot::IsPlotHovered() && ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
         const double h     = ImPlot::GetPlotSize().y;
         double       delta = io.MouseDelta.y / h * (tr.y_max - tr.y_min);
-        delta              = std::clamp(delta, -tr.y_min, sp.fs / 2.0 - tr.y_max);
+        delta              = std::clamp(delta, -tr.y_min, erb_max - tr.y_max);
         tr.y_min += delta;
         tr.y_max += delta;
     }
@@ -128,14 +138,27 @@ void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vect
         // 周波数軸を Lock し、プロット領域上のホイールが時間(X)だけをズームするようにする。
         // Y の表示範囲は自前の状態(tr.y_min/max)で駆動し、軸ラベル上ホバー時のみ手動ズーム。
         ImPlot::SetupAxes("時間 [s]", "周波数 [Hz]", ImPlotAxisFlags_None, ImPlotAxisFlags_Lock);
+        // Y軸は ERB レートを座標にし、目盛りは Hz で表示（テクスチャも ERB 等間隔）。
+        ImPlot::SetupAxisFormat(ImAxis_Y1, erb_hz_formatter);
+        // 目盛りは 1-2-5 系列（…100,200,500,1000,2000,5000,…）に。ERB 軸では高域が
+        // 圧縮されるので、値が大きいほど間隔を空けることでほぼ均等に並ぶ。ラベルは上の
+        // formatter が Hz 表示（位置は ERB 座標）。
+        const double        nyq = sp.fs / 2.0;
+        std::vector<double> yticks { freqscale::hz_to_erb(0.0) };    // 0Hz
+        for (double dec = 10.0; dec <= nyq; dec *= 10.0)
+            for (double m : { 1.0, 2.0, 5.0 }) {
+                const double hz = dec * m;
+                if (hz >= 100.0 && hz <= nyq) yticks.push_back(freqscale::hz_to_erb(hz));
+            }
+        ImPlot::SetupAxisTicks(ImAxis_Y1, yticks.data(), static_cast<int>(yticks.size()), nullptr, false);
         // X は初期のみ設定（以後ズーム/パン可）、Y は毎フレーム自前の表示範囲に追従。
         ImPlot::SetupAxisLimits(ImAxis_X1, 0, sp.duration, ImPlotCond_Once);
         ImPlot::SetupAxisLimits(ImAxis_Y1, tr.y_min, tr.y_max, ImPlotCond_Always);
         // 時間軸を [0, duration] 内に制約（データ範囲外へパン/ズームアウトさせない）。
         ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0, sp.duration);
-        // 焼き込み済みテクスチャ: bin * frame 数に依らず1クアッドで描画。
-        ImPlot::PlotImage(
-          "##env", static_cast<ImTextureID>(tr.tex), ImPlotPoint(0, 0), ImPlotPoint(sp.duration, sp.fs / 2.0));
+        // 焼き込み済みテクスチャ: bin * frame 数に依らず1クアッドで描画。Y は ERB レート範囲。
+        ImPlot::PlotImage("##env", static_cast<ImTextureID>(tr.tex), ImPlotPoint(0, 0),
+                          ImPlotPoint(sp.duration, freqscale::hz_to_erb(sp.fs / 2.0)));
 
         handle_freq_axis_input(tr, sp);
         draw_anchors(app, is_base, sp, out_edges);
