@@ -1,6 +1,7 @@
 #include "ui.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <exception>
@@ -24,6 +25,19 @@ namespace {
 // Y軸（ERB レート）の目盛りを実周波数 [Hz] で表示するフォーマッタ。
 int erb_hz_formatter(double erb, char* buff, int size, void*) {
     return std::snprintf(buff, size, "%.0f", freqscale::erb_to_hz(erb));
+}
+
+// Y軸（ERB レート）に 1-2-5 系列（…100,200,500,1000,…）の目盛りとHz表示を設定する。
+// ERB 軸では高域が圧縮されるので、値が大きいほど間隔を空けることでほぼ均等に並ぶ。
+void setup_erb_yaxis_ticks(double nyq) {
+    ImPlot::SetupAxisFormat(ImAxis_Y1, erb_hz_formatter);
+    std::vector<double> yticks { freqscale::hz_to_erb(0.0) };    // 0Hz
+    for (double dec = 10.0; dec <= nyq; dec *= 10.0)
+        for (double m : { 1.0, 2.0, 5.0 }) {
+            const double hz = dec * m;
+            if (hz >= 100.0 && hz <= nyq) yticks.push_back(freqscale::hz_to_erb(hz));
+        }
+    ImPlot::SetupAxisTicks(ImAxis_Y1, yticks.data(), static_cast<int>(yticks.size()), nullptr, false);
 }
 
 // セッションの既定保存パス。実行ファイルのパス取得は OS 固有になるため、移植性を優先
@@ -173,18 +187,7 @@ void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vect
         // Y の表示範囲は自前の状態(tr.y_min/max)で駆動し、軸ラベル上ホバー時のみ手動ズーム。
         ImPlot::SetupAxes("時間 [s]", "周波数 [Hz]", ImPlotAxisFlags_None, ImPlotAxisFlags_Lock);
         // Y軸は ERB レートを座標にし、目盛りは Hz で表示（テクスチャも ERB 等間隔）。
-        ImPlot::SetupAxisFormat(ImAxis_Y1, erb_hz_formatter);
-        // 目盛りは 1-2-5 系列（…100,200,500,1000,2000,5000,…）に。ERB 軸では高域が
-        // 圧縮されるので、値が大きいほど間隔を空けることでほぼ均等に並ぶ。ラベルは上の
-        // formatter が Hz 表示（位置は ERB 座標）。
-        const double        nyq = sp.fs / 2.0;
-        std::vector<double> yticks { freqscale::hz_to_erb(0.0) };    // 0Hz
-        for (double dec = 10.0; dec <= nyq; dec *= 10.0)
-            for (double m : { 1.0, 2.0, 5.0 }) {
-                const double hz = dec * m;
-                if (hz >= 100.0 && hz <= nyq) yticks.push_back(freqscale::hz_to_erb(hz));
-            }
-        ImPlot::SetupAxisTicks(ImAxis_Y1, yticks.data(), static_cast<int>(yticks.size()), nullptr, false);
+        setup_erb_yaxis_ticks(sp.fs / 2.0);
         // X は初期のみ設定（以後ズーム/パン可）、Y は毎フレーム自前の表示範囲に追従。
         ImPlot::SetupAxisLimits(ImAxis_X1, 0, sp.duration, ImPlotCond_Once);
         ImPlot::SetupAxisLimits(ImAxis_Y1, tr.y_min, tr.y_max, ImPlotCond_Always);
@@ -258,51 +261,7 @@ void draw_left_panel(App& app) {
         if (const char* p = tinyfd_openFileDialog("セッションを読み込み", kDefaultPath.c_str(), 1, kJsonFilter, "JSON", 0))
             load_session(app, p);
     }
-
-    // ── モーフィング ─────────────────────────────────────────
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::TextUnformatted("モーフィング");
-    static const char* kWavFilter[] = { "*.wav" };
-    ImGui::SliderFloat("率(0=base,1=target)", &app.morph_rate, 0.0f, 1.0f, "%.2f");
-    ImGui::BeginDisabled(!(app.base.loaded() && app.target.loaded()));
-    // 注: morphing() は同期実行（Harvest 等で数秒かかり UI が一瞬固まる）。
-    if (ImGui::Button("生成して再生", ImVec2(-1, 0))) {
-        // UI は一律操作: 全軸に同じ率を渡す。
-        applog::add("モーフィング生成中... (rate=" + std::to_string(app.morph_rate) + ")");
-        const MorphResult mr =
-          morphing(app.base.path, app.target.path, app.anchors, MorphRates::uniform(app.morph_rate));
-        if (!mr.ok()) {
-            applog::add(mr.error);
-        } else {
-            app.morph_wave = mr.wave;    // 保存用に保持
-            app.morph_fs   = mr.fs;
-            // ファイルを書かずメモリから直接再生（double→float）。
-            std::vector<float> pcm(mr.wave.size());
-            for (std::size_t i = 0; i < mr.wave.size(); ++i)
-                pcm[i] = static_cast<float>(std::clamp(mr.wave[i], -1.0, 1.0));
-            try {
-                app.engine.play_pcm(pcm.data(), pcm.size(), 1, static_cast<unsigned>(mr.fs));
-                applog::add("モーフィング生成・再生: " + std::to_string(mr.wave.size()) + " samples");
-            } catch (const std::exception& e) {
-                applog::add(std::string { "再生失敗: " } + e.what());
-            }
-        }
-    }
-    ImGui::EndDisabled();
-
-    // 直近の結果を WAV で保存（メモリ再生とは分離）。
-    ImGui::BeginDisabled(app.morph_wave.empty());
-    if (ImGui::Button("結果を WAV 保存", ImVec2(-1, 0))) {
-        if (const char* p = tinyfd_saveFileDialog("モーフィング結果を保存", "morph.wav", 1, kWavFilter, "WAV")) {
-            std::string werr;
-            if (write_wav(p, app.morph_wave, app.morph_fs, werr))
-                applog::add(std::string { "WAV 保存: " } + p);
-            else
-                applog::add("WAV 保存失敗: " + werr);
-        }
-    }
-    ImGui::EndDisabled();
+    // （モーフィング操作は「モーフィング」タブに移動）
 }
 
 void draw_right_panel(App& app) {
@@ -332,6 +291,199 @@ void draw_log_panel() {
     ImGui::EndChild();
 }
 
+// 「アライメント」タブ: 左=操作パネル（1）、右=スペクトログラム/アンカー編集（4）。
+void draw_align_tab(App& app) {
+    const float avail  = ImGui::GetContentRegionAvail().x;
+    const float left_w = avail * (1.0f / 5.0f);
+    ImGui::BeginChild("left", ImVec2(left_w, 0), true);
+    draw_left_panel(app);
+    ImGui::EndChild();
+    ImGui::SameLine();
+    ImGui::BeginChild("right", ImVec2(0, 0), true);
+    draw_right_panel(app);
+    ImGui::EndChild();
+}
+
+// double 値を [0,1] スライダーで編集。離した（編集完了）かどうかを返す。
+bool rate_slider(const char* label, double& v) {
+    float f = static_cast<float>(v);
+    if (ImGui::SliderFloat(label, &f, 0.0f, 1.0f, "%.2f")) v = f;
+    return ImGui::IsItemDeactivatedAfterEdit();
+}
+
+// 上段: 軸ごとの率スライダー（一括リンク切替つき）。
+// いずれかのスライダーを「離した」フレームで true を返す（→再合成のトリガ）。
+bool draw_morph_sliders(App& app) {
+    ImGui::TextUnformatted("モーフィング率 (0 = Base, 1 = Target)");
+    if (ImGui::Checkbox("全軸を一括操作", &app.morph_link) && app.morph_link)
+        app.morph_rates = MorphRates::uniform(app.morph_rates.tx);
+    ImGui::Separator();
+
+    bool released = false;
+    if (app.morph_link) {
+        float f = static_cast<float>(app.morph_rates.tx);
+        if (ImGui::SliderFloat("率 (全軸)", &f, 0.0f, 1.0f, "%.2f")) app.morph_rates = MorphRates::uniform(f);
+        released |= ImGui::IsItemDeactivatedAfterEdit();
+    } else {
+        released |= rate_slider("時間 (tx)", app.morph_rates.tx);
+        released |= rate_slider("周波数 (fx)", app.morph_rates.fx);
+        released |= rate_slider("F0 (fo)", app.morph_rates.fo);
+        released |= rate_slider("スペクトル (sl)", app.morph_rates.sl);
+        released |= rate_slider("非周期性 (ap)", app.morph_rates.ap);
+    }
+    return released;
+}
+
+// モーフィングを実行して morph_out を更新（同期実行。数秒 UI が固まる）。
+void regenerate_morph(App& app) {
+    applog::add("モーフィング生成中...");
+    const auto t0 = std::chrono::steady_clock::now();
+    app.morph_out = morphing_full(app.base.path, app.target.path, app.anchors, app.morph_rates);
+    const auto t1 = std::chrono::steady_clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    if (!app.morph_out.ok()) {
+        applog::add(app.morph_out.error);
+    } else {
+        char buf[128];
+        std::snprintf(buf, sizeof buf, "モーフィング生成: %zu samples (%.2f ms)", app.morph_out.wave.size(), ms);
+        applog::add(buf);
+    }
+    rebuild_morph_textures(app);    // sp/ap ヒートマップを更新（失敗時は解放のみ）
+}
+
+// 中段: base / morphed / target × f0 / sp / ap の 3×3 グリッド。
+// サブプロット（LinkAllX + LinkRows）で軸範囲を共有し、目盛りラベルは左端列と最下行のみ、
+// タイトルは最上行のみに出して隙間を最小化する。
+void draw_morph_plots(App& app) {
+    const MorphOutput& mo = app.morph_out;
+    if (mo.base.empty()) {
+        ImGui::TextDisabled("「生成して再生」するとここに base / morphed / target のプロットを表示します");
+        return;
+    }
+
+    // 共通レンジ: X は base/target の長い方、F0 は base/target の最大値、sp/ap は ERB 全域。
+    const double x_max  = std::max(mo.base.duration, mo.target.duration);
+    double       f0_max = 0.0;
+    for (double v : mo.base.f0) f0_max = std::max(f0_max, v);
+    for (double v : mo.target.f0) f0_max = std::max(f0_max, v);
+    const double y_f0     = f0_max > 0.0 ? f0_max * 1.1 : 500.0;
+    const double nyq      = mo.base.fs / 2.0;
+    const double erb_max  = freqscale::hz_to_erb(nyq);
+
+    const MorphChannel* chs[3]        = { &mo.base, &mo.morphed, &mo.target };
+    const char*         col_titles[3] = { "Base", "Morphed", "Target" };
+    const char*         row_ylabel[3] = { "F0 [Hz]", "SP [Hz]", "AP [Hz]" };
+
+    if (ImPlot::BeginSubplots("##morphgrid", 3, 3, ImVec2(-1, -1),
+                              ImPlotSubplotFlags_LinkAllX | ImPlotSubplotFlags_LinkRows
+                                | ImPlotSubplotFlags_NoMenus | ImPlotSubplotFlags_NoResize)) {
+        for (int row = 0; row < 3; ++row) {
+            for (int col = 0; col < 3; ++col) {
+                const MorphChannel& ch = *chs[col];
+
+                char label[32];
+                std::snprintf(label, sizeof label, "%s###cell%d%d", col_titles[col], row, col);
+                ImPlotFlags flags = ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect;
+                if (row != 0) flags |= ImPlotFlags_NoTitle;    // タイトルは最上行のみ
+
+                if (!ImPlot::BeginPlot(label, ImVec2(-1, 0), flags)) continue;
+
+                // 目盛りラベルは左端列・最下行のみ（位置は全セル共通なのでグリッドは揃う）。
+                const ImPlotAxisFlags xf = row == 2 ? ImPlotAxisFlags_None : ImPlotAxisFlags_NoTickLabels;
+                const ImPlotAxisFlags yf = col == 0 ? ImPlotAxisFlags_None : ImPlotAxisFlags_NoTickLabels;
+                ImPlot::SetupAxes(row == 2 ? "時間 [s]" : nullptr, col == 0 ? row_ylabel[row] : nullptr, xf, yf);
+                ImPlot::SetupAxisLimits(ImAxis_X1, 0, x_max, ImPlotCond_Always);
+                if (row == 0) {
+                    ImPlot::SetupAxisLimits(ImAxis_Y1, 0, y_f0, ImPlotCond_Always);
+                } else {
+                    ImPlot::SetupAxisLimits(ImAxis_Y1, 0, erb_max, ImPlotCond_Always);
+                    setup_erb_yaxis_ticks(nyq);    // 位置は全セル同じ、ラベル表示は yf が制御
+                }
+
+                if (row == 0) {
+                    // F0 ライン。
+                    std::vector<double> xs(ch.n_frames), ys(ch.n_frames);
+                    for (int i = 0; i < ch.n_frames; ++i) {
+                        xs[i] = i * ch.frame_period / 1000.0;
+                        ys[i] = ch.f0[i];    // 無声は 0
+                    }
+                    if (ch.n_frames > 0) ImPlot::PlotLine("F0", xs.data(), ys.data(), ch.n_frames);
+                } else {
+                    // sp / ap のヒートマップ（ERB 等間隔テクスチャ、色スケールは3枚共通）。
+                    const unsigned int tex = row == 1 ? app.morph_tex_sp[col] : app.morph_tex_ap[col];
+                    if (tex)
+                        ImPlot::PlotImage("##hm", static_cast<ImTextureID>(tex), ImPlotPoint(0, 0),
+                                          ImPlotPoint(ch.duration, erb_max));
+                }
+                ImPlot::EndPlot();
+            }
+        }
+        ImPlot::EndSubplots();
+    }
+}
+
+// wave をメモリから再生。
+void play_wave(App& app, const std::vector<double>& wave, int fs) {
+    std::vector<float> pcm(wave.size());
+    for (std::size_t i = 0; i < wave.size(); ++i) pcm[i] = static_cast<float>(std::clamp(wave[i], -1.0, 1.0));
+    try {
+        app.engine.play_pcm(pcm.data(), pcm.size(), 1, static_cast<unsigned>(fs));
+    } catch (const std::exception& e) {
+        applog::add(std::string { "再生失敗: " } + e.what());
+    }
+}
+
+// 下段: 出力設定（生成/再生/WAV保存）。
+void draw_morph_output(App& app) {
+    const bool ready = app.base.loaded() && app.target.loaded();
+    ImGui::BeginDisabled(!ready);
+    // 注: morphing_full() は同期実行（Harvest 等で数秒かかり UI が一瞬固まる）。
+    if (ImGui::Button("生成して再生")) {
+        regenerate_morph(app);
+        if (app.morph_out.ok()) play_wave(app, app.morph_out.wave, app.morph_out.fs);
+    }
+    ImGui::EndDisabled();
+
+    ImGui::SameLine();
+    ImGui::BeginDisabled(app.morph_out.wave.empty());
+    if (ImGui::Button("再生")) play_wave(app, app.morph_out.wave, app.morph_out.fs);
+    ImGui::SameLine();
+    if (ImGui::Button("WAV 保存")) {
+        static const char* kWavFilter[] = { "*.wav" };
+        if (const char* p = tinyfd_saveFileDialog("モーフィング結果を保存", "morph.wav", 1, kWavFilter, "WAV")) {
+            std::string werr;
+            if (write_wav(p, app.morph_out.wave, app.morph_out.fs, werr))
+                applog::add(std::string { "WAV 保存: " } + p);
+            else
+                applog::add("WAV 保存失敗: " + werr);
+        }
+    }
+    ImGui::EndDisabled();
+}
+
+// 「モーフィング」タブ: 4:4:1（上=スライダー / 中=プロット / 下=出力設定）。
+void draw_morph_tab(App& app) {
+    const float avail_h = ImGui::GetContentRegionAvail().y;
+    const float spacing = ImGui::GetStyle().ItemSpacing.y;
+    const float unit    = (avail_h - 2 * spacing) / 9.0f;
+
+    bool rates_released = false;
+    ImGui::BeginChild("morph_sliders", ImVec2(0, unit * 4), true);
+    rates_released = draw_morph_sliders(app);
+    ImGui::EndChild();
+
+    // スライダーを離したタイミングで再合成（音声読み込み済みのときのみ）。
+    if (rates_released && app.base.loaded() && app.target.loaded()) regenerate_morph(app);
+
+    ImGui::BeginChild("morph_plots", ImVec2(0, unit * 4), true);
+    draw_morph_plots(app);
+    ImGui::EndChild();
+
+    ImGui::BeginChild("morph_output", ImVec2(0, 0), true);
+    draw_morph_output(app);
+    ImGui::EndChild();
+}
+
 }    // namespace
 
 void draw_root(App& app) {
@@ -342,22 +494,22 @@ void draw_root(App& app) {
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove
                    | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoCollapse);
 
-    // 縦 8:2 分割: 上=操作/表示（左1:右4）、下=動作ログ。
+    // 縦 8:2 分割: 上=タブ（アライメント/モーフィング）、下=動作ログ（全タブ共通）。
     const float avail_h = ImGui::GetContentRegionAvail().y;
     const float log_h   = std::max(100.0f, avail_h * 0.2f);
-    const float top_h   = avail_h - log_h - ImGui::GetStyle().ItemSpacing.y;
+    const float tab_h   = avail_h - log_h - ImGui::GetStyle().ItemSpacing.y;
 
-    ImGui::BeginChild("top", ImVec2(0, top_h), false);
-    {
-        const float avail  = ImGui::GetContentRegionAvail().x;
-        const float left_w = avail * (1.0f / 5.0f);
-        ImGui::BeginChild("left", ImVec2(left_w, 0), true);
-        draw_left_panel(app);
-        ImGui::EndChild();
-        ImGui::SameLine();
-        ImGui::BeginChild("right", ImVec2(0, 0), true);
-        draw_right_panel(app);
-        ImGui::EndChild();
+    ImGui::BeginChild("tabarea", ImVec2(0, tab_h), false);
+    if (ImGui::BeginTabBar("tabs")) {
+        if (ImGui::BeginTabItem("アライメント")) {
+            draw_align_tab(app);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("モーフィング")) {
+            draw_morph_tab(app);
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
     }
     ImGui::EndChild();
 

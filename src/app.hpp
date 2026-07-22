@@ -11,6 +11,7 @@
 #include <miniaudio_cpp/audio.hpp>
 
 #include "analysis.hpp"
+#include "morphing.hpp"    // MorphRates / MorphOutput
 
 // Viridis, shared by the pre-baked spectrogram texture and the on-screen legend.
 constexpr ImPlotColormap kColormap = ImPlotColormap_Viridis;
@@ -60,13 +61,24 @@ struct App {
     Track               base { "base" };
     Track               target { "target" };
     std::vector<Anchor> anchors;    // base<->target time correspondences
-    float               morph_rate   = 0.5f;    // モーフィング率（0=base, 1=target）
     bool                show_minimap = false;    // スペクトログラムのミニマップ表示
 
-    // 直近のモーフィング結果（メモリ再生＋WAV保存用に保持）。
-    std::vector<double> morph_wave;
-    int                 morph_fs = 0;
+    // モーフィング（モーフィングタブ）。
+    MorphRates  morph_rates;            // 軸ごとの率（0=base, 1=target）
+    bool        morph_link = true;      // 全軸を一括操作するか
+    MorphOutput morph_out;              // 直近の結果（base/target/morphed の f0/sp/ap＋wave）
+
+    // モーフィングタブの sp/ap ヒートマップ用テクスチャ（0=base, 1=morphed, 2=target）。
+    unsigned int morph_tex_sp[3] = { 0, 0, 0 };
+    unsigned int morph_tex_ap[3] = { 0, 0, 0 };
+    double       morph_db_min = 0, morph_db_max = 0;    // sp 共通の dB レンジ
+
+    ~App();    // モーフィング用テクスチャを解放（app.cpp で定義）
 };
+
+// morph_out から sp/ap の6枚のテクスチャを作り直す（既存は解放）。
+// sp は base/morphed/target 共通の dB レンジで正規化する。
+void rebuild_morph_textures(App& app);
 
 // ファイルダイアログで `tr` を選び、解析してテクスチャを (再)生成する。
 void load_track(Track& tr);

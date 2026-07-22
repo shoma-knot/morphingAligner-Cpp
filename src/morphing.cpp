@@ -203,11 +203,27 @@ struct TimeAnchor {
     const std::vector<FreqAnchor>* freqs;    // nullptr = 周波数アンカーなし（境界）
 };
 
+// Analysis から表示用チャンネルへコピー。
+MorphChannel channel_from(const Analysis& A) {
+    MorphChannel c;
+    c.fs           = A.fs;
+    c.fft_size     = A.fft_size;
+    c.nbin         = A.nbin;
+    c.n_frames     = A.f0_len;
+    c.frame_period = kFramePeriod;
+    c.duration     = A.duration;
+    c.f0           = A.f0;
+    c.sp           = A.sp;
+    c.ap           = A.ap;
+    return c;
+}
+
 }    // namespace
 
-MorphResult morphing(const std::string& base_path, const std::string& target_path,
-                     const std::vector<Anchor>& anchors, const MorphRates& rates) {
-    MorphResult R;
+// 本体。want_data=true のとき base/target/morphed の中間データも詰める。
+static MorphOutput morph_impl(const std::string& base_path, const std::string& target_path,
+                              const std::vector<Anchor>& anchors, const MorphRates& rates, bool want_data) {
+    MorphOutput R;
     try {
         const Analysis B = analyze(base_path);
         const Analysis T = analyze(target_path);
@@ -318,10 +334,40 @@ MorphResult morphing(const std::string& base_path, const std::string& target_pat
 
         R.wave = std::move(y);
         R.fs   = fs;
+
+        // 表示用データ（base/target はそのまま、morphed は補間後の f0/sp/ap）。
+        if (want_data) {
+            R.base           = channel_from(B);
+            R.target         = channel_from(T);
+            R.morphed.fs           = fs;
+            R.morphed.fft_size     = fft_size;
+            R.morphed.nbin         = nbin;
+            R.morphed.n_frames     = M;
+            R.morphed.frame_period = kFramePeriod;
+            R.morphed.duration     = total;
+            R.morphed.f0           = std::move(f0o);
+            R.morphed.sp           = std::move(spo);
+            R.morphed.ap           = std::move(apo);
+        }
     } catch (const std::exception& e) {
         R.error = std::string { "モーフィング失敗: " } + e.what();
     }
     return R;
+}
+
+MorphResult morphing(const std::string& base_path, const std::string& target_path,
+                     const std::vector<Anchor>& anchors, const MorphRates& rates) {
+    MorphOutput o = morph_impl(base_path, target_path, anchors, rates, /*want_data=*/false);
+    MorphResult r;
+    r.wave  = std::move(o.wave);
+    r.fs    = o.fs;
+    r.error = o.error;
+    return r;
+}
+
+MorphOutput morphing_full(const std::string& base_path, const std::string& target_path,
+                          const std::vector<Anchor>& anchors, const MorphRates& rates) {
+    return morph_impl(base_path, target_path, anchors, rates, /*want_data=*/true);
 }
 
 bool write_wav(const std::string& path, const std::vector<double>& wave, int fs, std::string& err) {

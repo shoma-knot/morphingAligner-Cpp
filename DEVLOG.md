@@ -153,6 +153,23 @@ Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋�
 - 配置は `enum Minimap{None,Above,Below}`。base=上/target=下。本体はミニマップ分だけ縮め、
   base/target の本体高さは一致。左パネルの「ミニマップを表示」チェックボックス（既定 OFF）で切替。
 
+### タブ化とモーフィングタブ（`ui.cpp` / `morphing.*` / `app.*`）
+- 画面上部を `TabBar` で **「アライメント」/「モーフィング」** に分割（ログは全タブ共通の下部）。
+- **モーフィングタブ（縦 4:4:1）**:
+  - 上=**5軸スライダー**（tx/fx/fo/sl/ap、「全軸を一括操作」チェックで1本化）。
+    スライダーを**離したタイミングで再合成**（`IsItemDeactivatedAfterEdit`）。
+  - 中=**3×3 プロット**（列: Base/Morphed/Target × 行: F0 ライン / sp / ap ヒートマップ）。
+    `BeginSubplots(LinkAllX|LinkRows)` で軸共有・隙間最小。目盛りラベルは左端列と最下行のみ、
+    タイトルは最上行のみ。X=base/target の長い方、F0=共通最大×1.1、sp/ap=ERB 全域。
+    sp は 3枚共通の dB レンジ、ap は [0,1] 固定で色スケールも共通。
+  - 下=出力設定（「生成して再生」「再生」「WAV 保存」）。生成時間を %.2f ms でログ。
+- `morphing_full()` を追加し base/target/morphed の f0/sp/ap（`MorphChannel`/`MorphOutput`）を公開。
+  既存 `morphing()` は wave のみ返すラッパに（共通実装 morph_impl の want_data フラグ）。
+- sp/ap の6枚のテクスチャは `rebuild_morph_textures`（app.cpp、ERB 等間隔の汎用
+  `make_heatmap_texture`）で生成、`~App` で解放。
+- 左パネルのモーフィング操作は撤去しタブへ集約（`App::morph_rate/morph_wave/morph_fs` →
+  `morph_rates/morph_link/morph_out` に整理）。
+
 ## MATLAB版との差分
 
 `generalizedTCmorphing.m` を精読して現状実装と比較した結果（2026-07-21）。
