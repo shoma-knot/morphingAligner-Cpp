@@ -110,10 +110,37 @@ void handle_freq_axis_input(Track& tr, const Spectrogram& sp) {
     // ─── FIXME(freq-axis-input) ここまで ─────────────────────────────
 }
 
+// メインプロットの上に置く VSCode 風ミニマップ。全体を表示し、現在の表示範囲
+// (tr.view_*, 前フレームの値)を白の半透明ボックスで重ねる。非インタラクティブ。
+void draw_minimap(Track& tr, float width, float height) {
+    const Spectrogram& sp      = tr.spec;
+    const double       erb_max = freqscale::hz_to_erb(sp.fs / 2.0);
+    ImGui::PushID("minimap");
+    if (ImPlot::BeginPlot("##minimap", ImVec2(width, height), ImPlotFlags_CanvasOnly | ImPlotFlags_NoInputs)) {
+        ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoDecorations, ImPlotAxisFlags_NoDecorations);
+        ImPlot::SetupAxisLimits(ImAxis_X1, 0, sp.duration, ImPlotCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, 0, erb_max, ImPlotCond_Always);
+        ImPlot::PlotImage("##mini", static_cast<ImTextureID>(tr.tex), ImPlotPoint(0, 0),
+                          ImPlotPoint(sp.duration, erb_max));
+        // 現在の表示範囲を白の半透明ボックスで重ねる（Y は上が y_max）。
+        const ImVec2 pmin = ImPlot::PlotToPixels(tr.view_x0, tr.view_y1);
+        const ImVec2 pmax = ImPlot::PlotToPixels(tr.view_x1, tr.view_y0);
+        ImDrawList*  dl   = ImPlot::GetPlotDrawList();
+        dl->AddRectFilled(pmin, pmax, IM_COL32(255, 255, 255, 50));
+        dl->AddRect(pmin, pmax, IM_COL32(255, 255, 255, 200));
+        ImPlot::EndPlot();
+    }
+    ImGui::PopID();
+}
+
+// ミニマップの配置。
+enum class Minimap { None, Above, Below };
+
 // 指定ピクセル高さでスペクトル包絡スペクトログラムを1枚描き、アンカーを重ねる。
 // is_base はこのプロットがアンカーペアのどちら側を編集するかを選ぶ。
-// out_edges には対応線の端点を返す（何も描かなければ空）。
-void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vector<EdgePoint>& out_edges) {
+// out_edges には対応線の端点を返す（何も描かなければ空）。minimap で上/下にミニマップ。
+void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vector<EdgePoint>& out_edges,
+                      Minimap minimap) {
     out_edges.clear();
 
     ImGui::PushID(&tr);
@@ -132,9 +159,16 @@ void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vect
     constexpr float kScaleW = 90.0f;
     const float     plot_w  = ImGui::GetContentRegionAvail().x - kScaleW;
 
+    // ミニマップの分だけ本体を低くする（上/下は下で描き分ける）。
+    float       spec_h = height;
+    const float mini_h = height * 0.22f;
+    if (minimap != Minimap::None)
+        spec_h = std::max(80.0f, height - mini_h - ImGui::GetStyle().ItemSpacing.y);
+    if (minimap == Minimap::Above) draw_minimap(tr, plot_w, mini_h);
+
     // 右クリックをアンカー削除に使うため解放する: NoMenus で既定のコンテキストメニュー、
     // NoBoxSelect で右ドラッグの範囲ズームを無効化。
-    if (ImPlot::BeginPlot("##spec", ImVec2(plot_w, height), ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect)) {
+    if (ImPlot::BeginPlot("##spec", ImVec2(plot_w, spec_h), ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect)) {
         // 周波数軸を Lock し、プロット領域上のホイールが時間(X)だけをズームするようにする。
         // Y の表示範囲は自前の状態(tr.y_min/max)で駆動し、軸ラベル上ホバー時のみ手動ズーム。
         ImPlot::SetupAxes("時間 [s]", "周波数 [Hz]", ImPlotAxisFlags_None, ImPlotAxisFlags_Lock);
@@ -163,10 +197,19 @@ void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vect
         handle_freq_axis_input(tr, sp);
         draw_anchors(app, is_base, sp, out_edges);
 
+        // 現在の表示範囲をミニマップ用に保存（X=秒, Y=ERB レート）。
+        const ImPlotRect vlim = ImPlot::GetPlotLimits();
+        tr.view_x0            = vlim.X.Min;
+        tr.view_x1            = vlim.X.Max;
+        tr.view_y0            = vlim.Y.Min;
+        tr.view_y1            = vlim.Y.Max;
+
         ImPlot::EndPlot();
     }
     ImGui::SameLine();
-    ImPlot::ColormapScale("dB", sp.db_min, sp.db_max, ImVec2(kScaleW, height));
+    ImPlot::ColormapScale("dB", sp.db_min, sp.db_max, ImVec2(kScaleW, spec_h));
+
+    if (minimap == Minimap::Below) draw_minimap(tr, plot_w, mini_h);
 
     ImPlot::PopColormap();
     ImGui::PopID();
@@ -191,6 +234,11 @@ void draw_left_panel(App& app) {
     ImGui::BeginDisabled(app.anchors.empty());
     if (ImGui::Button("アンカーを全消去", ImVec2(-1, 0))) app.anchors.clear();
     ImGui::EndDisabled();
+
+    // ── 表示設定 ─────────────────────────────────────────────
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Checkbox("ミニマップを表示", &app.show_minimap);
 
     // ── セッション（アンカー）の保存/読み込み ─────────────────
     ImGui::Spacing();
@@ -262,10 +310,13 @@ void draw_right_panel(App& app) {
     const float avail_h  = ImGui::GetContentRegionAvail().y;
     const float each_h   = std::max(140.0f, (avail_h - labels_h - 12.0f) / 2.0f);
 
+    const Minimap base_mm   = app.show_minimap ? Minimap::Above : Minimap::None;
+    const Minimap target_mm = app.show_minimap ? Minimap::Below : Minimap::None;
+
     static std::vector<EdgePoint> base_edges, target_edges;
-    draw_spectrogram(app, app.base, /*is_base=*/true, each_h, base_edges);
+    draw_spectrogram(app, app.base, /*is_base=*/true, each_h, base_edges, base_mm);
     ImGui::Spacing();
-    draw_spectrogram(app, app.target, /*is_base=*/false, each_h, target_edges);
+    draw_spectrogram(app, app.target, /*is_base=*/false, each_h, target_edges, target_mm);
 
     draw_anchor_connectors(base_edges, target_edges);
 }

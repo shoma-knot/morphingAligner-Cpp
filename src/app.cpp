@@ -93,7 +93,12 @@ bool load_track_from_path(Track& tr, const std::string& path) {
         tr.tex   = make_spectrogram_texture(tr.spec);
         tr.y_min = 0.0;                  // reset the frequency-axis view (ERB レート)
         tr.y_max = freqscale::hz_to_erb(tr.spec.fs / 2.0);
-        tr.path  = path;
+        // ミニマップの枠を全体表示で初期化。
+        tr.view_x0 = 0.0;
+        tr.view_x1 = tr.spec.duration;
+        tr.view_y0 = 0.0;
+        tr.view_y1 = tr.y_max;
+        tr.path    = path;
         applog::add(tr.name + " 読み込み完了: " + path);
         return true;
     } catch (const std::exception& e) {

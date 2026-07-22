@@ -22,8 +22,11 @@ struct Track {
     std::string  path;       // loaded file ("" = none)
     Spectrogram  spec;       // spectral envelope
     unsigned int tex = 0;    // baked GPU texture
-    double       y_min = 0;  // frequency-axis view range [Hz]; zoomable over the
-    double       y_max = 0;  // axis, reset to [0, fs/2] on load
+    double       y_min = 0;  // frequency-axis view range [ERB レート]; zoomable over
+    double       y_max = 0;  // the axis, reset to [0, ERB(fs/2)] on load
+
+    // メインプロットの現在の表示範囲（ミニマップの枠に使う）。X=秒, Y=ERB レート。
+    double view_x0 = 0, view_x1 = 0, view_y0 = 0, view_y1 = 0;
 
     explicit Track(std::string n) : name(std::move(n)) {}
     ~Track();    // frees the GL texture (defined in app.cpp)
@@ -57,7 +60,8 @@ struct App {
     Track               base { "base" };
     Track               target { "target" };
     std::vector<Anchor> anchors;    // base<->target time correspondences
-    float               morph_rate = 0.5f;    // モーフィング率（0=base, 1=target）
+    float               morph_rate   = 0.5f;    // モーフィング率（0=base, 1=target）
+    bool                show_minimap = false;    // スペクトログラムのミニマップ表示
 
     // 直近のモーフィング結果（メモリ再生＋WAV保存用に保持）。
     std::vector<double> morph_wave;

@@ -146,6 +146,13 @@ Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋�
 - `tr.y_min/y_max` と周波数アンカーの表示/入力（`DragPoint`）も ERB 基準に（アンカー値自体は Hz 保持
   なのでセッション互換。モーフィング処理は Hz のままで無関係）。
 
+### ミニマップ（`ui.cpp`）
+- スペクトログラムに VSCode 風ミニマップ（全体表示＋現在表示範囲の白半透明ボックス）。
+  `draw_minimap` は `CanvasOnly | NoInputs`、軸装飾なしで全体を PlotImage。枠は前フレームの
+  メイン表示範囲 `Track.view_*`（X=秒, Y=ERB）を `GetPlotDrawList` で矩形描画。
+- 配置は `enum Minimap{None,Above,Below}`。base=上/target=下。本体はミニマップ分だけ縮め、
+  base/target の本体高さは一致。左パネルの「ミニマップを表示」チェックボックス（既定 OFF）で切替。
+
 ## MATLAB版との差分
 
 `generalizedTCmorphing.m` を精読して現状実装と比較した結果（2026-07-21）。
