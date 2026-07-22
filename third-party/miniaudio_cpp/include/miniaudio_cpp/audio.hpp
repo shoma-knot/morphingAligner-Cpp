@@ -46,6 +46,12 @@ class engine {
     /// Fire-and-forget playback of a file.
     void play_oneshot(std::string_view path);
 
+    /// Fire-and-forget playback of an in-memory interleaved float PCM buffer.
+    /// The data is copied, so `frames` need not outlive the call. Only one such
+    /// buffer plays at a time; a new call replaces the previous one.
+    void play_pcm(const float* frames, std::uint64_t frame_count,
+                  std::uint32_t channels, std::uint32_t sample_rate);
+
     /// Sample rate of the underlying device.
     std::uint32_t sample_rate() const;
 

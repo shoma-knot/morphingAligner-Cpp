@@ -27,10 +27,29 @@ void check(ma_result result, const char* context) {
 struct engine_impl {
     ma_engine handle{};
 
+    // In-memory PCM playback (one at a time). Owns the copied audio buffer.
+    ma_sound         pcm_sound{};
+    ma_audio_buffer* pcm_buffer{nullptr};
+    bool             pcm_active{false};
+
     engine_impl() {
         check(ma_engine_init(nullptr, &handle), "engine init");
     }
-    ~engine_impl() { ma_engine_uninit(&handle); }
+    ~engine_impl() {
+        stop_pcm();
+        ma_engine_uninit(&handle);
+    }
+
+    void stop_pcm() {
+        if (pcm_active) {
+            ma_sound_uninit(&pcm_sound);
+            pcm_active = false;
+        }
+        if (pcm_buffer) {
+            ma_audio_buffer_uninit_and_free(pcm_buffer);
+            pcm_buffer = nullptr;
+        }
+    }
 };
 
 engine::engine() : impl_{std::make_unique<engine_impl>()} {}
@@ -42,6 +61,25 @@ void engine::play_oneshot(std::string_view path) {
     check(ma_engine_play_sound(&impl_->handle,
                                std::string{path}.c_str(), nullptr),
           "play_oneshot");
+}
+
+void engine::play_pcm(const float* frames, std::uint64_t frame_count,
+                      std::uint32_t channels, std::uint32_t sample_rate) {
+    impl_->stop_pcm();    // replace any previous in-memory playback
+
+    ma_audio_buffer_config cfg = ma_audio_buffer_config_init(
+        ma_format_f32, channels, frame_count, frames, nullptr);
+    cfg.sampleRate = sample_rate;
+    check(ma_audio_buffer_alloc_and_init(&cfg, &impl_->pcm_buffer),
+          "audio buffer init");    // copies the data
+
+    check(ma_sound_init_from_data_source(
+              &impl_->handle,
+              reinterpret_cast<ma_data_source*>(impl_->pcm_buffer),
+              0, nullptr, &impl_->pcm_sound),
+          "pcm sound init");
+    impl_->pcm_active = true;
+    check(ma_sound_start(&impl_->pcm_sound), "pcm sound start");
 }
 
 std::uint32_t engine::sample_rate() const {

@@ -192,6 +192,7 @@ void draw_left_panel(App& app) {
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::TextUnformatted("モーフィング");
+    static const char* kWavFilter[] = { "*.wav" };
     ImGui::SliderFloat("率(0=base,1=target)", &app.morph_rate, 0.0f, 1.0f, "%.2f");
     ImGui::BeginDisabled(!(app.base.loaded() && app.target.loaded()));
     // 注: morphing() は同期実行（Harvest 等で数秒かかり UI が一瞬固まる）。
@@ -203,20 +204,31 @@ void draw_left_panel(App& app) {
         if (!mr.ok()) {
             applog::add(mr.error);
         } else {
-            std::error_code   ec;
-            const auto        dir = std::filesystem::current_path(ec);
-            const std::string out = (ec ? std::filesystem::path("morph.wav") : dir / "morph.wav").string();
-            std::string       werr;
-            if (write_wav(out, mr.wave, mr.fs, werr)) {
-                applog::add("モーフィング生成: " + out);
-                try {
-                    app.engine.play_oneshot(out);
-                } catch (const std::exception& e) {
-                    applog::add(std::string { "再生失敗: " } + e.what());
-                }
-            } else {
-                applog::add("WAV 書き込み失敗: " + werr);
+            app.morph_wave = mr.wave;    // 保存用に保持
+            app.morph_fs   = mr.fs;
+            // ファイルを書かずメモリから直接再生（double→float）。
+            std::vector<float> pcm(mr.wave.size());
+            for (std::size_t i = 0; i < mr.wave.size(); ++i)
+                pcm[i] = static_cast<float>(std::clamp(mr.wave[i], -1.0, 1.0));
+            try {
+                app.engine.play_pcm(pcm.data(), pcm.size(), 1, static_cast<unsigned>(mr.fs));
+                applog::add("モーフィング生成・再生: " + std::to_string(mr.wave.size()) + " samples");
+            } catch (const std::exception& e) {
+                applog::add(std::string { "再生失敗: " } + e.what());
             }
+        }
+    }
+    ImGui::EndDisabled();
+
+    // 直近の結果を WAV で保存（メモリ再生とは分離）。
+    ImGui::BeginDisabled(app.morph_wave.empty());
+    if (ImGui::Button("結果を WAV 保存", ImVec2(-1, 0))) {
+        if (const char* p = tinyfd_saveFileDialog("モーフィング結果を保存", "morph.wav", 1, kWavFilter, "WAV")) {
+            std::string werr;
+            if (write_wav(p, app.morph_wave, app.morph_fs, werr))
+                applog::add(std::string { "WAV 保存: " } + p);
+            else
+                applog::add("WAV 保存失敗: " + werr);
         }
     }
     ImGui::EndDisabled();

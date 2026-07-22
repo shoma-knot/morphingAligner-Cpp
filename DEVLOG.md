@@ -131,7 +131,9 @@ Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋�
 - API: `MorphResult morphing(base_path, target_path, anchors, const MorphRates&)`。
   各軸は該当箇所で対応する率を使用（tx=timeline, fo=morph_f0, fx=周波数折れ線,
   sl=sp のlog補間, ap=ap の線形補間）。
-- UI: 左パネルに率スライダ＋「生成して再生」（cwd/morph.wav に書いて play_oneshot）。
+- UI: 左パネルに率スライダ＋「生成して再生」（結果を `ma::engine::play_pcm` でメモリから
+  直接再生。ファイルは書かない）＋「結果を WAV 保存」（ダイアログで明示保存のときだけ書く）。
+  再生用に miniaudio_cpp へ `play_pcm`(ma_audio_buffer 使用)を追加。
 - ヘッドレス検証済み（JVS 2話者、r=0→base長, r=1→target長, 全ケース有限出力）。
 - 既知の制約: (1)同期実行で数秒 UI が固まる。(2)fs 不一致は未対応。(3)F0 は最近傍
   フレームサンプル。MATLAB との差分は下の「## MATLAB版との差分」を参照。

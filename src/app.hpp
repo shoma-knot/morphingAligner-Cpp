@@ -58,6 +58,10 @@ struct App {
     Track               target { "target" };
     std::vector<Anchor> anchors;    // base<->target time correspondences
     float               morph_rate = 0.5f;    // モーフィング率（0=base, 1=target）
+
+    // 直近のモーフィング結果（メモリ再生＋WAV保存用に保持）。
+    std::vector<double> morph_wave;
+    int                 morph_fs = 0;
 };
 
 // ファイルダイアログで `tr` を選び、解析してテクスチャを (再)生成する。
