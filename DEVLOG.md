@@ -187,6 +187,16 @@ Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋�
   常に5本分を確保）。「全軸を一括操作」をヘッダ行へ移動。スライダーは最長ラベル基準の
   共通オフセットで中央揃え（バー位置が行間で揃う）。
 
+### モーフィングの別スレッド化（2026-07-23）
+- `request_morph`（std::async でワーカー起動）＋`poll_morph_job`（draw_root で毎フレーム完了回収）。
+  GL テクスチャ更新・ログ・再生はメインスレッド側で実施。
+- 実行中の再要求は pending に畳み、完了後に**最新条件で1回だけ**再実行（コアレス）。
+- base/target チャンネルは `shared_ptr<const MorphChannel>` で共有（解析し直しで差し替わっても
+  実行中ジョブは自分の参照を保持）。アンカー/率はジョブ起動時にコピー。
+- 世代カウンタ `morph_epoch` で、base/target 差し替え後に完了した古い結果を破棄。
+- 出力行に「生成中...」表示。スライダー操作・生成で UI がブロックしなくなった。
+- main に Threads::Threads を明示リンク。非同期実行の出力一致をヘッドレスで検証済み。
+
 ## MATLAB版との差分
 
 `generalizedTCmorphing.m` を精読して現状実装と比較した結果（2026-07-21）。

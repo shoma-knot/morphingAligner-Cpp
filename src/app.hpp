@@ -3,6 +3,9 @@
 /// @file app.hpp
 /// @brief Application state model (tracks, anchors) and loading logic.
 
+#include <chrono>
+#include <future>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -65,12 +68,24 @@ struct App {
     bool                log_open     = true;     // 下部ログ領域の展開状態
 
     // モーフィング（モーフィングタブ）。
-    MorphRates   morph_rates;               // 軸ごとの率（0=base, 1=target）
-    bool         morph_link     = true;     // 全軸を一括操作するか
-    bool         morph_realtime = true;     // スライダー操作中も逐次再合成するか（OFF=離した時のみ）
-    MorphChannel morph_base, morph_target;    // タブ表示時に解析（パス変更で再解析）
-    std::string  morph_base_path, morph_target_path;    // 解析済みチャンネルの元パス
-    MorphOutput  morph_out;             // 再合成の結果（morphed の f0/sp/ap＋wave）
+    MorphRates morph_rates;               // 軸ごとの率（0=base, 1=target）
+    bool       morph_link     = true;     // 全軸を一括操作するか
+    bool       morph_realtime = true;     // スライダー操作中も逐次再合成するか（OFF=離した時のみ）
+
+    // base/target の解析チャンネル（タブ表示時に解析、パス変更で再解析）。
+    // 非同期ジョブと安全に共有するため immutable な shared_ptr で保持する（失敗時は nullptr）。
+    std::shared_ptr<const MorphChannel> morph_base, morph_target;
+    std::string                         morph_base_path, morph_target_path;    // 解析済みチャンネルの元パス
+    MorphOutput                         morph_out;    // 再合成の結果（morphed の f0/sp/ap＋wave）
+
+    // 非同期モーフィングジョブ（ワーカーで morphing_channels を実行。GL への反映は
+    // 完了回収時にメインスレッドで行う）。実行中の再要求は pending に畳んで最新条件で1回だけ再実行。
+    std::future<MorphOutput>              morph_job;
+    bool                                  morph_job_running    = false;
+    bool                                  morph_job_pending    = false;    // 実行中に来た再要求
+    bool                                  morph_play_when_done = false;    // 完了後に再生する（生成して再生）
+    int                                   morph_epoch = 0, morph_job_epoch = 0;    // base/target の世代
+    std::chrono::steady_clock::time_point morph_job_t0;    // 計測用
 
     // モーフィングタブの sp/ap ヒートマップ用テクスチャ（0=base, 1=morphed, 2=target）。
     unsigned int morph_tex_sp[3] = { 0, 0, 0 };

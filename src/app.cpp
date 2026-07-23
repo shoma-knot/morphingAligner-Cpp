@@ -173,8 +173,8 @@ void rebuild_morph_bt_textures(App& app) {
     // sp の共通 dB レンジを base/target から算出（morphed は両者の log 補間なのでレンジ内）。
     double dmin = 1e30, dmax = -1e30;
     bool   any  = false;
-    for (const MorphChannel* ch : { &app.morph_base, &app.morph_target }) {
-        if (ch->empty()) continue;
+    for (const MorphChannel* ch : { app.morph_base.get(), app.morph_target.get() }) {
+        if (ch == nullptr || ch->empty()) continue;
         any = true;
         for (const auto& row : ch->sp)
             for (double v : row) {
@@ -191,11 +191,11 @@ void rebuild_morph_bt_textures(App& app) {
     app.morph_db_min = dmin;
     app.morph_db_max = dmax;
 
-    const MorphChannel* chs[2] = { &app.morph_base, &app.morph_target };
+    const MorphChannel* chs[2] = { app.morph_base.get(), app.morph_target.get() };
     const int           idx[2] = { 0, 2 };
     for (int i = 0; i < 2; ++i) {
+        if (chs[i] == nullptr || chs[i]->empty()) continue;
         const MorphChannel& c = *chs[i];
-        if (c.empty()) continue;
         app.morph_tex_sp[idx[i]] =
           make_heatmap_texture(c.sp, c.n_frames, c.nbin, c.fs, c.fft_size, /*as_db=*/true, dmin, dmax);
         app.morph_tex_ap[idx[i]] =

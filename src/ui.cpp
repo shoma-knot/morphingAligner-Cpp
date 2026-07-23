@@ -360,18 +360,20 @@ bool draw_morph_sliders(App& app) {
 void ensure_morph_channels(App& app) {
     bool changed = false;
 
-    const auto ensure = [&](const Track& tr, MorphChannel& ch, std::string& ch_path) {
+    const auto ensure = [&](const Track& tr, std::shared_ptr<const MorphChannel>& ch, std::string& ch_path) {
         if (!tr.loaded() || ch_path == tr.path) return;
         applog::add(tr.name + " をモーフィング用に解析中...");
         const auto  t0 = std::chrono::steady_clock::now();
         std::string err;
-        ch      = analyze_channel(tr.path, err);
-        ch_path = tr.path;    // 失敗しても記録して毎フレームの再試行を防ぐ
-        changed = true;
+        MorphChannel c = analyze_channel(tr.path, err);
+        ch_path        = tr.path;    // 失敗しても記録して毎フレームの再試行を防ぐ
+        changed        = true;
         if (!err.empty()) {
+            ch.reset();
             applog::add(tr.name + " 解析失敗: " + err);
             return;
         }
+        ch = std::make_shared<const MorphChannel>(std::move(c));
         const double ms =
           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         char buf[128];
@@ -382,53 +384,60 @@ void ensure_morph_channels(App& app) {
     ensure(app.target, app.morph_target, app.morph_target_path);
 
     if (changed) {
+        ++app.morph_epoch;     // 実行中ジョブの結果は古い base/target のものなので破棄対象に
         app.morph_out = {};    // 元が変わったので以前の morphed は無効
         rebuild_morph_bt_textures(app);
     }
 }
 
-// モーフィングを実行して morph_out（morphed のみ）を更新。base/target は解析済みの
-// チャンネルを使うので再解析しない（同期実行だが従来より大幅に軽い）。
-void regenerate_morph(App& app) {
-    if (app.morph_base.empty() || app.morph_target.empty()) return;
-    const auto t0 = std::chrono::steady_clock::now();
-    app.morph_out = morphing_channels(app.morph_base, app.morph_target, app.anchors, app.morph_rates);
-    const auto   t1 = std::chrono::steady_clock::now();
-    const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    if (!app.morph_out.ok()) {
-        applog::add(app.morph_out.error);
-    } else {
-        char buf[128];
-        std::snprintf(buf, sizeof buf, "モーフィング生成: %zu samples (%.2f ms)", app.morph_out.wave.size(), ms);
-        applog::add(buf);
+// 非同期でモーフィングを開始する（実行中なら「最新条件で1回だけ再実行」を予約）。
+// ワーカーは shared_ptr 経由の immutable なチャンネルと、コピーしたアンカー/率だけを使う。
+void request_morph(App& app) {
+    if (!app.morph_base || !app.morph_target) return;
+    if (app.morph_job_running) {
+        app.morph_job_pending = true;
+        return;
     }
-    rebuild_morphed_texture(app);    // morphed のヒートマップだけ更新（失敗時は解放のみ）
+    app.morph_job_running = true;
+    app.morph_job_pending = false;
+    app.morph_job_epoch   = app.morph_epoch;
+    app.morph_job_t0      = std::chrono::steady_clock::now();
+
+    const auto base    = app.morph_base;
+    const auto target  = app.morph_target;
+    const auto anchors = app.anchors;    // コピー（ジョブ中の編集と分離）
+    const auto rates   = app.morph_rates;
+    app.morph_job      = std::async(std::launch::async, [base, target, anchors, rates] {
+        return morphing_channels(*base, *target, anchors, rates);
+    });
 }
 
 // 中段: base / morphed / target × f0 / sp / ap の 3×3 グリッド。
 // サブプロット（LinkAllX + LinkRows）で軸範囲を共有し、目盛りラベルは左端列と最下行のみ、
 // タイトルは最上行のみに出して隙間を最小化する。
 void draw_morph_plots(App& app) {
-    if (app.morph_base.empty() && app.morph_target.empty()) {
-        ImGui::TextDisabled("音声を読み込むとここに base / morphed / target のプロットを表示します");
-        return;
-    }
-
     // 共通レンジ: X は base/target の長い方、F0 は base/target の最大値、sp/ap は ERB 全域
     // （読み込まれている側から算出。morphed は必ずこの範囲に収まる）。
     double              x_max = 0.0, f0_max = 0.0;
     const MorphChannel* ref = nullptr;
-    for (const MorphChannel* ch : { &app.morph_base, &app.morph_target }) {
-        if (ch->empty()) continue;
+    for (const MorphChannel* ch : { app.morph_base.get(), app.morph_target.get() }) {
+        if (ch == nullptr || ch->empty()) continue;
         ref   = ch;
         x_max = std::max(x_max, ch->duration);
         for (double v : ch->f0) f0_max = std::max(f0_max, v);
+    }
+    if (ref == nullptr) {
+        ImGui::TextDisabled("音声を読み込むとここに base / morphed / target のプロットを表示します");
+        return;
     }
     const double y_f0    = f0_max > 0.0 ? f0_max * 1.1 : 500.0;
     const double nyq     = ref->fs / 2.0;
     const double erb_max = freqscale::hz_to_erb(nyq);
 
-    const MorphChannel* chs[3]        = { &app.morph_base, &app.morph_out.morphed, &app.morph_target };
+    static const MorphChannel kEmptyCh;    // 未解析の列は空データとして描く（軸のみ）
+    const MorphChannel* chs[3]        = { app.morph_base ? app.morph_base.get() : &kEmptyCh,
+                                          &app.morph_out.morphed,
+                                          app.morph_target ? app.morph_target.get() : &kEmptyCh };
     const char*         col_titles[3] = { "Base", "Morphed", "Target" };
     const char*         row_ylabel[3] = { "F0 [Hz]", "SP [Hz]", "AP [Hz]" };
 
@@ -492,14 +501,45 @@ void play_wave(App& app, const std::vector<double>& wave, int fs) {
     }
 }
 
+// 毎フレーム呼ぶ: 完了した非同期ジョブを回収し、morph_out とテクスチャを更新する
+// （GL への反映はここ＝メインスレッドで行う）。再要求が予約されていれば最新条件で再実行。
+void poll_morph_job(App& app) {
+    if (!app.morph_job_running) return;
+    if (app.morph_job.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+
+    MorphOutput out       = app.morph_job.get();
+    app.morph_job_running = false;
+
+    if (app.morph_job_epoch != app.morph_epoch) {
+        // base/target が差し替わった後に完了した古い結果は捨てる。
+        app.morph_play_when_done = false;
+    } else {
+        const double ms =
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - app.morph_job_t0).count();
+        app.morph_out = std::move(out);
+        if (!app.morph_out.ok()) {
+            applog::add(app.morph_out.error);
+        } else {
+            char buf[128];
+            std::snprintf(buf, sizeof buf, "モーフィング生成: %zu samples (%.2f ms)", app.morph_out.wave.size(),
+                          ms);
+            applog::add(buf);
+        }
+        rebuild_morphed_texture(app);
+        if (app.morph_play_when_done && app.morph_out.ok()) play_wave(app, app.morph_out.wave, app.morph_out.fs);
+        app.morph_play_when_done = false;
+    }
+
+    if (app.morph_job_pending) request_morph(app);
+}
+
 // 下段: 出力設定（生成/再生/WAV保存）。
 void draw_morph_output(App& app) {
-    const bool ready = !app.morph_base.empty() && !app.morph_target.empty();
+    const bool ready = app.morph_base && app.morph_target;
     ImGui::BeginDisabled(!ready);
-    // 注: morphing_full() は同期実行（Harvest 等で数秒かかり UI が一瞬固まる）。
     if (ImGui::Button("生成して再生")) {
-        regenerate_morph(app);
-        if (app.morph_out.ok()) play_wave(app, app.morph_out.wave, app.morph_out.fs);
+        app.morph_play_when_done = true;    // 完了回収時に再生
+        request_morph(app);
     }
     ImGui::EndDisabled();
 
@@ -518,6 +558,12 @@ void draw_morph_output(App& app) {
         }
     }
     ImGui::EndDisabled();
+
+    // 実行中インジケータ。
+    if (app.morph_job_running) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("生成中...");
+    }
 }
 
 // 「モーフィング」タブ: 上=スライダー(内容の高さ) / 中=プロット(残り全部) / 下=出力設定(内容の高さ)。
@@ -543,8 +589,8 @@ void draw_morph_tab(App& app) {
     ImGui::EndChild();
 
     // 再合成トリガ（リアルタイム更新 ON=値が変わった各フレーム / OFF=離した時）。
-    // 注: 同期実行のため、リアルタイム時は生成時間ぶんの引っかかりが出る環境もある。
-    if (rates_changed && !app.morph_base.empty() && !app.morph_target.empty()) regenerate_morph(app);
+    // 非同期実行なので UI はブロックしない。実行中の再要求は最新条件に畳まれる。
+    if (rates_changed) request_morph(app);
 
     // プロットは出力設定ぶんを下に残して、残り全部を使う。
     ImGui::BeginChild("morph_plots", ImVec2(0, -(out_h + spacing)), true);
@@ -559,6 +605,9 @@ void draw_morph_tab(App& app) {
 }    // namespace
 
 void draw_root(App& app) {
+    // 非同期モーフィングの完了回収（どのタブにいても回収できるようここで毎フレーム）。
+    poll_morph_job(app);
+
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
     ImGui::SetNextWindowSize(vp->WorkSize);
