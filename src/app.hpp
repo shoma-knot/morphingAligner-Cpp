@@ -67,6 +67,7 @@ struct App {
     std::vector<Anchor> anchors;    // base<->target time correspondences
     bool                show_minimap = false;    // スペクトログラムのミニマップ表示
     bool                log_open     = true;     // 下部ログ領域の展開状態
+    ImFont*             mono_font    = nullptr;    // 等幅フォント（ライセンス表示用、null なら既定）
 
     // モーフィング（モーフィングタブ）。
     MorphRates morph_rates;               // 軸ごとの率（0=base, 1=target）

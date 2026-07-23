@@ -211,6 +211,23 @@ Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋�
 - tinyfd はダイアログを閉じるまでブロックするため、ワーカー実行で「応答なし」を解消
   （Linux では zenity/kdialog のサブプロセスなので非メインスレッドで安全）。
 
+### フォント同梱とライセンス表示タブ（2026-07-23）
+- **フォント同梱**: Windows ビルドでシステムフォントが見つからず文字化けするため、
+  Gen Interface JP Regular（OFL v1.1、Inter ベースの日本語フォント）を `font/` に同梱。
+  `main.cpp` の候補パスはカレント起動と bin/ 起動の2つ（システムフォントのフォールバックは削除）。
+  OFL はソフトウェアへの同梱・再配布を明示的に許可（OFL.txt の同梱が条件、フォント単体販売のみ禁止）。
+- **ライセンス表示タブ** (`draw_license_tab`): 左=同梱物リスト(1) / 右=条文表示(4)。
+  条文はファイルから遅延読み込みしてキャッシュ。タブは機能タブと区別するためグレー系
+  （`ImGuiCol_Tab*` 5色を PushStyleColor）。※右端寄せ（Trailing や自前タブ風ボタン）は
+  試したが見た目/挙動が安定せず断念。
+- **同梱条文の選定**: バイナリ配布時に条文明記が必要なもののみ `licenses/` に同梱
+  （Dear ImGui/ImPlot/nlohmann JSON=MIT、WORLD=修正BSD、＋フォントの OFL.txt）。
+  zlib 系（GLFW, tinyfiledialogs）と public domain/MIT-0（miniaudio）は義務がないため省略。
+- **条文の等幅表示**: 条文は等幅前提の整形なので、ImGui 埋め込みの ProggyClean を第2フォント
+  として追加（`load_fonts()` → `App::mono_font`）し、条文本文だけ `PushFont` で切り替え。
+  追加ファイル・追加ライセンス不要（imgui 同梱・MIT）。vcpkg の imgui ポートは
+  `misc/fonts/` の TTF（Roboto, Cousine 等）をインストールしない点に注意。
+
 ## MATLAB版との差分
 
 `generalizedTCmorphing.m` を精読して現状実装と比較した結果（2026-07-21）。

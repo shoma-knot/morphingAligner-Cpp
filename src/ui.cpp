@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <exception>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -681,6 +683,62 @@ void draw_morph_tab(App& app) {
     ImGui::EndChild();
 }
 
+// 「ライセンス表示」タブ: 左=同梱物のリスト(1) / 右=選択した条文の表示(4)。
+// 同梱物が増えたら kLicenseEntries に1行追加する（パスはカレント起動と bin/ 起動の2候補）。
+void draw_license_tab(App& app) {
+    struct Entry {
+        const char* name;     // リスト表示名
+        const char* path;     // 条文ファイル（カレントディレクトリ起動）
+        const char* alt;      // 同（bin/ 起動）
+    };
+    // バイナリ配布時に条文の同梱が必要なもの（MIT/BSD/OFL）。zlib 系（GLFW,
+    // tinyfiledialogs）と public domain/MIT-0 の miniaudio は明記義務がないため省略。
+    static const Entry kLicenseEntries[] = {
+        { "Gen Interface JP（フォント / OFL v1.1）", "font/Gen Interface JP/OFL.txt",
+          "../font/Gen Interface JP/OFL.txt" },
+        { "Dear ImGui（MIT）", "licenses/imgui.txt", "../licenses/imgui.txt" },
+        { "ImPlot（MIT）", "licenses/implot.txt", "../licenses/implot.txt" },
+        { "nlohmann JSON（MIT）", "licenses/nlohmann-json.txt", "../licenses/nlohmann-json.txt" },
+        { "WORLD（修正BSD）", "licenses/world.txt", "../licenses/world.txt" },
+    };
+    static int         selected = 0;
+    static int         loaded   = -1;    // 読み込み済みの選択（変わったら読み直す）
+    static std::string text;
+
+    // 左: リスト。
+    const float left_w = ImGui::GetContentRegionAvail().x * (1.0f / 5.0f);
+    ImGui::BeginChild("license_list", ImVec2(left_w, 0), true);
+    for (int i = 0; i < static_cast<int>(IM_ARRAYSIZE(kLicenseEntries)); ++i)
+        if (ImGui::Selectable(kLicenseEntries[i].name, selected == i)) selected = i;
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+
+    // 右: 選択された条文。
+    ImGui::BeginChild("license_view", ImVec2(0, 0), true);
+    if (loaded != selected) {
+        loaded = selected;
+        text   = "(ライセンスファイルが見つかりません)";
+        for (const char* p : { kLicenseEntries[selected].path, kLicenseEntries[selected].alt }) {
+            std::ifstream is { p };
+            if (!is) continue;
+            std::ostringstream ss;
+            ss << is.rdbuf();
+            text = ss.str();
+            break;
+        }
+    }
+    ImGui::TextUnformatted(kLicenseEntries[selected].name);
+    ImGui::Separator();
+    ImGui::BeginChild("license_scroll", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+    // 条文は等幅前提で整形されているため、等幅フォント（ImGui 埋め込みの ProggyClean）で表示する。
+    if (app.mono_font) ImGui::PushFont(app.mono_font);
+    ImGui::TextUnformatted(text.c_str());
+    if (app.mono_font) ImGui::PopFont();
+    ImGui::EndChild();
+    ImGui::EndChild();
+}
+
 }    // namespace
 
 void draw_root(App& app) {
@@ -721,6 +779,19 @@ void draw_root(App& app) {
             ImGui::BeginDisabled(tabs_locked);
             ImGui::EndTabItem();
         }
+        // ライセンス表示タブはグレー系（濃いめ）にして機能タブと見分けやすくする。
+        ImGui::PushStyleColor(ImGuiCol_Tab, ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_TabHovered, ImVec4(0.34f, 0.34f, 0.34f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_TabSelected, ImVec4(0.30f, 0.30f, 0.30f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_TabDimmed, ImVec4(0.16f, 0.16f, 0.16f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_TabDimmedSelected, ImVec4(0.24f, 0.24f, 0.24f, 1.0f));
+        if (ImGui::BeginTabItem("ライセンス表示")) {
+            ImGui::EndDisabled();
+            draw_license_tab(app);
+            ImGui::BeginDisabled(tabs_locked);
+            ImGui::EndTabItem();
+        }
+        ImGui::PopStyleColor(5);
         ImGui::EndTabBar();
     }
     ImGui::EndDisabled();

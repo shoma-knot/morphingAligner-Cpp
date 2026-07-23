@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <exception>
 #include <fstream>
+#include <string>
 
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -15,15 +16,28 @@
 
 namespace {
 
-// System CJK font so the Japanese UI labels render (falls back to the built-in
-// ASCII font if it is not present).
-constexpr const char* kJpFontPath = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc";
+// 日本語 UI 用フォント。同梱の Gen Interface JP（OFL v1.1、font/ 以下）を読み、
+// 見つからなければ ImGui 既定フォントにフォールバック（文字化けする旨をログに出す）。
+// 相対パスはカレントディレクトリ起動（プロジェクト/配布ルート）と bin/ 起動の両方を試す。
+constexpr const char* kJpFontCandidates[] = {
+    "font/Gen Interface JP/GenInterfaceJP-Regular.ttf",
+    "../font/Gen Interface JP/GenInterfaceJP-Regular.ttf",
+};
 
-void load_japanese_font() {
-    std::ifstream probe { kJpFontPath };
-    if (!probe.good()) return;    // keep the default font
+// フォントを読み込む。UI 全体は日本語フォント、戻り値はライセンス表示用の
+// 等幅フォント（ImGui 埋め込みの ProggyClean。ASCII のみだがライセンス英文には十分）。
+ImFont* load_fonts() {
     ImGuiIO& io = ImGui::GetIO();
-    io.Fonts->AddFontFromFileTTF(kJpFontPath, 18.0f, nullptr, io.Fonts->GetGlyphRangesJapanese());
+    for (const char* path: kJpFontCandidates) {
+        std::ifstream probe { path };
+        if (!probe.good()) continue;
+        // 最初に追加したフォントが既定になるため、日本語フォントを先に読む。
+        io.Fonts->AddFontFromFileTTF(path, 18.0f, nullptr, io.Fonts->GetGlyphRangesJapanese());
+        applog::add(std::string { "フォント読み込み: " } + path);
+        return io.Fonts->AddFontDefault();    // 2番目: 等幅（ProggyClean）
+    }
+    applog::add("日本語フォントが見つからないため既定フォントを使用します（文字化けの可能性）");
+    return nullptr;    // 既定が ProggyClean になるので等幅の追加は不要
 }
 
 void glfw_error_callback(int error, const char* description) {
@@ -56,7 +70,7 @@ int main() {
     ImGui::CreateContext();
     ImPlot::CreateContext();
     ImGui::StyleColorsDark();
-    load_japanese_font();
+    ImFont* mono_font = load_fonts();
 
     // Free the left mouse button for anchor placement / dragging by moving the
     // plot pan gesture onto the middle button.
@@ -70,6 +84,7 @@ int main() {
 
     try {
         App app;
+        app.mono_font = mono_font;
         applog::add("起動しました");
 
         while (!glfwWindowShouldClose(window)) {
