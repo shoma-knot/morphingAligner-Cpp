@@ -140,39 +140,70 @@ App::~App() {
         if (t) glDeleteTextures(1, &t);
 }
 
-void rebuild_morph_textures(App& app) {
-    const auto del = [](unsigned int& t) {
-        if (t) {
-            glDeleteTextures(1, &t);
-            t = 0;
-        }
-    };
-    for (unsigned int& t : app.morph_tex_sp) del(t);
-    for (unsigned int& t : app.morph_tex_ap) del(t);
+namespace {
 
-    const MorphOutput& mo = app.morph_out;
-    if (!mo.ok() || mo.base.empty()) return;
+// テクスチャを解放して 0 にする。
+void delete_tex(unsigned int& t) {
+    if (t) {
+        glDeleteTextures(1, &t);
+        t = 0;
+    }
+}
 
-    // sp の共通 dB レンジを base/morphed/target 全体から算出（3枚を同じ色スケールで比較）。
+}    // namespace
+
+void rebuild_morphed_texture(App& app) {
+    delete_tex(app.morph_tex_sp[1]);
+    delete_tex(app.morph_tex_ap[1]);
+
+    const MorphChannel& c = app.morph_out.morphed;
+    if (!app.morph_out.ok() || c.empty()) return;
+    app.morph_tex_sp[1] = make_heatmap_texture(c.sp, c.n_frames, c.nbin, c.fs, c.fft_size,
+                                               /*as_db=*/true, app.morph_db_min, app.morph_db_max);
+    app.morph_tex_ap[1] =
+      make_heatmap_texture(c.ap, c.n_frames, c.nbin, c.fs, c.fft_size, /*as_db=*/false, 0.0, 1.0);
+}
+
+void rebuild_morph_bt_textures(App& app) {
+    delete_tex(app.morph_tex_sp[0]);
+    delete_tex(app.morph_tex_ap[0]);
+    delete_tex(app.morph_tex_sp[2]);
+    delete_tex(app.morph_tex_ap[2]);
+
+    // sp の共通 dB レンジを base/target から算出（morphed は両者の log 補間なのでレンジ内）。
     double dmin = 1e30, dmax = -1e30;
-    for (const MorphChannel* ch : { &mo.base, &mo.morphed, &mo.target })
+    bool   any  = false;
+    for (const MorphChannel* ch : { &app.morph_base, &app.morph_target }) {
+        if (ch->empty()) continue;
+        any = true;
         for (const auto& row : ch->sp)
             for (double v : row) {
                 const double db = 10.0 * std::log10(std::max(v, 1e-12));
                 dmin            = std::min(dmin, db);
                 dmax            = std::max(dmax, db);
             }
+    }
+    if (!any) {
+        app.morph_db_min = app.morph_db_max = 0.0;
+        rebuild_morphed_texture(app);
+        return;
+    }
     app.morph_db_min = dmin;
     app.morph_db_max = dmax;
 
-    const MorphChannel* chs[3] = { &mo.base, &mo.morphed, &mo.target };
-    for (int i = 0; i < 3; ++i) {
+    const MorphChannel* chs[2] = { &app.morph_base, &app.morph_target };
+    const int           idx[2] = { 0, 2 };
+    for (int i = 0; i < 2; ++i) {
         const MorphChannel& c = *chs[i];
-        app.morph_tex_sp[i] =
+        if (c.empty()) continue;
+        app.morph_tex_sp[idx[i]] =
           make_heatmap_texture(c.sp, c.n_frames, c.nbin, c.fs, c.fft_size, /*as_db=*/true, dmin, dmax);
-        app.morph_tex_ap[i] =
+        app.morph_tex_ap[idx[i]] =
           make_heatmap_texture(c.ap, c.n_frames, c.nbin, c.fs, c.fft_size, /*as_db=*/false, 0.0, 1.0);
     }
+
+    // レンジが変わったので morphed 側も作り直す。
+    rebuild_morphed_texture(app);
 }
 
 bool load_track_from_path(Track& tr, const std::string& path) {

@@ -62,11 +62,15 @@ struct App {
     Track               target { "target" };
     std::vector<Anchor> anchors;    // base<->target time correspondences
     bool                show_minimap = false;    // スペクトログラムのミニマップ表示
+    bool                log_open     = true;     // 下部ログ領域の展開状態
 
     // モーフィング（モーフィングタブ）。
-    MorphRates  morph_rates;            // 軸ごとの率（0=base, 1=target）
-    bool        morph_link = true;      // 全軸を一括操作するか
-    MorphOutput morph_out;              // 直近の結果（base/target/morphed の f0/sp/ap＋wave）
+    MorphRates   morph_rates;               // 軸ごとの率（0=base, 1=target）
+    bool         morph_link     = true;     // 全軸を一括操作するか
+    bool         morph_realtime = true;     // スライダー操作中も逐次再合成するか（OFF=離した時のみ）
+    MorphChannel morph_base, morph_target;    // タブ表示時に解析（パス変更で再解析）
+    std::string  morph_base_path, morph_target_path;    // 解析済みチャンネルの元パス
+    MorphOutput  morph_out;             // 再合成の結果（morphed の f0/sp/ap＋wave）
 
     // モーフィングタブの sp/ap ヒートマップ用テクスチャ（0=base, 1=morphed, 2=target）。
     unsigned int morph_tex_sp[3] = { 0, 0, 0 };
@@ -76,9 +80,12 @@ struct App {
     ~App();    // モーフィング用テクスチャを解放（app.cpp で定義）
 };
 
-// morph_out から sp/ap の6枚のテクスチャを作り直す（既存は解放）。
-// sp は base/morphed/target 共通の dB レンジで正規化する。
-void rebuild_morph_textures(App& app);
+// base/target の sp/ap テクスチャと共通 dB レンジを作り直す（morphed テクスチャも
+// 新レンジで作り直す）。morphed は base/target の log 補間なので必ずレンジ内に収まる。
+void rebuild_morph_bt_textures(App& app);
+
+// morphed の sp/ap テクスチャだけを作り直す（レンジは計算済みのものを使用）。
+void rebuild_morphed_texture(App& app);
 
 // ファイルダイアログで `tr` を選び、解析してテクスチャを (再)生成する。
 void load_track(Track& tr);

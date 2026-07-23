@@ -96,10 +96,10 @@ struct F0Sample {
     double vuv;      // 有声割合 [0,1]
 };
 
-F0Sample f0_sample(const Analysis& A, double t_sec) {
+F0Sample f0_sample(const MorphChannel& A, double t_sec) {
     const double ff = t_sec / kFrameSec;
-    const int    i0 = std::clamp(static_cast<int>(std::floor(ff)), 0, A.f0_len - 1);
-    const int    i1 = std::min(i0 + 1, A.f0_len - 1);
+    const int    i0 = std::clamp(static_cast<int>(std::floor(ff)), 0, A.n_frames - 1);
+    const int    i1 = std::min(i0 + 1, A.n_frames - 1);
     const double fr = std::clamp(ff - i0, 0.0, 1.0);
 
     const double a = A.f0[i0], b = A.f0[i1];
@@ -220,13 +220,24 @@ MorphChannel channel_from(const Analysis& A) {
 
 }    // namespace
 
-// 本体。want_data=true のとき base/target/morphed の中間データも詰める。
-static MorphOutput morph_impl(const std::string& base_path, const std::string& target_path,
-                              const std::vector<Anchor>& anchors, const MorphRates& rates, bool want_data) {
+MorphChannel analyze_channel(const std::string& path, std::string& err) {
+    err.clear();
+    try {
+        return channel_from(analyze(path));
+    } catch (const std::exception& e) {
+        err = e.what();
+        return {};
+    }
+}
+
+MorphOutput morphing_channels(const MorphChannel& B, const MorphChannel& T,
+                              const std::vector<Anchor>& anchors, const MorphRates& rates) {
     MorphOutput R;
     try {
-        const Analysis B = analyze(base_path);
-        const Analysis T = analyze(target_path);
+        if (B.empty() || T.empty()) {
+            R.error = "モーフィング失敗: base/target の解析データがありません";
+            return R;
+        }
         if (B.fs != T.fs) {
             R.error = "サンプリング周波数が異なります（リサンプリング未対応）";
             return R;
@@ -311,13 +322,13 @@ static MorphOutput morph_impl(const std::string& base_path, const std::string& t
 
                 // スペクトルは log 領域で補間・合成（sample_log が log 値を返す）。
                 constexpr double kHi = 1e300;    // 実質上限なし
-                const double     lsb = sample_log(B.sp, B.f0_len, nbin, fft_size, fs, taub, fb, 1e-20, kHi);
-                const double     lst = sample_log(T.sp, T.f0_len, nbin, fft_size, fs, taut, ft, 1e-20, kHi);
+                const double     lsb = sample_log(B.sp, B.n_frames, nbin, fft_size, fs, taub, fb, 1e-20, kHi);
+                const double     lst = sample_log(T.sp, T.n_frames, nbin, fft_size, fs, taut, ft, 1e-20, kHi);
                 spo[m][b]            = std::exp((1.0 - sl) * lsb + sl * lst);
 
                 // 非周期性も log 領域で補間・合成（clamp[1e-5,1]）。
-                const double lab = sample_log(B.ap, B.f0_len, nbin, fft_size, fs, taub, fb, 1e-5, 1.0);
-                const double lat = sample_log(T.ap, T.f0_len, nbin, fft_size, fs, taut, ft, 1e-5, 1.0);
+                const double lab = sample_log(B.ap, B.n_frames, nbin, fft_size, fs, taub, fb, 1e-5, 1.0);
+                const double lat = sample_log(T.ap, T.n_frames, nbin, fft_size, fs, taut, ft, 1e-5, 1.0);
                 apo[m][b]        = std::exp((1.0 - ap) * lab + ap * lat);
             }
         }
@@ -335,39 +346,20 @@ static MorphOutput morph_impl(const std::string& base_path, const std::string& t
         R.wave = std::move(y);
         R.fs   = fs;
 
-        // 表示用データ（base/target はそのまま、morphed は補間後の f0/sp/ap）。
-        if (want_data) {
-            R.base           = channel_from(B);
-            R.target         = channel_from(T);
-            R.morphed.fs           = fs;
-            R.morphed.fft_size     = fft_size;
-            R.morphed.nbin         = nbin;
-            R.morphed.n_frames     = M;
-            R.morphed.frame_period = kFramePeriod;
-            R.morphed.duration     = total;
-            R.morphed.f0           = std::move(f0o);
-            R.morphed.sp           = std::move(spo);
-            R.morphed.ap           = std::move(apo);
-        }
+        // morphed の表示用データ（補間後の f0/sp/ap）。
+        R.morphed.fs           = fs;
+        R.morphed.fft_size     = fft_size;
+        R.morphed.nbin         = nbin;
+        R.morphed.n_frames     = M;
+        R.morphed.frame_period = kFramePeriod;
+        R.morphed.duration     = total;
+        R.morphed.f0           = std::move(f0o);
+        R.morphed.sp           = std::move(spo);
+        R.morphed.ap           = std::move(apo);
     } catch (const std::exception& e) {
         R.error = std::string { "モーフィング失敗: " } + e.what();
     }
     return R;
-}
-
-MorphResult morphing(const std::string& base_path, const std::string& target_path,
-                     const std::vector<Anchor>& anchors, const MorphRates& rates) {
-    MorphOutput o = morph_impl(base_path, target_path, anchors, rates, /*want_data=*/false);
-    MorphResult r;
-    r.wave  = std::move(o.wave);
-    r.fs    = o.fs;
-    r.error = o.error;
-    return r;
-}
-
-MorphOutput morphing_full(const std::string& base_path, const std::string& target_path,
-                          const std::vector<Anchor>& anchors, const MorphRates& rates) {
-    return morph_impl(base_path, target_path, anchors, rates, /*want_data=*/true);
 }
 
 bool write_wav(const std::string& path, const std::vector<double>& wave, int fs, std::string& err) {

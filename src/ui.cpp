@@ -280,10 +280,11 @@ void draw_right_panel(App& app) {
     draw_anchor_connectors(base_edges, target_edges);
 }
 
-// 画面下部の動作ログ領域。applog の内容を古い順に表示し、最下部にいるときは自動追従。
-void draw_log_panel() {
-    ImGui::TextUnformatted("ログ");
-    ImGui::Separator();
+// 画面下部の動作ログ領域。ヘッダで折りたたみ可能（開閉状態は app.log_open に保持し、
+// draw_root が前フレームの状態から高さを決める）。最下部にいるときは自動追従。
+void draw_log_panel(App& app) {
+    app.log_open = ImGui::CollapsingHeader("ログ", ImGuiTreeNodeFlags_DefaultOpen);
+    if (!app.log_open) return;
 
     ImGui::BeginChild("log_scroll", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
     for (const std::string& line : applog::lines()) ImGui::TextUnformatted(line.c_str());
@@ -304,42 +305,95 @@ void draw_align_tab(App& app) {
     ImGui::EndChild();
 }
 
-// double 値を [0,1] スライダーで編集。離した（編集完了）かどうかを返す。
-bool rate_slider(const char* label, double& v) {
-    float f = static_cast<float>(v);
-    if (ImGui::SliderFloat(label, &f, 0.0f, 1.0f, "%.2f")) v = f;
-    return ImGui::IsItemDeactivatedAfterEdit();
+// double 値を [0,1] スライダーで編集（幅指定つき）。再合成トリガを返す
+// （realtime=true なら値が変わったフレーム、false なら離したフレーム）。
+bool rate_slider(const char* label, double& v, float width, bool realtime) {
+    ImGui::SetNextItemWidth(width);
+    float      f       = static_cast<float>(v);
+    const bool changed = ImGui::SliderFloat(label, &f, 0.0f, 1.0f, "%.2f");
+    if (changed) v = f;
+    return realtime ? changed : ImGui::IsItemDeactivatedAfterEdit();
 }
 
-// 上段: 軸ごとの率スライダー（一括リンク切替つき）。
-// いずれかのスライダーを「離した」フレームで true を返す（→再合成のトリガ）。
+// 上段: 軸ごとの率スライダー（一括リンク・リアルタイム更新の切替つき）。
+// 再合成すべきフレームで true を返す。
 bool draw_morph_sliders(App& app) {
     ImGui::TextUnformatted("モーフィング率 (0 = Base, 1 = Target)");
+    ImGui::SameLine();
     if (ImGui::Checkbox("全軸を一括操作", &app.morph_link) && app.morph_link)
         app.morph_rates = MorphRates::uniform(app.morph_rates.tx);
+    ImGui::SameLine();
+    ImGui::Checkbox("リアルタイム更新", &app.morph_realtime);
     ImGui::Separator();
 
-    bool released = false;
+    // スライダーを中央揃えにする。バー位置が行間で揃うよう、最長ラベルを基準に
+    // 「バー＋ラベル」全体の幅から共通のオフセットを計算して Indent する。
+    const float avail    = ImGui::GetContentRegionAvail().x;
+    const float slider_w = avail * 0.5f;
+    float       label_w  = 0.0f;
+    for (const char* l : { "時間 (tx)", "周波数 (fx)", "F0 (fo)", "スペクトル (sl)", "非周期性 (ap)", "率 (全軸)" })
+        label_w = std::max(label_w, ImGui::CalcTextSize(l).x);
+    const float offset =
+      std::max(0.0f, (avail - (slider_w + ImGui::GetStyle().ItemInnerSpacing.x + label_w)) * 0.5f);
+
+    ImGui::Indent(offset);
+    bool trigger = false;
     if (app.morph_link) {
-        float f = static_cast<float>(app.morph_rates.tx);
-        if (ImGui::SliderFloat("率 (全軸)", &f, 0.0f, 1.0f, "%.2f")) app.morph_rates = MorphRates::uniform(f);
-        released |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::SetNextItemWidth(slider_w);
+        float      f       = static_cast<float>(app.morph_rates.tx);
+        const bool changed = ImGui::SliderFloat("率 (全軸)", &f, 0.0f, 1.0f, "%.2f");
+        if (changed) app.morph_rates = MorphRates::uniform(f);
+        trigger = app.morph_realtime ? changed : ImGui::IsItemDeactivatedAfterEdit();
     } else {
-        released |= rate_slider("時間 (tx)", app.morph_rates.tx);
-        released |= rate_slider("周波数 (fx)", app.morph_rates.fx);
-        released |= rate_slider("F0 (fo)", app.morph_rates.fo);
-        released |= rate_slider("スペクトル (sl)", app.morph_rates.sl);
-        released |= rate_slider("非周期性 (ap)", app.morph_rates.ap);
+        trigger |= rate_slider("時間 (tx)", app.morph_rates.tx, slider_w, app.morph_realtime);
+        trigger |= rate_slider("周波数 (fx)", app.morph_rates.fx, slider_w, app.morph_realtime);
+        trigger |= rate_slider("F0 (fo)", app.morph_rates.fo, slider_w, app.morph_realtime);
+        trigger |= rate_slider("スペクトル (sl)", app.morph_rates.sl, slider_w, app.morph_realtime);
+        trigger |= rate_slider("非周期性 (ap)", app.morph_rates.ap, slider_w, app.morph_realtime);
     }
-    return released;
+    ImGui::Unindent(offset);
+    return trigger;
 }
 
-// モーフィングを実行して morph_out を更新（同期実行。数秒 UI が固まる）。
+// タブ表示時に base/target の解析チャンネルを最新化する。読み込まれている音声のパスが
+// 変わったときだけ再解析し、変わったら共通 dB レンジとテクスチャを作り直して morphed を無効化。
+void ensure_morph_channels(App& app) {
+    bool changed = false;
+
+    const auto ensure = [&](const Track& tr, MorphChannel& ch, std::string& ch_path) {
+        if (!tr.loaded() || ch_path == tr.path) return;
+        applog::add(tr.name + " をモーフィング用に解析中...");
+        const auto  t0 = std::chrono::steady_clock::now();
+        std::string err;
+        ch      = analyze_channel(tr.path, err);
+        ch_path = tr.path;    // 失敗しても記録して毎フレームの再試行を防ぐ
+        changed = true;
+        if (!err.empty()) {
+            applog::add(tr.name + " 解析失敗: " + err);
+            return;
+        }
+        const double ms =
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        char buf[128];
+        std::snprintf(buf, sizeof buf, "%s 解析完了 (%.2f ms)", tr.name.c_str(), ms);
+        applog::add(buf);
+    };
+    ensure(app.base, app.morph_base, app.morph_base_path);
+    ensure(app.target, app.morph_target, app.morph_target_path);
+
+    if (changed) {
+        app.morph_out = {};    // 元が変わったので以前の morphed は無効
+        rebuild_morph_bt_textures(app);
+    }
+}
+
+// モーフィングを実行して morph_out（morphed のみ）を更新。base/target は解析済みの
+// チャンネルを使うので再解析しない（同期実行だが従来より大幅に軽い）。
 void regenerate_morph(App& app) {
-    applog::add("モーフィング生成中...");
+    if (app.morph_base.empty() || app.morph_target.empty()) return;
     const auto t0 = std::chrono::steady_clock::now();
-    app.morph_out = morphing_full(app.base.path, app.target.path, app.anchors, app.morph_rates);
-    const auto t1 = std::chrono::steady_clock::now();
+    app.morph_out = morphing_channels(app.morph_base, app.morph_target, app.anchors, app.morph_rates);
+    const auto   t1 = std::chrono::steady_clock::now();
     const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     if (!app.morph_out.ok()) {
         applog::add(app.morph_out.error);
@@ -348,29 +402,33 @@ void regenerate_morph(App& app) {
         std::snprintf(buf, sizeof buf, "モーフィング生成: %zu samples (%.2f ms)", app.morph_out.wave.size(), ms);
         applog::add(buf);
     }
-    rebuild_morph_textures(app);    // sp/ap ヒートマップを更新（失敗時は解放のみ）
+    rebuild_morphed_texture(app);    // morphed のヒートマップだけ更新（失敗時は解放のみ）
 }
 
 // 中段: base / morphed / target × f0 / sp / ap の 3×3 グリッド。
 // サブプロット（LinkAllX + LinkRows）で軸範囲を共有し、目盛りラベルは左端列と最下行のみ、
 // タイトルは最上行のみに出して隙間を最小化する。
 void draw_morph_plots(App& app) {
-    const MorphOutput& mo = app.morph_out;
-    if (mo.base.empty()) {
-        ImGui::TextDisabled("「生成して再生」するとここに base / morphed / target のプロットを表示します");
+    if (app.morph_base.empty() && app.morph_target.empty()) {
+        ImGui::TextDisabled("音声を読み込むとここに base / morphed / target のプロットを表示します");
         return;
     }
 
-    // 共通レンジ: X は base/target の長い方、F0 は base/target の最大値、sp/ap は ERB 全域。
-    const double x_max  = std::max(mo.base.duration, mo.target.duration);
-    double       f0_max = 0.0;
-    for (double v : mo.base.f0) f0_max = std::max(f0_max, v);
-    for (double v : mo.target.f0) f0_max = std::max(f0_max, v);
-    const double y_f0     = f0_max > 0.0 ? f0_max * 1.1 : 500.0;
-    const double nyq      = mo.base.fs / 2.0;
-    const double erb_max  = freqscale::hz_to_erb(nyq);
+    // 共通レンジ: X は base/target の長い方、F0 は base/target の最大値、sp/ap は ERB 全域
+    // （読み込まれている側から算出。morphed は必ずこの範囲に収まる）。
+    double              x_max = 0.0, f0_max = 0.0;
+    const MorphChannel* ref = nullptr;
+    for (const MorphChannel* ch : { &app.morph_base, &app.morph_target }) {
+        if (ch->empty()) continue;
+        ref   = ch;
+        x_max = std::max(x_max, ch->duration);
+        for (double v : ch->f0) f0_max = std::max(f0_max, v);
+    }
+    const double y_f0    = f0_max > 0.0 ? f0_max * 1.1 : 500.0;
+    const double nyq     = ref->fs / 2.0;
+    const double erb_max = freqscale::hz_to_erb(nyq);
 
-    const MorphChannel* chs[3]        = { &mo.base, &mo.morphed, &mo.target };
+    const MorphChannel* chs[3]        = { &app.morph_base, &app.morph_out.morphed, &app.morph_target };
     const char*         col_titles[3] = { "Base", "Morphed", "Target" };
     const char*         row_ylabel[3] = { "F0 [Hz]", "SP [Hz]", "AP [Hz]" };
 
@@ -391,7 +449,8 @@ void draw_morph_plots(App& app) {
                 // 目盛りラベルは左端列・最下行のみ（位置は全セル共通なのでグリッドは揃う）。
                 const ImPlotAxisFlags xf = row == 2 ? ImPlotAxisFlags_None : ImPlotAxisFlags_NoTickLabels;
                 const ImPlotAxisFlags yf = col == 0 ? ImPlotAxisFlags_None : ImPlotAxisFlags_NoTickLabels;
-                ImPlot::SetupAxes(row == 2 ? "時間 [s]" : nullptr, col == 0 ? row_ylabel[row] : nullptr, xf, yf);
+                // 時間軸ラベルは非表示（目盛りは最下行のみ）。
+                ImPlot::SetupAxes(nullptr, col == 0 ? row_ylabel[row] : nullptr, xf, yf);
                 ImPlot::SetupAxisLimits(ImAxis_X1, 0, x_max, ImPlotCond_Always);
                 if (row == 0) {
                     ImPlot::SetupAxisLimits(ImAxis_Y1, 0, y_f0, ImPlotCond_Always);
@@ -435,7 +494,7 @@ void play_wave(App& app, const std::vector<double>& wave, int fs) {
 
 // 下段: 出力設定（生成/再生/WAV保存）。
 void draw_morph_output(App& app) {
-    const bool ready = app.base.loaded() && app.target.loaded();
+    const bool ready = !app.morph_base.empty() && !app.morph_target.empty();
     ImGui::BeginDisabled(!ready);
     // 注: morphing_full() は同期実行（Harvest 等で数秒かかり UI が一瞬固まる）。
     if (ImGui::Button("生成して再生")) {
@@ -461,21 +520,34 @@ void draw_morph_output(App& app) {
     ImGui::EndDisabled();
 }
 
-// 「モーフィング」タブ: 4:4:1（上=スライダー / 中=プロット / 下=出力設定）。
+// 「モーフィング」タブ: 上=スライダー(内容の高さ) / 中=プロット(残り全部) / 下=出力設定(内容の高さ)。
 void draw_morph_tab(App& app) {
-    const float avail_h = ImGui::GetContentRegionAvail().y;
-    const float spacing = ImGui::GetStyle().ItemSpacing.y;
-    const float unit    = (avail_h - 2 * spacing) / 9.0f;
+    // タブ表示中は base/target の解析チャンネルを最新化（パス変更時のみ再解析）。
+    ensure_morph_channels(app);
 
-    bool rates_released = false;
-    ImGui::BeginChild("morph_sliders", ImVec2(0, unit * 4), true);
-    rates_released = draw_morph_sliders(app);
+    const float spacing = ImGui::GetStyle().ItemSpacing.y;
+    const float fh      = ImGui::GetFrameHeight();
+    const float wpy     = ImGui::GetStyle().WindowPadding.y;
+    // 出力設定はボタン1行ぶんの高さ（子ウィンドウのパディング＋枠込み）。
+    const float out_h = fh + wpy * 2.0f + 2.0f;
+    // スライダー部は「ラベル行＋区切り＋スライダー5本」の固定高さ。
+    // 一括操作の切替（1本/5本）でレイアウトが変わらないよう、常に5本分を確保する。
+    const float slider_h = (fh + spacing)              // ラベル＋チェックボックス行
+                         + (1.0f + spacing)            // セパレータ
+                         + (5 * fh + 4 * spacing)      // スライダー5本
+                         + wpy * 2.0f + 2.0f;          // 子ウィンドウのパディング＋枠
+
+    bool rates_changed = false;
+    ImGui::BeginChild("morph_sliders", ImVec2(0, slider_h), true);
+    rates_changed = draw_morph_sliders(app);
     ImGui::EndChild();
 
-    // スライダーを離したタイミングで再合成（音声読み込み済みのときのみ）。
-    if (rates_released && app.base.loaded() && app.target.loaded()) regenerate_morph(app);
+    // 再合成トリガ（リアルタイム更新 ON=値が変わった各フレーム / OFF=離した時）。
+    // 注: 同期実行のため、リアルタイム時は生成時間ぶんの引っかかりが出る環境もある。
+    if (rates_changed && !app.morph_base.empty() && !app.morph_target.empty()) regenerate_morph(app);
 
-    ImGui::BeginChild("morph_plots", ImVec2(0, unit * 4), true);
+    // プロットは出力設定ぶんを下に残して、残り全部を使う。
+    ImGui::BeginChild("morph_plots", ImVec2(0, -(out_h + spacing)), true);
     draw_morph_plots(app);
     ImGui::EndChild();
 
@@ -494,9 +566,12 @@ void draw_root(App& app) {
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove
                    | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoCollapse);
 
-    // 縦 8:2 分割: 上=タブ（アライメント/モーフィング）、下=動作ログ（全タブ共通）。
+    // 上=タブ（アライメント/モーフィング）、下=動作ログ（全タブ共通・折りたたみ可）。
+    // ログ高さは従来(0.2)の 2/3。折りたたみ時はヘッダ分だけ確保する（前フレームの開閉状態を使用）。
     const float avail_h = ImGui::GetContentRegionAvail().y;
-    const float log_h   = std::max(100.0f, avail_h * 0.2f);
+    const float log_h   = app.log_open
+                            ? std::max(70.0f, avail_h * (0.2f * 2.0f / 3.0f))
+                            : ImGui::GetFrameHeight() + ImGui::GetStyle().WindowPadding.y * 2.0f + 2.0f;
     const float tab_h   = avail_h - log_h - ImGui::GetStyle().ItemSpacing.y;
 
     ImGui::BeginChild("tabarea", ImVec2(0, tab_h), false);
@@ -514,7 +589,7 @@ void draw_root(App& app) {
     ImGui::EndChild();
 
     ImGui::BeginChild("log", ImVec2(0, 0), true);
-    draw_log_panel();
+    draw_log_panel(app);
     ImGui::EndChild();
 
     ImGui::End();

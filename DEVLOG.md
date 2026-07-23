@@ -170,6 +170,23 @@ Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋�
 - 左パネルのモーフィング操作は撤去しタブへ集約（`App::morph_rate/morph_wave/morph_fs` →
   `morph_rates/morph_link/morph_out` に整理）。
 
+### モーフィングタブの改善（2026-07-23）
+- **base/target と morphed の分離**: `analyze_channel(path)`（1音源の解析）と
+  `morphing_channels(base_ch, target_ch, anchors, rates)`（解析済みチャンネルから morphed のみ
+  合成）に API を再構成（旧 `morphing`/`morphing_full` は廃止、MorphOutput は morphed+wave のみ）。
+  - base/target はタブ表示時に `ensure_morph_channels` が解析（パス変更時のみ再解析、失敗パスは
+    記録して再試行を防ぐ）。**音声を読み込めば生成前でも base/target のプロットが出る**。
+  - 再合成は morphed のみ（`rebuild_morphed_texture`）。**解析が走らなくなり大幅に高速化**。
+  - sp 共通 dB レンジは base/target から算出（morphed は log 補間なので必ずレンジ内）。
+  - ヘッドレスでリファクタ前後の出力一致を確認（r=0/0.5/1 の長さ・maxabs 同一）。
+- **再合成トリガ**: スライダーの値が変わった各フレームで再合成。「リアルタイム更新」
+  チェックボックス（既定 ON）で OFF=離した時のみ、に切替可能（低スペック環境向け）。
+- **UI 調整**: ログ領域を従来の 2/3 に縮小し `CollapsingHeader` で折りたたみ可能に
+  （`App::log_open`、高さは前フレームの開閉状態で決定）。グリッドの時間軸ラベルを非表示。
+  出力設定とスライダー部をコンテンツ高さに（スライダーは一括切替でサイズが変わらないよう
+  常に5本分を確保）。「全軸を一括操作」をヘッダ行へ移動。スライダーは最長ラベル基準の
+  共通オフセットで中央揃え（バー位置が行間で揃う）。
+
 ## MATLAB版との差分
 
 `generalizedTCmorphing.m` を精読して現状実装と比較した結果（2026-07-21）。

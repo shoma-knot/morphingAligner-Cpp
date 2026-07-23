@@ -12,15 +12,6 @@
 
 struct Anchor;
 
-// モーフィング結果。error が空なら成功。
-struct MorphResult {
-    std::vector<double> wave;    // 合成音声（mono, double, [-1,1] 付近）
-    int                 fs = 0;
-    std::string         error;
-
-    bool ok() const { return error.empty(); }
-};
-
 // 軸ごとのモーフィング率（各 0=base, 1=target）。UI から一律にしたい場合は全て同値にする。
 struct MorphRates {
     double tx = 0.5;    // 時間軸
@@ -45,24 +36,24 @@ struct MorphChannel {
     bool empty() const { return n_frames == 0; }
 };
 
-// base/target/morphed の中間データ＋合成音声（モーフィングタブの表示用）。
+// モーフィング結果（morphed の中間データ＋合成音声）。error が空なら成功。
 struct MorphOutput {
-    MorphChannel        base, target, morphed;
-    std::vector<double> wave;
+    MorphChannel        morphed;    // モーフ後の f0/sp/ap（表示用）
+    std::vector<double> wave;       // 合成音声（mono, double, [-1,1] 付近）
     int                 fs = 0;
     std::string         error;
 
     bool ok() const { return error.empty(); }
 };
 
-// base/target を解析し、anchors による時間/周波数ワープと軸ごとの率でモーフィングした
-// 音声を合成する。失敗時は結果の error にメッセージを入れる。
-MorphResult morphing(const std::string& base_path, const std::string& target_path,
-                     const std::vector<Anchor>& anchors, const MorphRates& rates);
+// 1音源を WORLD で解析して f0/sp/ap のチャンネルを作る（base/target 用）。
+// 失敗時は err に理由を入れ、empty() なチャンネルを返す。
+MorphChannel analyze_channel(const std::string& path, std::string& err);
 
-// morphing() と同じ処理で、base/target/morphed の f0/sp/ap も返す（表示用）。
-MorphOutput morphing_full(const std::string& base_path, const std::string& target_path,
-                          const std::vector<Anchor>& anchors, const MorphRates& rates);
+// 解析済みの base/target チャンネルから、anchors と軸ごとの率で morphed を合成する
+// （base/target の再解析は行わない）。失敗時は結果の error にメッセージを入れる。
+MorphOutput morphing_channels(const MorphChannel& base, const MorphChannel& target,
+                              const std::vector<Anchor>& anchors, const MorphRates& rates);
 
 // wave を 16bit PCM モノラル WAV として path に書き出す。成功で true。
 bool write_wav(const std::string& path, const std::vector<double>& wave, int fs, std::string& err);
