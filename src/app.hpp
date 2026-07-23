@@ -4,6 +4,7 @@
 /// @brief Application state model (tracks, anchors) and loading logic.
 
 #include <chrono>
+#include <functional>
 #include <future>
 #include <memory>
 #include <string>
@@ -87,6 +88,11 @@ struct App {
     int                                   morph_epoch = 0, morph_job_epoch = 0;    // base/target の世代
     std::chrono::steady_clock::time_point morph_job_t0;    // 計測用
 
+    // 汎用 UI ジョブ: ファイルダイアログや解析などブロックする処理をワーカーで実行し、
+    // 完了時に「メインスレッドで適用する処理」を受け取って実行する（同時に1本のみ）。
+    std::future<std::function<void(App&)>> ui_job;
+    bool                                   ui_job_running = false;
+
     // モーフィングタブの sp/ap ヒートマップ用テクスチャ（0=base, 1=morphed, 2=target）。
     unsigned int morph_tex_sp[3] = { 0, 0, 0 };
     unsigned int morph_tex_ap[3] = { 0, 0, 0 };
@@ -102,9 +108,6 @@ void rebuild_morph_bt_textures(App& app);
 // morphed の sp/ap テクスチャだけを作り直す（レンジは計算済みのものを使用）。
 void rebuild_morphed_texture(App& app);
 
-// ファイルダイアログで `tr` を選び、解析してテクスチャを (再)生成する。
-void load_track(Track& tr);
-
-// 指定パスを解析してテクスチャを (再)生成する。成功で true、失敗時は tr を初期化する。
-// 結果は applog に出力。セッション読み込みからも使う。
-bool load_track_from_path(Track& tr, const std::string& path);
+// 解析済みの Spectrogram を Track に反映する（テクスチャ生成・表示状態リセット・ログ）。
+// GL を使うため必ずメインスレッドで呼ぶこと（解析はワーカーで analyze_file を使う）。
+void apply_track(Track& tr, const std::string& path, Spectrogram&& spec);

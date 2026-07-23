@@ -48,12 +48,58 @@ std::string default_session_path() {
     return ec ? "session.json" : (dir / "session.json").string();
 }
 
+// ── 汎用 UI ジョブ ───────────────────────────────────────────
+// ファイルダイアログ（tinyfd はダイアログを閉じるまでブロックする）や音声解析などを
+// ワーカースレッドで実行し、完了時に「メインスレッドで適用する処理」を受け取って実行する。
+// GL（テクスチャ）や App の状態変更は必ず適用処理側＝メインスレッドで行うこと。
+
+// ジョブを開始する（同時に1本のみ。実行中は無視されるので、ボタン側でも無効化しておく）。
+void launch_ui_job(App& app, std::function<std::function<void(App&)>()> work) {
+    if (app.ui_job_running) return;
+    app.ui_job_running = true;
+    app.ui_job         = std::async(std::launch::async, std::move(work));
+}
+
+// 毎フレーム: 完了した UI ジョブを回収し、適用処理をメインスレッドで実行する。
+void poll_ui_job(App& app) {
+    if (!app.ui_job_running) return;
+    if (app.ui_job.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+    std::function<void(App&)> apply = app.ui_job.get();
+    app.ui_job_running              = false;
+    if (apply) apply(app);
+}
+
+// 音声ファイルの選択→解析をワーカーで行い、完了時に Track へ反映する。
+void launch_load_track_job(App& app, bool is_base) {
+    const std::string name = is_base ? app.base.name : app.target.name;
+    launch_ui_job(app, [name, is_base]() -> std::function<void(App&)> {
+        static const char* kAudioFilter[] = { "*.wav", "*.flac", "*.mp3", "*.ogg" };
+        const std::string  title          = name + " 音声を選択";
+        const char* picked = tinyfd_openFileDialog(title.c_str(), "", 4, kAudioFilter, "音声ファイル", 0);
+        if (!picked) return {};    // キャンセル
+        const std::string path = picked;
+        applog::add(name + " 解析中...: " + path);
+        try {
+            // std::function はコピー可能な呼び出し体を要求するので shared_ptr で持ち回す。
+            auto spec = std::make_shared<Spectrogram>(analyze_file(path));
+            return [is_base, path, spec](App& a) {
+                apply_track(is_base ? a.base : a.target, path, std::move(*spec));
+            };
+        } catch (const std::exception& e) {
+            applog::add(name + " 読み込み失敗: " + e.what());
+            return {};
+        }
+    });
+}
+
 // 左パネル内の、トラック1つ分の読み込み/再生操作と情報表示。
 void draw_track_controls(App& app, Track& tr, const char* label) {
     ImGui::PushID(&tr);
     ImGui::TextUnformatted(label);
 
-    if (ImGui::Button("読み込む", ImVec2(-1, 0))) load_track(tr);
+    ImGui::BeginDisabled(app.ui_job_running);
+    if (ImGui::Button("読み込む", ImVec2(-1, 0))) launch_load_track_job(app, &tr == &app.base);
+    ImGui::EndDisabled();
 
     ImGui::BeginDisabled(!tr.loaded());
     if (ImGui::Button("再生", ImVec2(-1, 0))) {
@@ -246,21 +292,35 @@ void draw_left_panel(App& app) {
     // ── セッション（アンカー）の保存/読み込み ─────────────────
     ImGui::Spacing();
     ImGui::Separator();
-    static const char* kJsonFilter[] = { "*.json" };
     // 既定の保存先はカレントディレクトリ。読み込みも同じ場所から開始。
     static const std::string kDefaultPath = default_session_path();
 
     // 保存は base/target が両方読み込まれているとき（waves パスが有効）だけ許可。
-    ImGui::BeginDisabled(!(app.base.loaded() && app.target.loaded()));
+    // ダイアログはブロックするのでワーカーで開く（書き出し自体は速いのでメインで）。
+    ImGui::BeginDisabled(!(app.base.loaded() && app.target.loaded()) || app.ui_job_running);
     if (ImGui::Button("セッション保存", ImVec2(-1, 0))) {
-        if (const char* p = tinyfd_saveFileDialog("セッションを保存", kDefaultPath.c_str(), 1, kJsonFilter, "JSON"))
-            save_session(app, p);
+        launch_ui_job(app, [def = kDefaultPath]() -> std::function<void(App&)> {
+            static const char* kJsonFilter[] = { "*.json" };
+            const char* p = tinyfd_saveFileDialog("セッションを保存", def.c_str(), 1, kJsonFilter, "JSON");
+            if (!p) return {};    // キャンセル
+            const std::string path = p;
+            return [path](App& a) { save_session(a, path); };
+        });
     }
     ImGui::EndDisabled();
+    ImGui::BeginDisabled(app.ui_job_running);
     if (ImGui::Button("セッション読み込み", ImVec2(-1, 0))) {
-        if (const char* p = tinyfd_openFileDialog("セッションを読み込み", kDefaultPath.c_str(), 1, kJsonFilter, "JSON", 0))
-            load_session(app, p);
+        launch_ui_job(app, [def = kDefaultPath]() -> std::function<void(App&)> {
+            static const char* kJsonFilter[] = { "*.json" };
+            const char* p = tinyfd_openFileDialog("セッションを読み込み", def.c_str(), 1, kJsonFilter, "JSON", 0);
+            if (!p) return {};    // キャンセル
+            // JSON パース＋両音声の解析までワーカーで行う（GL なし）。
+            auto d = std::make_shared<SessionLoadData>(load_session_data(p));
+            if (!d->ok) return {};
+            return [d](App& a) { apply_session_data(a, std::move(*d)); };
+        });
     }
+    ImGui::EndDisabled();
     // （モーフィング操作は「モーフィング」タブに移動）
 }
 
@@ -356,38 +416,49 @@ bool draw_morph_sliders(App& app) {
 }
 
 // タブ表示時に base/target の解析チャンネルを最新化する。読み込まれている音声のパスが
-// 変わったときだけ再解析し、変わったら共通 dB レンジとテクスチャを作り直して morphed を無効化。
+// 変わったときだけワーカーで再解析し（UI ジョブとして1本ずつ）、反映時に共通 dB レンジと
+// テクスチャを作り直して morphed を無効化する。
 void ensure_morph_channels(App& app) {
-    bool changed = false;
+    if (app.ui_job_running) return;    // 進行中の UI ジョブと直列化
 
-    const auto ensure = [&](const Track& tr, std::shared_ptr<const MorphChannel>& ch, std::string& ch_path) {
-        if (!tr.loaded() || ch_path == tr.path) return;
-        applog::add(tr.name + " をモーフィング用に解析中...");
+    // 古くなっている方（base 優先）を1つだけ処理する。両方古い場合は次のフレームで続き。
+    const auto stale = [](const Track& tr, const std::string& ch_path) {
+        return tr.loaded() && ch_path != tr.path;
+    };
+    bool is_base;
+    if (stale(app.base, app.morph_base_path)) is_base = true;
+    else if (stale(app.target, app.morph_target_path)) is_base = false;
+    else return;
+
+    const std::string name = is_base ? app.base.name : app.target.name;
+    const std::string path = is_base ? app.base.path : app.target.path;
+    // 先に試行済みパスを記録して、失敗時に毎フレーム再解析されるのを防ぐ。
+    (is_base ? app.morph_base_path : app.morph_target_path) = path;
+
+    launch_ui_job(app, [name, path, is_base]() -> std::function<void(App&)> {
+        applog::add(name + " をモーフィング用に解析中...");
         const auto  t0 = std::chrono::steady_clock::now();
         std::string err;
-        MorphChannel c = analyze_channel(tr.path, err);
-        ch_path        = tr.path;    // 失敗しても記録して毎フレームの再試行を防ぐ
-        changed        = true;
-        if (!err.empty()) {
-            ch.reset();
-            applog::add(tr.name + " 解析失敗: " + err);
-            return;
-        }
-        ch = std::make_shared<const MorphChannel>(std::move(c));
-        const double ms =
-          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-        char buf[128];
-        std::snprintf(buf, sizeof buf, "%s 解析完了 (%.2f ms)", tr.name.c_str(), ms);
-        applog::add(buf);
-    };
-    ensure(app.base, app.morph_base, app.morph_base_path);
-    ensure(app.target, app.morph_target, app.morph_target_path);
+        MorphChannel c = analyze_channel(path, err);
 
-    if (changed) {
-        ++app.morph_epoch;     // 実行中ジョブの結果は古い base/target のものなので破棄対象に
-        app.morph_out = {};    // 元が変わったので以前の morphed は無効
-        rebuild_morph_bt_textures(app);
-    }
+        std::shared_ptr<const MorphChannel> ch;    // 失敗時は nullptr のまま反映
+        if (!err.empty()) {
+            applog::add(name + " 解析失敗: " + err);
+        } else {
+            ch = std::make_shared<const MorphChannel>(std::move(c));
+            const double ms =
+              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            char buf[128];
+            std::snprintf(buf, sizeof buf, "%s 解析完了 (%.2f ms)", name.c_str(), ms);
+            applog::add(buf);
+        }
+        return [is_base, ch](App& a) {
+            (is_base ? a.morph_base : a.morph_target) = ch;
+            ++a.morph_epoch;     // 実行中モーフの結果は古い base/target のものなので破棄対象に
+            a.morph_out = {};    // 元が変わったので以前の morphed は無効
+            rebuild_morph_bt_textures(a);
+        };
+    });
 }
 
 // 非同期でモーフィングを開始する（実行中なら「最新条件で1回だけ再実行」を予約）。
@@ -547,16 +618,24 @@ void draw_morph_output(App& app) {
     ImGui::BeginDisabled(app.morph_out.wave.empty());
     if (ImGui::Button("再生")) play_wave(app, app.morph_out.wave, app.morph_out.fs);
     ImGui::SameLine();
+    ImGui::BeginDisabled(app.ui_job_running);
     if (ImGui::Button("WAV 保存")) {
-        static const char* kWavFilter[] = { "*.wav" };
-        if (const char* p = tinyfd_saveFileDialog("モーフィング結果を保存", "morph.wav", 1, kWavFilter, "WAV")) {
+        // 波形をコピーしてワーカーへ（ダイアログ→書き出しまでワーカーで完結。GL なし）。
+        auto      wave = std::make_shared<const std::vector<double>>(app.morph_out.wave);
+        const int fs   = app.morph_out.fs;
+        launch_ui_job(app, [wave, fs]() -> std::function<void(App&)> {
+            static const char* kWavFilter[] = { "*.wav" };
+            const char* p = tinyfd_saveFileDialog("モーフィング結果を保存", "morph.wav", 1, kWavFilter, "WAV");
+            if (!p) return {};    // キャンセル
             std::string werr;
-            if (write_wav(p, app.morph_out.wave, app.morph_out.fs, werr))
+            if (write_wav(p, *wave, fs, werr))
                 applog::add(std::string { "WAV 保存: " } + p);
             else
                 applog::add("WAV 保存失敗: " + werr);
-        }
+            return {};
+        });
     }
+    ImGui::EndDisabled();
     ImGui::EndDisabled();
 
     // 実行中インジケータ。
@@ -605,7 +684,8 @@ void draw_morph_tab(App& app) {
 }    // namespace
 
 void draw_root(App& app) {
-    // 非同期モーフィングの完了回収（どのタブにいても回収できるようここで毎フレーム）。
+    // 非同期ジョブの完了回収（どのタブにいても回収できるようここで毎フレーム）。
+    poll_ui_job(app);
     poll_morph_job(app);
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -624,17 +704,26 @@ void draw_root(App& app) {
     const float tab_h   = avail_h - log_h - ImGui::GetStyle().ItemSpacing.y;
 
     ImGui::BeginChild("tabarea", ImVec2(0, tab_h), false);
+    // UI ジョブ実行中（ダイアログ表示中や解析中）はタブ切替も無効化する。
+    // タブの中身は操作可能なままにしたいので、選択中タブの描画中だけ無効化を解除する。
+    const bool tabs_locked = app.ui_job_running;
+    ImGui::BeginDisabled(tabs_locked);
     if (ImGui::BeginTabBar("tabs")) {
         if (ImGui::BeginTabItem("アライメント")) {
+            ImGui::EndDisabled();
             draw_align_tab(app);
+            ImGui::BeginDisabled(tabs_locked);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("モーフィング")) {
+            ImGui::EndDisabled();
             draw_morph_tab(app);
+            ImGui::BeginDisabled(tabs_locked);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
     }
+    ImGui::EndDisabled();
     ImGui::EndChild();
 
     ImGui::BeginChild("log", ImVec2(0, 0), true);

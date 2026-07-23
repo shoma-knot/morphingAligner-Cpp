@@ -49,11 +49,13 @@ bool save_session(const App& app, const std::string& path) {
     return true;
 }
 
-bool load_session(App& app, const std::string& path) {
+SessionLoadData load_session_data(const std::string& path) {
+    SessionLoadData d;
+
     std::ifstream is(path);
     if (!is) {
         applog::add("セッション読み込み失敗: ファイルを開けません: " + path);
-        return false;
+        return d;
     }
 
     json j;
@@ -61,30 +63,28 @@ bool load_session(App& app, const std::string& path) {
         is >> j;
     } catch (const std::exception& e) {
         applog::add(std::string { "セッション読み込み失敗: JSON 解析エラー: " } + e.what());
-        return false;
+        return d;
     }
 
-    std::string base_path, target_path;
     try {
-        base_path   = j.at("waves").at("base").get<std::string>();
-        target_path = j.at("waves").at("target").get<std::string>();
+        d.base_path   = j.at("waves").at("base").get<std::string>();
+        d.target_path = j.at("waves").at("target").get<std::string>();
     } catch (const std::exception& e) {
         applog::add(std::string { "セッション読み込み失敗: waves が不正: " } + e.what());
-        return false;
+        return d;
     }
 
     // 音声ファイルの存在を先に確認（片方だけ復元して中途半端な状態になるのを防ぐ）。
-    if (!file_readable(base_path)) {
-        applog::add("セッション読み込み失敗: base 音声が見つかりません: " + base_path);
-        return false;
+    if (!file_readable(d.base_path)) {
+        applog::add("セッション読み込み失敗: base 音声が見つかりません: " + d.base_path);
+        return d;
     }
-    if (!file_readable(target_path)) {
-        applog::add("セッション読み込み失敗: target 音声が見つかりません: " + target_path);
-        return false;
+    if (!file_readable(d.target_path)) {
+        applog::add("セッション読み込み失敗: target 音声が見つかりません: " + d.target_path);
+        return d;
     }
 
     // アンカーを先にパースしておく（音声を差し替える前に検証を済ませる）。
-    std::vector<Anchor> anchors;
     try {
         for (const json& ja : j.at("anchors")) {
             Anchor a;
@@ -92,18 +92,35 @@ bool load_session(App& app, const std::string& path) {
             a.target_t = ja.at("time").at("target").get<double>();
             for (const json& jf : ja.at("freqs"))
                 a.freqs.push_back(FreqAnchor { jf.at("base").get<double>(), jf.at("target").get<double>() });
-            anchors.push_back(std::move(a));
+            d.anchors.push_back(std::move(a));
         }
     } catch (const std::exception& e) {
         applog::add(std::string { "セッション読み込み失敗: anchors が不正: " } + e.what());
-        return false;
+        return d;
     }
 
-    // 音声を復元（デコード失敗などはここで検出。詳細は load_track_from_path が applog に出す）。
-    if (!load_track_from_path(app.base, base_path)) return false;
-    if (!load_track_from_path(app.target, target_path)) return false;
+    // 音声を解析（デコード失敗などはここで検出）。GL は使わないのでワーカーで実行できる。
+    try {
+        d.base_spec = analyze_file(d.base_path);
+    } catch (const std::exception& e) {
+        applog::add(std::string { "セッション読み込み失敗: base 解析エラー: " } + e.what());
+        return d;
+    }
+    try {
+        d.target_spec = analyze_file(d.target_path);
+    } catch (const std::exception& e) {
+        applog::add(std::string { "セッション読み込み失敗: target 解析エラー: " } + e.what());
+        return d;
+    }
 
-    app.anchors = std::move(anchors);
     applog::add("セッション読み込みました: " + path);
-    return true;
+    d.ok = true;
+    return d;
+}
+
+void apply_session_data(App& app, SessionLoadData&& d) {
+    if (!d.ok) return;
+    apply_track(app.base, d.base_path, std::move(d.base_spec));
+    apply_track(app.target, d.target_path, std::move(d.target_spec));
+    app.anchors = std::move(d.anchors);
 }

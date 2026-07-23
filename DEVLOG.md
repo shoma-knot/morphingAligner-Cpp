@@ -197,6 +197,20 @@ Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋�
 - 出力行に「生成中...」表示。スライダー操作・生成で UI がブロックしなくなった。
 - main に Threads::Threads を明示リンク。非同期実行の出力一致をヘッドレスで検証済み。
 
+### ファイル読み込み・ダイアログの別スレッド化（2026-07-23）
+- 汎用 UI ジョブ: `launch_ui_job`（ワーカーでダイアログ＋重い処理を実行し「メインスレッドで
+  適用する処理」を返す）＋`poll_ui_job`（draw_root で毎フレーム回収）。同時1本、実行中は
+  関連ボタンとタブ切替を無効化（選択中タブの中身は操作可能なまま）。
+- 非同期化: 音声「読み込む」（ダイアログ＋analyze_file→apply_track）、セッション保存
+  （ダイアログのみワーカー）、セッション読み込み（ダイアログ＋JSON＋両音声解析→
+  apply_session_data）、WAV 保存（ダイアログ＋書き出し）、モーフ用 base/target 解析。
+- 下回り: applog をスレッドセーフ化（mutex、lines() はスナップショット返し）。
+  `load_track/load_track_from_path` → `analyze_file`(worker)＋`apply_track`(main) に分離。
+  `load_session` → `load_session_data`(worker-safe)＋`apply_session_data`(main) に分割。
+- GL（テクスチャ）と App の状態変更は必ず適用クロージャ＝メインスレッドで実行する規約。
+- tinyfd はダイアログを閉じるまでブロックするため、ワーカー実行で「応答なし」を解消
+  （Linux では zenity/kdialog のサブプロセスなので非メインスレッドで安全）。
+
 ## MATLAB版との差分
 
 `generalizedTCmorphing.m` を精読して現状実装と比較した結果（2026-07-21）。

@@ -3,12 +3,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
-#include <exception>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <GLFW/glfw3.h>
-#include <tinyfiledialogs.h>
 
 #include "freqscale.hpp"
 #include "log.hpp"
@@ -206,36 +205,20 @@ void rebuild_morph_bt_textures(App& app) {
     rebuild_morphed_texture(app);
 }
 
-bool load_track_from_path(Track& tr, const std::string& path) {
+void apply_track(Track& tr, const std::string& path, Spectrogram&& spec) {
     if (tr.tex) {
         glDeleteTextures(1, &tr.tex);
         tr.tex = 0;
     }
-    try {
-        tr.spec  = analyze_file(path);
-        tr.tex   = make_spectrogram_texture(tr.spec);
-        tr.y_min = 0.0;                  // reset the frequency-axis view (ERB レート)
-        tr.y_max = freqscale::hz_to_erb(tr.spec.fs / 2.0);
-        // ミニマップの枠を全体表示で初期化。
-        tr.view_x0 = 0.0;
-        tr.view_x1 = tr.spec.duration;
-        tr.view_y0 = 0.0;
-        tr.view_y1 = tr.y_max;
-        tr.path    = path;
-        applog::add(tr.name + " 読み込み完了: " + path);
-        return true;
-    } catch (const std::exception& e) {
-        tr.spec = {};
-        tr.path.clear();
-        applog::add(tr.name + " 読み込み失敗: " + e.what());
-        return false;
-    }
-}
-
-void load_track(Track& tr) {
-    static const char* filters[] = { "*.wav", "*.flac", "*.mp3", "*.ogg" };
-    const std::string  title     = tr.name + " 音声を選択";
-    const char*        picked    = tinyfd_openFileDialog(title.c_str(), "", 4, filters, "音声ファイル", 0);
-    if (!picked) return;    // cancelled
-    load_track_from_path(tr, picked);
+    tr.spec  = std::move(spec);
+    tr.tex   = make_spectrogram_texture(tr.spec);
+    tr.y_min = 0.0;    // 周波数軸の表示範囲をリセット（ERB レート）
+    tr.y_max = freqscale::hz_to_erb(tr.spec.fs / 2.0);
+    // ミニマップの枠を全体表示で初期化。
+    tr.view_x0 = 0.0;
+    tr.view_x1 = tr.spec.duration;
+    tr.view_y0 = 0.0;
+    tr.view_y1 = tr.y_max;
+    tr.path    = path;
+    applog::add(tr.name + " 読み込み完了: " + path);
 }
