@@ -12,7 +12,11 @@
 #include "freqscale.hpp"
 #include "log.hpp"
 
+
 namespace {
+
+// FIXME: Windowsでビルドが通らないので応急処置
+#define GL_CLAMP_TO_EDGE 0x812F
 
 // Bake the dB spectrogram into an RGBA OpenGL texture once. Drawing it then
 // costs a single textured quad per frame instead of one CPU-rebuilt cell per
