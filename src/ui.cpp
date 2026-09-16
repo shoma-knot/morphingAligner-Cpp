@@ -323,6 +323,11 @@ void draw_left_panel(App& app) {
         });
     }
     ImGui::EndDisabled();
+    ImGui::TextDisabled("tcmorph の anchors.json も可");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("tcmorph 形式（objects 配列）の JSON は音声パスを持たないため、\n"
+                          "現在の base / target を保ったままアンカーだけを差し替えます。\n"
+                          "objects の1番目が base、2番目が target になります。");
     // （モーフィング操作は「モーフィング」タブに移動）
 }
 

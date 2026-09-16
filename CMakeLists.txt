@@ -24,11 +24,10 @@ set(WORLD_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(third-party/world)
 
 
-# src 直下のみ。src/tcmorph は外部ライブラリ(ヘッダオンリー)で、examples に
-# それぞれ main() を持つので再帰 glob に含めるとリンクが壊れる。
 file(GLOB SOURCES CONFIGURE_DEPENDS src/*.cpp)
 add_executable(main ${SOURCES})
-target_include_directories(main PRIVATE ${CMAKE_SOURCE_DIR}/src/tcmorph/include)
+# tcmorph はヘッダオンリーの外部ライブラリ。
+target_include_directories(main PRIVATE ${CMAKE_SOURCE_DIR}/tcmorph/include)
 target_link_libraries(main PRIVATE
     imgui::imgui
     implot::implot

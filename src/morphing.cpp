@@ -107,6 +107,9 @@ AnchorMatrices build_anchors(const std::vector<Anchor>& anchors, double end_ref,
     m.t_tgt.resize(n);
 
     // 周波数アンカーは base_f 昇順に詰める（本数は時間アンカーごとに違ってよい）。
+    // UI ではクリック順に並ぶだけで順序に意味がないので、ここで並べ替えて ref 側の
+    // 補間格子を単調に保つ。tcmorph は逆転も「折り返すワープ」として通すが、それを
+    // 期待しているのは MATLAB 由来のデータだけなので本アプリでは採らない。
     std::vector<std::vector<std::pair<double, double>>> fp(static_cast<std::size_t>(n));
     int max_nf = 0;
     for (int i = 0; i < n; ++i) {
