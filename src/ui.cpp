@@ -147,10 +147,15 @@ void handle_freq_axis_input(Track& tr, const Spectrogram& sp) {
 
     const double erb_max = freqscale::hz_to_erb(sp.fs / 2.0);    // Y軸の上限（ERB）
 
-    // 周波数軸ラベル上でのホイールは、カーソル位置を中心に Y をズームする。
-    // （プロット領域上のホイールは Y が Lock されているので X しか動かない）
-    ImGuiIO& io = ImGui::GetIO();
-    if (ImPlot::IsAxisHovered(ImAxis_Y1) && io.MouseWheel != 0.0f) {
+    // ホイールでカーソル位置を中心に Y をズームする。発火するのは
+    //   - 周波数軸ラベル上（プロット領域上のホイールは Y が Lock なので X しか動かない）
+    //   - プロット領域上で Ctrl 併用（Ctrl 中は X を Lock して X ズームを抑えている。
+    //     draw_spectrogram の SetupAxes を参照）
+    // Ctrl は周波数アンカーの操作にも使っており、「Ctrl = 周波数方向」で揃えている。
+    ImGuiIO&   io        = ImGui::GetIO();
+    const bool wheel_y   = ImPlot::IsAxisHovered(ImAxis_Y1)
+                      || (ImPlot::IsPlotHovered() && io.KeyCtrl);
+    if (wheel_y && io.MouseWheel != 0.0f) {
         const double yc     = ImPlot::GetPlotMousePos().y;
         const double factor = std::pow(1.0 - ImPlot::GetInputMap().ZoomRate, static_cast<double>(io.MouseWheel));
         double       lo     = std::max(0.0, yc + (tr.y_min - yc) * factor);
@@ -235,7 +240,11 @@ void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vect
     if (ImPlot::BeginPlot("##spec", ImVec2(plot_w, spec_h), ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect)) {
         // 周波数軸を Lock し、プロット領域上のホイールが時間(X)だけをズームするようにする。
         // Y の表示範囲は自前の状態(tr.y_min/max)で駆動し、軸ラベル上ホバー時のみ手動ズーム。
-        ImPlot::SetupAxes("時間 [s]", "周波数 [Hz]", ImPlotAxisFlags_None, ImPlotAxisFlags_Lock);
+        // Ctrl 併用のホイールは周波数(Y)ズームに使うので、その間は X も Lock して
+        // ImPlot による時間軸ズームが同時に起きないようにする。
+        const ImPlotAxisFlags x_flags =
+          ImGui::GetIO().KeyCtrl ? ImPlotAxisFlags_Lock : ImPlotAxisFlags_None;
+        ImPlot::SetupAxes("時間 [s]", "周波数 [Hz]", x_flags, ImPlotAxisFlags_Lock);
         // Y軸は ERB レートを座標にし、目盛りは Hz で表示（テクスチャも ERB 等間隔）。
         setup_erb_yaxis_ticks(sp.fs / 2.0);
         // X は初期のみ設定（以後ズーム/パン可）、Y は毎フレーム自前の表示範囲に追従。
