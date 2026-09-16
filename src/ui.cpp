@@ -114,7 +114,9 @@ void draw_track_controls(App& app, Track& tr, const char* label) {
     ImGui::EndDisabled();
 
     if (tr.loaded()) {
-        ImGui::TextWrapped("%s", tr.path.c_str());
+        // パネルが狭いのでファイル名だけ出す（フルパスはホバーで見せる）。
+        ImGui::TextWrapped("%s", std::filesystem::path(tr.path).filename().string().c_str());
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr.path.c_str());
         ImGui::Text("%d Hz, %.2f s", tr.spec.fs, tr.spec.duration);
     } else {
         ImGui::TextDisabled("未読み込み");
@@ -374,23 +376,31 @@ void draw_align_tab(App& app) {
 
 // double 値を [0,1] スライダーで編集（幅指定つき）。再合成トリガを返す
 // （realtime=true なら値が変わったフレーム、false なら離したフレーム）。
-bool rate_slider(const char* label, double& v, float width, bool realtime) {
+// つまみを離したフレームは、自動再生の判定用に released にも立てる（realtime とは
+// 独立: リアルタイム更新中でも再生は離した時だけにしたいため）。
+bool rate_slider(const char* label, double& v, float width, bool realtime, bool& released) {
     ImGui::SetNextItemWidth(width);
     float      f       = static_cast<float>(v);
     const bool changed = ImGui::SliderFloat(label, &f, 0.0f, 1.0f, "%.2f");
     if (changed) v = f;
-    return realtime ? changed : ImGui::IsItemDeactivatedAfterEdit();
+    const bool done = ImGui::IsItemDeactivatedAfterEdit();
+    released |= done;
+    return realtime ? changed : done;
 }
 
 // 上段: 軸ごとの率スライダー（一括リンク・リアルタイム更新の切替つき）。
-// 再合成すべきフレームで true を返す。
-bool draw_morph_sliders(App& app) {
+// 再合成すべきフレームで true を返し、つまみを離したフレームは released に立てる。
+bool draw_morph_sliders(App& app, bool& released) {
     ImGui::TextUnformatted("モーフィング率 (0 = Base, 1 = Target)");
     ImGui::SameLine();
     if (ImGui::Checkbox("全軸を一括操作", &app.morph_link) && app.morph_link)
         app.morph_rates = MorphRates::uniform(app.morph_rates.tx);
     ImGui::SameLine();
     ImGui::Checkbox("リアルタイム更新", &app.morph_realtime);
+    ImGui::SameLine();
+    ImGui::Checkbox("離したら再生", &app.morph_autoplay);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("スライダーのつまみを離したら、その率で合成し直して自動で再生します。");
     ImGui::Separator();
 
     // スライダーを中央揃えにする。バー位置が行間で揃うよう、最長ラベルを基準に
@@ -410,13 +420,15 @@ bool draw_morph_sliders(App& app) {
         float      f       = static_cast<float>(app.morph_rates.tx);
         const bool changed = ImGui::SliderFloat("率 (全軸)", &f, 0.0f, 1.0f, "%.2f");
         if (changed) app.morph_rates = MorphRates::uniform(f);
-        trigger = app.morph_realtime ? changed : ImGui::IsItemDeactivatedAfterEdit();
+        const bool done = ImGui::IsItemDeactivatedAfterEdit();
+        released |= done;
+        trigger = app.morph_realtime ? changed : done;
     } else {
-        trigger |= rate_slider("時間 (tx)", app.morph_rates.tx, slider_w, app.morph_realtime);
-        trigger |= rate_slider("周波数 (fx)", app.morph_rates.fx, slider_w, app.morph_realtime);
-        trigger |= rate_slider("F0 (fo)", app.morph_rates.fo, slider_w, app.morph_realtime);
-        trigger |= rate_slider("スペクトル (sl)", app.morph_rates.sl, slider_w, app.morph_realtime);
-        trigger |= rate_slider("非周期性 (ap)", app.morph_rates.ap, slider_w, app.morph_realtime);
+        trigger |= rate_slider("時間 (tx)", app.morph_rates.tx, slider_w, app.morph_realtime, released);
+        trigger |= rate_slider("周波数 (fx)", app.morph_rates.fx, slider_w, app.morph_realtime, released);
+        trigger |= rate_slider("F0 (fo)", app.morph_rates.fo, slider_w, app.morph_realtime, released);
+        trigger |= rate_slider("スペクトル (sl)", app.morph_rates.sl, slider_w, app.morph_realtime, released);
+        trigger |= rate_slider("非周期性 (ap)", app.morph_rates.ap, slider_w, app.morph_realtime, released);
     }
     ImGui::Unindent(offset);
     return trigger;
@@ -473,12 +485,16 @@ void ensure_morph_channels(App& app) {
 void request_morph(App& app) {
     if (!app.morph_base || !app.morph_target) return;
     if (app.morph_job_running) {
+        // 実行中なら畳む。再生予約は morph_play_request に残したままにして、
+        // この再要求から始まるジョブ（最新の率）の方で再生されるようにする。
         app.morph_job_pending = true;
         return;
     }
-    app.morph_job_running = true;
-    app.morph_job_pending = false;
-    app.morph_job_epoch   = app.morph_epoch;
+    app.morph_job_running  = true;
+    app.morph_job_pending  = false;
+    app.morph_job_play     = app.morph_play_request;    // このジョブが再生を担当する
+    app.morph_play_request = false;
+    app.morph_job_epoch    = app.morph_epoch;
     app.morph_job_t0      = std::chrono::steady_clock::now();
 
     const auto base    = app.morph_base;
@@ -590,7 +606,7 @@ void poll_morph_job(App& app) {
 
     if (app.morph_job_epoch != app.morph_epoch) {
         // base/target が差し替わった後に完了した古い結果は捨てる。
-        app.morph_play_when_done = false;
+        app.morph_play_request = false;
     } else {
         const double ms =
           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - app.morph_job_t0).count();
@@ -611,9 +627,9 @@ void poll_morph_job(App& app) {
             applog::add(buf);
         }
         rebuild_morphed_texture(app);
-        if (app.morph_play_when_done && app.morph_out.ok()) play_wave(app, app.morph_out.wave, app.morph_out.fs);
-        app.morph_play_when_done = false;
+        if (app.morph_job_play && app.morph_out.ok()) play_wave(app, app.morph_out.wave, app.morph_out.fs);
     }
+    app.morph_job_play = false;
 
     if (app.morph_job_pending) request_morph(app);
 }
@@ -623,7 +639,7 @@ void draw_morph_output(App& app) {
     const bool ready = app.morph_base && app.morph_target;
     ImGui::BeginDisabled(!ready);
     if (ImGui::Button("生成して再生")) {
-        app.morph_play_when_done = true;    // 完了回収時に再生
+        app.morph_play_request = true;    // 完了回収時に再生
         request_morph(app);
     }
     ImGui::EndDisabled();
@@ -676,14 +692,19 @@ void draw_morph_tab(App& app) {
                          + (5 * fh + 4 * spacing)      // スライダー5本
                          + wpy * 2.0f + 2.0f;          // 子ウィンドウのパディング＋枠
 
-    bool rates_changed = false;
+    bool rates_changed = false, rates_released = false;
     ImGui::BeginChild("morph_sliders", ImVec2(0, slider_h), true);
-    rates_changed = draw_morph_sliders(app);
+    rates_changed = draw_morph_sliders(app, rates_released);
     ImGui::EndChild();
 
     // 再合成トリガ（リアルタイム更新 ON=値が変わった各フレーム / OFF=離した時）。
     // 非同期実行なので UI はブロックしない。実行中の再要求は最新条件に畳まれる。
-    if (rates_changed) request_morph(app);
+    // 「離したら再生」時は、離したフレームでも必ず合成し直す。リアルタイム更新 ON だと
+    // 離したフレーム自体は値が変わらず rates_changed が立たないため、これがないと
+    // 最後の率の結果を再生できない（実行中なら pending に畳まれて1回で済む）。
+    const bool play_on_release = rates_released && app.morph_autoplay;
+    if (play_on_release) app.morph_play_request = true;
+    if (rates_changed || play_on_release) request_morph(app);
 
     // プロットは出力設定ぶんを下に残して、残り全部を使う。
     ImGui::BeginChild("morph_plots", ImVec2(0, -(out_h + spacing)), true);

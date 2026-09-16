@@ -73,6 +73,7 @@ struct App {
     MorphRates morph_rates;               // 軸ごとの率（0=base, 1=target）
     bool       morph_link     = true;     // 全軸を一括操作するか
     bool       morph_realtime = true;     // スライダー操作中も逐次再合成するか（OFF=離した時のみ）
+    bool       morph_autoplay = false;    // スライダーのつまみを離したら自動で再生するか
 
     // base/target の解析チャンネル（タブ表示時に解析、パス変更で再解析）。
     // 非同期ジョブと安全に共有するため immutable な shared_ptr で保持する（失敗時は nullptr）。
@@ -82,10 +83,16 @@ struct App {
 
     // 非同期モーフィングジョブ（ワーカーで morphing_channels を実行。GL への反映は
     // 完了回収時にメインスレッドで行う）。実行中の再要求は pending に畳んで最新条件で1回だけ再実行。
+    //
+    // 再生の予約は「要求」と「実行中のジョブ」で分けて持つ。実行中に再要求が来ると
+    // pending に畳まれるため、1つの旗を使い回すと古い率の結果が再生されてしまう。
+    //   morph_play_request … 次に開始するモーフィングの結果を再生する
+    //   morph_job_play     … 実行中のジョブが完了したら再生する（開始時に確定）
     std::future<MorphOutput>              morph_job;
-    bool                                  morph_job_running    = false;
-    bool                                  morph_job_pending    = false;    // 実行中に来た再要求
-    bool                                  morph_play_when_done = false;    // 完了後に再生する（生成して再生）
+    bool                                  morph_job_running = false;
+    bool                                  morph_job_pending = false;    // 実行中に来た再要求
+    bool                                  morph_play_request = false;
+    bool                                  morph_job_play     = false;
     int                                   morph_epoch = 0, morph_job_epoch = 0;    // base/target の世代
     std::chrono::steady_clock::time_point morph_job_t0;    // 計測用
 
