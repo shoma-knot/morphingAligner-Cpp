@@ -2,11 +2,17 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include <miniaudio_cpp/audio.hpp>
+
+#include <tcmorph/word_tv2w_morphing.hpp>
 
 #include "world/cheaptrick.h"
 #include "world/d4c.h"
@@ -17,20 +23,10 @@
 
 namespace {
 
-constexpr double kFramePeriod = 5.0;      // ms
-constexpr double kFrameSec    = 0.005;    // s
+using Eigen::MatrixXd;
+using Eigen::VectorXd;
 
-// 1音声の WORLD 解析結果。
-struct Analysis {
-    int                              fs       = 0;
-    int                              fft_size = 0;
-    int                              nbin     = 0;    // fft_size/2 + 1
-    int                              f0_len   = 0;
-    double                           duration = 0;    // s
-    std::vector<double>              f0;              // [f0_len]
-    std::vector<std::vector<double>> sp;              // [f0_len][nbin] パワースペクトル
-    std::vector<std::vector<double>> ap;              // [f0_len][nbin] 非周期性 [0,1]
-};
+constexpr double kFramePeriod = 5.0;    // ms（WORLD の既定。tcmorph はフレーム間隔を入力から拾う）
 
 // interleaved float PCM をモノラル double へ。
 std::vector<double> to_mono(const ma::decoder& dec) {
@@ -46,176 +42,97 @@ std::vector<double> to_mono(const ma::decoder& dec) {
     return x;
 }
 
-// WORLD で F0 / スペクトル包絡 / 非周期性を推定する。
-Analysis analyze(const std::string& path) {
-    ma::decoder dec { path };
-
-    Analysis        A;
-    A.fs                     = static_cast<int>(dec.sample_rate());
-    const std::vector<double> x = to_mono(dec);
-    const int       x_length = static_cast<int>(x.size());
-    if (x_length == 0) throw std::runtime_error("empty signal: " + path);
-    A.duration = static_cast<double>(x_length) / A.fs;
-
-    // F0 (Harvest)
-    HarvestOption h_opt;
-    InitializeHarvestOption(&h_opt);
-    h_opt.frame_period = kFramePeriod;
-    A.f0_len           = GetSamplesForHarvest(A.fs, x_length, kFramePeriod);
-    std::vector<double> t(A.f0_len);
-    A.f0.assign(A.f0_len, 0.0);
-    Harvest(x.data(), x_length, A.fs, &h_opt, t.data(), A.f0.data());
-
-    // Spectral envelope (CheapTrick)
-    CheapTrickOption c_opt;
-    InitializeCheapTrickOption(A.fs, &c_opt);
-    A.fft_size = c_opt.fft_size;
-    A.nbin     = A.fft_size / 2 + 1;
-
-    A.sp.assign(A.f0_len, std::vector<double>(A.nbin));
-    A.ap.assign(A.f0_len, std::vector<double>(A.nbin));
-    std::vector<double*> sp_ptr(A.f0_len), ap_ptr(A.f0_len);
-    for (int i = 0; i < A.f0_len; ++i) {
-        sp_ptr[i] = A.sp[i].data();
-        ap_ptr[i] = A.ap[i].data();
-    }
-    CheapTrick(x.data(), x_length, A.fs, t.data(), A.f0.data(), A.f0_len, &c_opt, sp_ptr.data());
-
-    // Aperiodicity (D4C)
-    D4COption d_opt;
-    InitializeD4COption(&d_opt);
-    D4C(x.data(), x_length, A.fs, t.data(), A.f0.data(), A.f0_len, A.fft_size, &d_opt, ap_ptr.data());
-
-    return A;
-}
-
-// 時刻 t での F0 サンプル。MATLAB に合わせ、値は log(F0) を時間方向に線形補間、有声度
-// (VUV) は 0/1 を線形補間した割合を返す。無声フレーム(F0=0)は log を取らず値に含めない。
-struct F0Sample {
-    double value;    // F0 [Hz]（両隣無声なら 0）
-    double vuv;      // 有声割合 [0,1]
+// ── アンカーの整形 ───────────────────────────────────────────
+// tcmorph が要求する形（時間アンカーは狭義単調増加、周波数アンカーは (本数, 時間
+// アンカー数) の 0 詰め行列）へ変換する。両端の境界アンカーはエンジン側が付けるので
+// ここでは入れない。
+struct AnchorMatrices {
+    VectorXd t_ref, t_tgt;      // [n_anch]
+    MatrixXd tf_ref, tf_tgt;    // (n_fanchor, n_anch)、余りは 0 詰め
+    int      dropped_time = 0;  // 範囲外/順序が逆で読み飛ばした時間アンカー数
+    int      dropped_freq = 0;  // 同・周波数アンカー数
 };
 
-F0Sample f0_sample(const MorphChannel& A, double t_sec) {
-    const double ff = t_sec / kFrameSec;
-    const int    i0 = std::clamp(static_cast<int>(std::floor(ff)), 0, A.n_frames - 1);
-    const int    i1 = std::min(i0 + 1, A.n_frames - 1);
-    const double fr = std::clamp(ff - i0, 0.0, 1.0);
+AnchorMatrices build_anchors(const std::vector<Anchor>& anchors, double end_ref, double end_tgt,
+                             double nyquist) {
+    constexpr double kEps   = 1e-6;    // 区間長 0 を避けるための最小間隔 [s]
+    constexpr double kMinHz = 1.0;     // log を取るため 0Hz 付近は使えない
 
-    const double a = A.f0[i0], b = A.f0[i1];
-    const double v0 = a > 0.0 ? 1.0 : 0.0, v1 = b > 0.0 ? 1.0 : 0.0;
+    AnchorMatrices m;
 
-    double value = 0.0;
-    if (a > 0.0 && b > 0.0) value = std::exp((1.0 - fr) * std::log(a) + fr * std::log(b));
-    else if (a > 0.0) value = a;
-    else if (b > 0.0) value = b;
+    std::vector<const Anchor*> sorted;
+    sorted.reserve(anchors.size());
+    for (const Anchor& a : anchors) sorted.push_back(&a);
+    std::stable_sort(sorted.begin(), sorted.end(),
+                     [](const Anchor* a, const Anchor* b) { return a->base_t < b->base_t; });
 
-    return { value, (1.0 - fr) * v0 + fr * v1 };
-}
-
-// F0 のモーフィング（値は log 補間、有声度は重み和を 0.99 で閾値: MATLAB 準拠）。
-double morph_f0(const F0Sample& b, const F0Sample& t, double fo) {
-    const double vm = (1.0 - fo) * b.vuv + fo * t.vuv;
-    if (vm < 0.99) return 0.0;    // 無声
-    if (b.value > 0.0 && t.value > 0.0)
-        return std::exp((1.0 - fo) * std::log(b.value) + fo * std::log(t.value));
-    return b.value > 0.0 ? b.value : t.value;
-}
-
-// スペクトログラム/非周期性を (時刻, 周波数) で **log 領域**で bilinear 補間し、log 値を
-// 返す（MATLAB は log(spectrogram)/log(ap) を時間・周波数とも interp1 で補間）。値は
-// [lo, hi] にクランプしてから log を取る（sp: lo=1e-20, ap: [1e-5,1]）。
-double sample_log(const std::vector<std::vector<double>>& S, int f0_len, int nbin, int fft_size, int fs,
-                  double t_sec, double f_hz, double lo, double hi) {
-    const double ff = t_sec / kFrameSec;
-    const int    i0 = std::clamp(static_cast<int>(std::floor(ff)), 0, f0_len - 1);
-    const int    i1 = std::min(i0 + 1, f0_len - 1);
-    const double fr = std::clamp(ff - i0, 0.0, 1.0);
-
-    const double bb = f_hz * fft_size / fs;
-    const int    b0 = std::clamp(static_cast<int>(std::floor(bb)), 0, nbin - 1);
-    const int    b1 = std::min(b0 + 1, nbin - 1);
-    const double br = std::clamp(bb - b0, 0.0, 1.0);
-
-    const auto   lg = [&](double v) { return std::log(std::clamp(v, lo, hi)); };
-    const double v0 = lg(S[i0][b0]) + (lg(S[i0][b1]) - lg(S[i0][b0])) * br;
-    const double v1 = lg(S[i1][b0]) + (lg(S[i1][b1]) - lg(S[i1][b0])) * br;
-    return v0 + (v1 - v0) * fr;
-}
-
-
-// 1つの時間アンカーの周波数アンカーから、全ビン分の「モーフ周波数 → base/target 周波数」
-// 写像を作る。MATLAB に合わせ log 周波数で処理する: モーフ後のアンカー位置を
-// exp((1-fx)log bf + fx log tf)（幾何平均）とし、各ビンの fm を log 周波数で線形逆写像。
-// MATLAB の freqAxisOnObj(:,jj) 相当（時間アンカーごとに1本の写像ベクトルを持たせる）。
-void build_freq_warp(const std::vector<FreqAnchor>* freqs, double fx, int nbin, int fft_size, int fs,
-                     double nyquist, std::vector<double>& outB, std::vector<double>& outT) {
-    // log を取るため 0Hz を避ける下限。低域端ノードに使う。
-    constexpr double kFloor = 1.0;    // Hz
-
-    std::vector<double> bf { kFloor }, tf { kFloor };
-    if (freqs != nullptr) {
-        std::vector<std::pair<double, double>> fp;
-        for (const FreqAnchor& f : *freqs)
-            if (f.base_f > kFloor && f.base_f < nyquist && f.target_f > kFloor && f.target_f < nyquist)
-                fp.emplace_back(f.base_f, f.target_f);
-        std::sort(fp.begin(), fp.end());
-        for (const auto& p : fp) {
-            bf.push_back(p.first);
-            tf.push_back(p.second);
-        }
-    }
-    bf.push_back(nyquist);
-    tf.push_back(nyquist);
-
-    // 折れ線ノードを log 周波数で保持。モーフ位置は log の重み和（＝幾何平均）。
-    const std::size_t   n = bf.size();
-    std::vector<double> lbf(n), ltf(n), lfam(n);
-    for (std::size_t i = 0; i < n; ++i) {
-        lbf[i]  = std::log(bf[i]);
-        ltf[i]  = std::log(tf[i]);
-        lfam[i] = (1.0 - fx) * lbf[i] + fx * ltf[i];
-    }
-
-    outB.resize(nbin);
-    outT.resize(nbin);
-    int j = 0;
-    for (int b = 0; b < nbin; ++b) {
-        const double fm = static_cast<double>(b) * fs / fft_size;
-        if (fm <= kFloor) {    // DC〜下限は恒等（log 不可のため）
-            outB[b] = fm;
-            outT[b] = fm;
+    // 両側とも解析範囲の内側にあり、base_t が直前と十分離れているものだけに絞る。
+    // 範囲外・重複のアンカーは区間長 0 を作ってエンジンを壊すので必ず落とす。
+    std::vector<const Anchor*> cand;
+    double                     last_b = 0.0;
+    for (const Anchor* a : sorted) {
+        const bool in_range = a->base_t > kEps && a->base_t < end_ref - kEps && a->target_t > kEps
+                           && a->target_t < end_tgt - kEps;
+        if (!in_range || !(a->base_t > last_b + kEps)) {
+            ++m.dropped_time;
             continue;
         }
-        const double lm = std::log(fm);
-        while (j < static_cast<int>(n) - 2 && lm > lfam[j + 1]) ++j;
-        const double denom = std::max(lfam[j + 1] - lfam[j], 1e-9);
-        const double g     = std::clamp((lm - lfam[j]) / denom, 0.0, 1.0);
-        outB[b]            = std::exp(lbf[j] + g * (lbf[j + 1] - lbf[j]));
-        outT[b]            = std::exp(ltf[j] + g * (ltf[j + 1] - ltf[j]));
+        cand.push_back(a);
+        last_b = a->base_t;
     }
-}
 
-// 時間アンカー（base_t 昇順、両端に境界を追加済み）。
-struct TimeAnchor {
-    double                         base_t;
-    double                         target_t;
-    const std::vector<FreqAnchor>* freqs;    // nullptr = 周波数アンカーなし（境界）
-};
+    // target_t も狭義単調増加でなければならない（そうでないとモーフ後のタイムラインが
+    // 後戻りし、どの区間にも書かれないフレーム＝広帯域ノイズになる）。base 側の線が
+    // 交差していると逆順になり得るので、ここで「最も多く残せる部分列」を選ぶ。
+    // 先頭から貪欲に落とすと、最初の1本が変なだけで以降が全滅するため DP で選ぶ。
+    // アンカーは高々数十本なので O(n^2) で十分。
+    const int                  nc = static_cast<int>(cand.size());
+    std::vector<int>           len(static_cast<std::size_t>(nc), 1), prev(static_cast<std::size_t>(nc), -1);
+    int                        best = -1;
+    for (int i = 0; i < nc; ++i) {
+        for (int j = 0; j < i; ++j)
+            if (cand[j]->target_t + kEps < cand[i]->target_t && len[j] + 1 > len[i]) {
+                len[i]  = len[j] + 1;
+                prev[i] = j;
+            }
+        if (best < 0 || len[i] > len[best]) best = i;
+    }
+    std::vector<const Anchor*> kept;
+    for (int i = best; i >= 0; i = prev[i]) kept.push_back(cand[i]);
+    std::reverse(kept.begin(), kept.end());
+    m.dropped_time += nc - static_cast<int>(kept.size());
 
-// Analysis から表示用チャンネルへコピー。
-MorphChannel channel_from(const Analysis& A) {
-    MorphChannel c;
-    c.fs           = A.fs;
-    c.fft_size     = A.fft_size;
-    c.nbin         = A.nbin;
-    c.n_frames     = A.f0_len;
-    c.frame_period = kFramePeriod;
-    c.duration     = A.duration;
-    c.f0           = A.f0;
-    c.sp           = A.sp;
-    c.ap           = A.ap;
-    return c;
+    const int n = static_cast<int>(kept.size());
+    m.t_ref.resize(n);
+    m.t_tgt.resize(n);
+
+    // 周波数アンカーは base_f 昇順に詰める（本数は時間アンカーごとに違ってよい）。
+    std::vector<std::vector<std::pair<double, double>>> fp(static_cast<std::size_t>(n));
+    int max_nf = 0;
+    for (int i = 0; i < n; ++i) {
+        m.t_ref[i] = kept[i]->base_t;
+        m.t_tgt[i] = kept[i]->target_t;
+        auto& v    = fp[static_cast<std::size_t>(i)];
+        for (const FreqAnchor& f : kept[i]->freqs) {
+            if (f.base_f > kMinHz && f.base_f < nyquist && f.target_f > kMinHz && f.target_f < nyquist)
+                v.emplace_back(f.base_f, f.target_f);
+            else
+                ++m.dropped_freq;
+        }
+        std::sort(v.begin(), v.end());
+        max_nf = std::max(max_nf, static_cast<int>(v.size()));
+    }
+
+    m.tf_ref = MatrixXd::Zero(max_nf, n);
+    m.tf_tgt = MatrixXd::Zero(max_nf, n);
+    for (int i = 0; i < n; ++i) {
+        const auto& v = fp[static_cast<std::size_t>(i)];
+        for (int k = 0; k < static_cast<int>(v.size()); ++k) {
+            m.tf_ref(k, i) = v[static_cast<std::size_t>(k)].first;
+            m.tf_tgt(k, i) = v[static_cast<std::size_t>(k)].second;
+        }
+    }
+    return m;
 }
 
 }    // namespace
@@ -223,7 +140,67 @@ MorphChannel channel_from(const Analysis& A) {
 MorphChannel analyze_channel(const std::string& path, std::string& err) {
     err.clear();
     try {
-        return channel_from(analyze(path));
+        ma::decoder dec { path };
+
+        const int                 fs       = static_cast<int>(dec.sample_rate());
+        const std::vector<double> x        = to_mono(dec);
+        const int                 x_length = static_cast<int>(x.size());
+        if (x_length == 0) throw std::runtime_error("empty signal: " + path);
+
+        MorphChannel             c;
+        tcmorph::WorldParameter& w = c.world;
+        w.sampling_frequency       = fs;
+        w.span_length              = static_cast<std::size_t>(x_length);
+
+        // ── F0 (Harvest) ──
+        HarvestOption h_opt;
+        InitializeHarvestOption(&h_opt);
+        h_opt.frame_period = kFramePeriod;
+        const int f0_len   = GetSamplesForHarvest(fs, x_length, kFramePeriod);
+
+        VectorXd& t  = w.source_parameter.temporal_positions;
+        VectorXd& f0 = w.source_parameter.f0;
+        t.resize(f0_len);
+        f0.resize(f0_len);
+        Harvest(x.data(), x_length, fs, &h_opt, t.data(), f0.data());
+
+        // WORLD は無声フレームの F0 を 0 にするので、そこから VUV を作る。
+        w.source_parameter.vuv = (f0.array() > 0.0).cast<double>().matrix();
+
+        // ── スペクトル包絡 (CheapTrick) / 非周期性 (D4C) ──
+        CheapTrickOption c_opt;
+        InitializeCheapTrickOption(fs, &c_opt);
+        D4COption d_opt;
+        InitializeD4COption(&d_opt);
+        const int fft_size = c_opt.fft_size;
+        const int nbin     = fft_size / 2 + 1;
+
+        // tcmorph は (nbin, n_frames) の列優先なので、各列の先頭ポインタをそのまま
+        // WORLD に渡せる（フレームごとのコピーが不要）。
+        MatrixXd& sp = w.spectrum_parameter.spectrogram;
+        MatrixXd& ap = w.source_parameter.aperiodicity;
+        sp.resize(nbin, f0_len);
+        ap.resize(nbin, f0_len);
+        std::vector<double*> sp_ptr(f0_len), ap_ptr(f0_len);
+        for (int i = 0; i < f0_len; ++i) {
+            sp_ptr[i] = sp.col(i).data();
+            ap_ptr[i] = ap.col(i).data();
+        }
+        CheapTrick(x.data(), x_length, fs, t.data(), f0.data(), f0_len, &c_opt, sp_ptr.data());
+        D4C(x.data(), x_length, fs, t.data(), f0.data(), f0_len, fft_size, &d_opt, ap_ptr.data());
+
+        w.spectrum_parameter.temporal_positions = t;
+        w.spectrum_parameter.fs                 = fs;
+        // f0_original は空のまま（tcmorph が source_parameter.f0 で代用する）。
+        // MATLAB 版の f0_original は GUI で編集する前の F0 で、本アプリには編集機能がない。
+
+        c.fs           = fs;
+        c.fft_size     = fft_size;
+        c.nbin         = nbin;
+        c.n_frames     = f0_len;
+        c.frame_period = kFramePeriod;
+        c.duration     = static_cast<double>(x_length) / fs;
+        return c;
     } catch (const std::exception& e) {
         err = e.what();
         return {};
@@ -242,120 +219,79 @@ MorphOutput morphing_channels(const MorphChannel& B, const MorphChannel& T,
             R.error = "サンプリング周波数が異なります（リサンプリング未対応）";
             return R;
         }
-        if (B.fft_size != T.fft_size) {
+        if (B.nbin != T.nbin) {
             R.error = "FFT サイズが一致しません";
             return R;
         }
 
         const int    fs       = B.fs;
         const int    fft_size = B.fft_size;
-        const int    nbin     = B.nbin;
         const double nyquist  = fs / 2.0;
 
-        // 軸ごとの率（それぞれ [0,1] にクランプ）。
-        const double tx = std::clamp(rates.tx, 0.0, 1.0);    // 時間軸
-        const double fx = std::clamp(rates.fx, 0.0, 1.0);    // 周波数軸
-        const double fo = std::clamp(rates.fo, 0.0, 1.0);    // F0
-        const double sl = std::clamp(rates.sl, 0.0, 1.0);    // スペクトルレベル
-        const double ap = std::clamp(rates.ap, 0.0, 1.0);    // 非周期性
+        // tcmorph（MATLAB 版）は発話の終端を length(span)/fs ではなく最終フレーム時刻で
+        // 扱う。アンカーの範囲検査もそれに合わせる。
+        const VectorXd& tb = B.world.source_parameter.temporal_positions;
+        const VectorXd& tt = T.world.source_parameter.temporal_positions;
+        const AnchorMatrices am =
+          build_anchors(anchors, tb[tb.size() - 1], tt[tt.size() - 1], nyquist);
 
-        // ── 時間アンカーを base_t 昇順に整列し、両端に境界 (0,0),(dur,dur) を足す ──
-        std::vector<const Anchor*> sorted;
-        sorted.reserve(anchors.size());
-        for (const Anchor& a : anchors) sorted.push_back(&a);
-        std::sort(sorted.begin(), sorted.end(),
-                  [](const Anchor* a, const Anchor* b) { return a->base_t < b->base_t; });
+        tcmorph::aligner::MorphRate rate;
+        rate.tx = std::clamp(rates.tx, 0.0, 1.0);
+        rate.fx = std::clamp(rates.fx, 0.0, 1.0);
+        rate.fo = std::clamp(rates.fo, 0.0, 1.0);
+        rate.sl = std::clamp(rates.sl, 0.0, 1.0);
+        rate.ap = std::clamp(rates.ap, 0.0, 1.0);
 
-        std::vector<TimeAnchor> ta;
-        ta.push_back({ 0.0, 0.0, nullptr });
-        for (const Anchor* a : sorted) {
-            if (a->base_t > 1e-6 && a->base_t < B.duration - 1e-6 && a->target_t > 1e-6
-                && a->target_t < T.duration - 1e-6)
-                ta.push_back({ a->base_t, a->target_t, &a->freqs });
-        }
-        ta.push_back({ B.duration, T.duration, nullptr });
-        const int K = static_cast<int>(ta.size());
+        // 既定のまま使う（MATLAB 版の挙動を再現する側。声道長比は本アプリでは 1 固定）。
+        const tcmorph::aligner::Options opt;
 
-        // ── モーフ後のタイムライン（セグメント長を log 補間） ──
-        std::vector<double> tm(K, 0.0);
-        for (int k = 0; k < K - 1; ++k) {
-            const double db = std::max(ta[k + 1].base_t - ta[k].base_t, 1e-6);
-            const double dt = std::max(ta[k + 1].target_t - ta[k].target_t, 1e-6);
-            tm[k + 1]       = tm[k] + std::exp((1.0 - tx) * std::log(db) + tx * std::log(dt));
-        }
-        const double total = tm[K - 1];
-        const int    M     = std::max(1, static_cast<int>(std::floor(total / kFrameSec)) + 1);
+        tcmorph::aligner::Output o = tcmorph::aligner::WordTV2WMorphing(
+          B.world, T.world, am.t_ref, am.tf_ref, am.t_tgt, am.tf_tgt, rate, opt);
 
-        // ── 出力バッファ ──
-        std::vector<double>              f0o(M, 0.0);
-        std::vector<std::vector<double>> spo(M, std::vector<double>(nbin));
-        std::vector<std::vector<double>> apo(M, std::vector<double>(nbin));
+        R.warnings = std::move(o.warnings);
+        if (am.dropped_time > 0)
+            R.warnings.push_back("範囲外または順序が逆の時間アンカーを "
+                                 + std::to_string(am.dropped_time) + " 個読み飛ばしました");
+        if (am.dropped_freq > 0)
+            R.warnings.push_back("範囲外の周波数アンカーを " + std::to_string(am.dropped_freq)
+                                 + " 個読み飛ばしました");
 
-        // ── 各時間アンカーの周波数写像を前計算（全ビン分の morph→base/target 周波数） ──
-        // これを区間内でビンごとに補間することで、周波数ワープが時間方向に連続になる
-        // （MATLAB: currentFreqAxOnObj = (1-lambda)*last + lambda*next）。
-        std::vector<std::vector<double>> warpB(K), warpT(K);
-        for (int k = 0; k < K; ++k)
-            build_freq_warp(ta[k].freqs, fx, nbin, fft_size, fs, nyquist, warpB[k], warpT[k]);
+        // ── morphed（表示用＋合成入力）──
+        const int     M = static_cast<int>(o.f0.size());
+        MorphChannel& c = R.morphed;
+        c.fs            = fs;
+        c.fft_size      = fft_size;
+        c.nbin          = B.nbin;
+        c.n_frames      = M;
+        c.frame_period  = kFramePeriod;
+        c.duration      = o.temporal_positions[M - 1];
 
-        int seg = 0;
-        for (int m = 0; m < M; ++m) {
-            const double tau = m * kFrameSec;
-            while (seg < K - 2 && tau > tm[seg + 1]) ++seg;
-            const double seg_dur = std::max(tm[seg + 1] - tm[seg], 1e-9);
-            const double s       = std::clamp((tau - tm[seg]) / seg_dur, 0.0, 1.0);
-
-            // モーフ時刻 → 各元の時刻（区間内は線形）。
-            const double taub = ta[seg].base_t + s * (ta[seg + 1].base_t - ta[seg].base_t);
-            const double taut = ta[seg].target_t + s * (ta[seg + 1].target_t - ta[seg].target_t);
-
-            f0o[m] = morph_f0(f0_sample(B, taub), f0_sample(T, taut), fo);
-
-            // 周波数写像は区間の左右アンカーをビンごとに s 補間（時間方向に連続）。
-            const std::vector<double>& wbL = warpB[seg];
-            const std::vector<double>& wbR = warpB[seg + 1];
-            const std::vector<double>& wtL = warpT[seg];
-            const std::vector<double>& wtR = warpT[seg + 1];
-            for (int b = 0; b < nbin; ++b) {
-                const double fb = (1.0 - s) * wbL[b] + s * wbR[b];
-                const double ft = (1.0 - s) * wtL[b] + s * wtR[b];
-
-                // スペクトルは log 領域で補間・合成（sample_log が log 値を返す）。
-                constexpr double kHi = 1e300;    // 実質上限なし
-                const double     lsb = sample_log(B.sp, B.n_frames, nbin, fft_size, fs, taub, fb, 1e-20, kHi);
-                const double     lst = sample_log(T.sp, T.n_frames, nbin, fft_size, fs, taut, ft, 1e-20, kHi);
-                spo[m][b]            = std::exp((1.0 - sl) * lsb + sl * lst);
-
-                // 非周期性も log 領域で補間・合成（clamp[1e-5,1]）。
-                const double lab = sample_log(B.ap, B.n_frames, nbin, fft_size, fs, taub, fb, 1e-5, 1.0);
-                const double lat = sample_log(T.ap, T.n_frames, nbin, fft_size, fs, taut, ft, 1e-5, 1.0);
-                apo[m][b]        = std::exp((1.0 - ap) * lab + ap * lat);
-            }
-        }
+        c.world.sampling_frequency                   = fs;
+        c.world.source_parameter.temporal_positions  = o.temporal_positions;
+        c.world.source_parameter.f0                  = std::move(o.f0);
+        c.world.source_parameter.vuv                 = std::move(o.vuv);
+        c.world.source_parameter.aperiodicity        = std::move(o.aperiodicity);
+        c.world.spectrum_parameter.temporal_positions = std::move(o.temporal_positions);
+        c.world.spectrum_parameter.spectrogram       = std::move(o.spectrogram);
+        c.world.spectrum_parameter.fs                = fs;
 
         // ── WORLD 合成 ──
-        const int           y_length = static_cast<int>(total * fs) + 1;
+        // 末尾は最終フレーム時刻ちょうどで切る（MATLAB の Synthesis と同じ長さ。
+        // フレーム数×フレーム周期にすると常に1フレーム分だけ長くなる）。
+        const int y_length      = std::max(1, static_cast<int>(c.duration * fs));
+        c.world.span_length     = static_cast<std::size_t>(y_length);
         std::vector<double> y(y_length, 0.0);
+
         std::vector<const double*> spp(M), app(M);
-        for (int m = 0; m < M; ++m) {
-            spp[m] = spo[m].data();
-            app[m] = apo[m].data();
+        for (int i = 0; i < M; ++i) {
+            spp[i] = c.sp().col(i).data();
+            app[i] = c.ap().col(i).data();
         }
-        Synthesis(f0o.data(), M, spp.data(), app.data(), fft_size, kFramePeriod, fs, y_length, y.data());
+        Synthesis(c.f0().data(), M, spp.data(), app.data(), fft_size, kFramePeriod, fs, y_length,
+                  y.data());
 
         R.wave = std::move(y);
         R.fs   = fs;
-
-        // morphed の表示用データ（補間後の f0/sp/ap）。
-        R.morphed.fs           = fs;
-        R.morphed.fft_size     = fft_size;
-        R.morphed.nbin         = nbin;
-        R.morphed.n_frames     = M;
-        R.morphed.frame_period = kFramePeriod;
-        R.morphed.duration     = total;
-        R.morphed.f0           = std::move(f0o);
-        R.morphed.sp           = std::move(spo);
-        R.morphed.ap           = std::move(apo);
     } catch (const std::exception& e) {
         R.error = std::string { "モーフィング失敗: " } + e.what();
     }

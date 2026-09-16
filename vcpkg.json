@@ -10,6 +10,7 @@
     "implot",
     "glfw3",
     "tinyfiledialogs",
-    "nlohmann-json"
+    "nlohmann-json",
+    "eigen3"
   ]
 }

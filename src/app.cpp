@@ -47,23 +47,26 @@ unsigned int upload_texture(const std::vector<unsigned char>& pixels, int W, int
     return tex;
 }
 
-// data[frame][bin]（線形周波数ビン）を ERB 等間隔の行でテクスチャ化する（行0=最高周波数）。
+// data(bin, frame)（線形周波数ビン。tcmorph と同じ列優先の向き）を ERB 等間隔の行で
+// テクスチャ化する（行0=最高周波数）。
 // as_db=true は 10*log10(値) を [vmin,vmax] で正規化、false は値をそのまま [vmin,vmax] で正規化。
-unsigned int make_heatmap_texture(const std::vector<std::vector<double>>& data, int n_frames, int nbin,
-                                  int fs, int fft_size, bool as_db, double vmin, double vmax) {
+unsigned int make_heatmap_texture(const Eigen::MatrixXd& data, int fs, bool as_db, double vmin,
+                                  double vmax) {
     unsigned char lut[256][4];
     build_lut(lut);
 
-    const int    H       = nbin;
-    const int    W       = n_frames;
+    const int H = static_cast<int>(data.rows());    // 周波数ビン数
+    const int W = static_cast<int>(data.cols());    // フレーム数
+    if (H < 2 || W < 1) return 0;
+
     const double range   = vmax > vmin ? vmax - vmin : 1.0;
     const double nyquist = fs / 2.0;
     const double erb_max = freqscale::hz_to_erb(nyquist);
 
     // 線形ビン b・フレーム t の値（as_db なら dB に変換してから補間する）。
     const auto value_at = [&](int b, int t) -> double {
-        b              = std::clamp(b, 0, nbin - 1);
-        const double v = data[t][b];
+        b              = std::clamp(b, 0, H - 1);
+        const double v = data(b, t);
         return as_db ? 10.0 * std::log10(std::max(v, 1e-12)) : v;
     };
 
@@ -71,9 +74,9 @@ unsigned int make_heatmap_texture(const std::vector<std::vector<double>>& data, 
     for (int r = 0; r < H; ++r) {
         const double erb  = erb_max * (1.0 - static_cast<double>(r) / (H - 1));    // 行0=最大ERB
         const double hz   = freqscale::erb_to_hz(erb);
-        const double binf = hz / nyquist * (nbin - 1);
-        const int    b0   = std::clamp(static_cast<int>(std::floor(binf)), 0, nbin - 1);
-        const int    b1   = std::min(b0 + 1, nbin - 1);
+        const double binf = hz / nyquist * (H - 1);
+        const int    b0   = std::clamp(static_cast<int>(std::floor(binf)), 0, H - 1);
+        const int    b1   = std::min(b0 + 1, H - 1);
         const double fr   = std::clamp(binf - b0, 0.0, 1.0);
         for (int t = 0; t < W; ++t) {
             const double v  = value_at(b0, t) + (value_at(b1, t) - value_at(b0, t)) * fr;
@@ -161,10 +164,9 @@ void rebuild_morphed_texture(App& app) {
 
     const MorphChannel& c = app.morph_out.morphed;
     if (!app.morph_out.ok() || c.empty()) return;
-    app.morph_tex_sp[1] = make_heatmap_texture(c.sp, c.n_frames, c.nbin, c.fs, c.fft_size,
-                                               /*as_db=*/true, app.morph_db_min, app.morph_db_max);
-    app.morph_tex_ap[1] =
-      make_heatmap_texture(c.ap, c.n_frames, c.nbin, c.fs, c.fft_size, /*as_db=*/false, 0.0, 1.0);
+    app.morph_tex_sp[1] =
+      make_heatmap_texture(c.sp(), c.fs, /*as_db=*/true, app.morph_db_min, app.morph_db_max);
+    app.morph_tex_ap[1] = make_heatmap_texture(c.ap(), c.fs, /*as_db=*/false, 0.0, 1.0);
 }
 
 void rebuild_morph_bt_textures(App& app) {
@@ -179,12 +181,10 @@ void rebuild_morph_bt_textures(App& app) {
     for (const MorphChannel* ch : { app.morph_base.get(), app.morph_target.get() }) {
         if (ch == nullptr || ch->empty()) continue;
         any = true;
-        for (const auto& row : ch->sp)
-            for (double v : row) {
-                const double db = 10.0 * std::log10(std::max(v, 1e-12));
-                dmin            = std::min(dmin, db);
-                dmax            = std::max(dmax, db);
-            }
+        // log は単調なので、最小/最大の係数から dB レンジが決まる。
+        const Eigen::MatrixXd& s = ch->sp();
+        dmin = std::min(dmin, 10.0 * std::log10(std::max(s.minCoeff(), 1e-12)));
+        dmax = std::max(dmax, 10.0 * std::log10(std::max(s.maxCoeff(), 1e-12)));
     }
     if (!any) {
         app.morph_db_min = app.morph_db_max = 0.0;
@@ -198,11 +198,9 @@ void rebuild_morph_bt_textures(App& app) {
     const int           idx[2] = { 0, 2 };
     for (int i = 0; i < 2; ++i) {
         if (chs[i] == nullptr || chs[i]->empty()) continue;
-        const MorphChannel& c = *chs[i];
-        app.morph_tex_sp[idx[i]] =
-          make_heatmap_texture(c.sp, c.n_frames, c.nbin, c.fs, c.fft_size, /*as_db=*/true, dmin, dmax);
-        app.morph_tex_ap[idx[i]] =
-          make_heatmap_texture(c.ap, c.n_frames, c.nbin, c.fs, c.fft_size, /*as_db=*/false, 0.0, 1.0);
+        const MorphChannel& c    = *chs[i];
+        app.morph_tex_sp[idx[i]] = make_heatmap_texture(c.sp(), c.fs, /*as_db=*/true, dmin, dmax);
+        app.morph_tex_ap[idx[i]] = make_heatmap_texture(c.ap(), c.fs, /*as_db=*/false, 0.0, 1.0);
     }
 
     // レンジが変わったので morphed 側も作り直す。

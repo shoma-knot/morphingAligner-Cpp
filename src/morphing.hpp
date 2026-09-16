@@ -1,14 +1,19 @@
 #pragma once
 
 /// @file morphing.hpp
-/// @brief WORLD ベースの音声モーフィング。
+/// @brief tcmorph（Kawahara の wordTV2WmorphingEngineRev.m の移植）による音声モーフィング。
 ///
-/// Kawahara の generalizedTCmorphing.m を参考に、base/target を WORLD で解析し
-/// （Harvest=F0, CheapTrick=スペクトル包絡, D4C=非周期性）、アンカーによる時間軸・
-/// 周波数軸ワープと率 rate の重み補間でモーフィングして合成する。
+/// base/target を WORLD で解析し（Harvest=F0, CheapTrick=スペクトル包絡, D4C=非周期性）、
+/// アンカーと率を tcmorph::aligner::WordTV2WMorphing に渡してモーフィングし、WORLD で
+/// 合成する。エンジンのオプションは既定値＝MATLAB 版の挙動を再現する側のまま使う。
+///
+/// tcmorph には N 素材の GeneralizedTCMorphing もあるが、本アプリは morphingAligner
+/// 相当（参照/目標の2素材）なので aligner 側を使う。両者は別物で同じアンカーでも音が違う。
 
 #include <string>
 #include <vector>
+
+#include <tcmorph/generalized_tc_morphing.hpp>    // WorldParameter などの共通データ構造
 
 struct Anchor;
 
@@ -24,16 +29,22 @@ struct MorphRates {
     static MorphRates uniform(double r) { return { r, r, r, r, r }; }
 };
 
-// 1音源（base/target/morphed）の表示用データ（f0 と、スペクトル/非周期性）。
+// 1音源（base/target/morphed）の WORLD パラメータと表示用メタ情報。
+// 実データ（f0/sp/ap）は world の中にある。sp/ap は tcmorph の向き＝(nbin, n_frames)
+// の列優先で、1フレーム分が連続メモリに並ぶ。
 struct MorphChannel {
     int    fs = 0, fft_size = 0, nbin = 0, n_frames = 0;
     double frame_period = 0;    // ms
     double duration     = 0;    // s
-    std::vector<double>              f0;    // [n_frames]
-    std::vector<std::vector<double>> sp;    // [n_frames][nbin] パワースペクトル
-    std::vector<std::vector<double>> ap;    // [n_frames][nbin] 非周期性 [0,1]
+
+    tcmorph::WorldParameter world;
 
     bool empty() const { return n_frames == 0; }
+
+    // 表示用アクセサ（world の中身への参照）。
+    const Eigen::VectorXd& f0() const { return world.source_parameter.f0; }
+    const Eigen::MatrixXd& sp() const { return world.spectrum_parameter.spectrogram; }
+    const Eigen::MatrixXd& ap() const { return world.source_parameter.aperiodicity; }
 };
 
 // モーフィング結果（morphed の中間データ＋合成音声）。error が空なら成功。
@@ -42,6 +53,9 @@ struct MorphOutput {
     std::vector<double> wave;       // 合成音声（mono, double, [-1,1] 付近）
     int                 fs = 0;
     std::string         error;
+
+    // 計算は続行したが注意が要る点（エンジンの警告＋読み飛ばしたアンカー）。
+    std::vector<std::string> warnings;
 
     bool ok() const { return error.empty(); }
 };
@@ -55,5 +69,5 @@ MorphChannel analyze_channel(const std::string& path, std::string& err);
 MorphOutput morphing_channels(const MorphChannel& base, const MorphChannel& target,
                               const std::vector<Anchor>& anchors, const MorphRates& rates);
 
-// wave を 16bit PCM モノラル WAV として path に書き出す。成功で true。
+// wave を WAV（32bit float モノラル）として path に書き出す。成功で true。
 bool write_wav(const std::string& path, const std::vector<double>& wave, int fs, std::string& err);

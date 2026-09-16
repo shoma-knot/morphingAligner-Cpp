@@ -17,14 +17,18 @@ find_package(glfw3 CONFIG REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(tinyfiledialogs CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(Eigen3 3.4 CONFIG REQUIRED)    # tcmorph(モーフィングエンジン)が要求
 find_package(Threads REQUIRED)    # std::async(モーフィングの別スレッド実行)用
 add_subdirectory(third-party/miniaudio_cpp)
 set(WORLD_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(third-party/world)
 
 
-file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*)
+# src 直下のみ。src/tcmorph は外部ライブラリ(ヘッダオンリー)で、examples に
+# それぞれ main() を持つので再帰 glob に含めるとリンクが壊れる。
+file(GLOB SOURCES CONFIGURE_DEPENDS src/*.cpp)
 add_executable(main ${SOURCES})
+target_include_directories(main PRIVATE ${CMAKE_SOURCE_DIR}/src/tcmorph/include)
 target_link_libraries(main PRIVATE
     imgui::imgui
     implot::implot
@@ -32,6 +36,7 @@ target_link_libraries(main PRIVATE
     OpenGL::GL
     tinyfiledialogs::tinyfiledialogs
     nlohmann_json::nlohmann_json
+    Eigen3::Eigen
     Threads::Threads
     miniaudio_cpp
     world::core)

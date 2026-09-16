@@ -1,0 +1,21 @@
+tcmorph
+Copyright 2026 tcmorph contributors
+
+This product includes software derived from worldGUItools
+(https://github.com/HidekiKawahara/worldGUItools),
+Copyright Hideki Kawahara, licensed under the Apache License, Version 2.0.
+
+The following files are C++ ports of MATLAB sources from that project:
+
+  include/tcmorph/generalized_tc_morphing.hpp
+      port of src/generalizedTCmorphing.m
+
+  include/tcmorph/word_tv2w_morphing.hpp
+      port of src/wordTV2WmorphingEngineRev.m
+
+The ports reproduce the numerical behaviour of the originals, including
+several known defects, which are retained by default so that results can be
+compared against the MATLAB implementation. Deviations from the originals are
+documented in docs/porting-notes.md.
+
+The WORLD vocoder itself is not included in this project.

@@ -497,7 +497,7 @@ void draw_morph_plots(App& app) {
         if (ch == nullptr || ch->empty()) continue;
         ref   = ch;
         x_max = std::max(x_max, ch->duration);
-        for (double v : ch->f0) f0_max = std::max(f0_max, v);
+        if (ch->f0().size() > 0) f0_max = std::max(f0_max, ch->f0().maxCoeff());
     }
     if (ref == nullptr) {
         ImGui::TextDisabled("音声を読み込むとここに base / morphed / target のプロットを表示します");
@@ -546,7 +546,7 @@ void draw_morph_plots(App& app) {
                     std::vector<double> xs(ch.n_frames), ys(ch.n_frames);
                     for (int i = 0; i < ch.n_frames; ++i) {
                         xs[i] = i * ch.frame_period / 1000.0;
-                        ys[i] = ch.f0[i];    // 無声は 0
+                        ys[i] = ch.f0()[i];    // base/target は無声が 0（morphed は全フレーム有声）
                     }
                     if (ch.n_frames > 0) ImPlot::PlotLine("F0", xs.data(), ys.data(), ch.n_frames);
                 } else {
@@ -590,6 +590,13 @@ void poll_morph_job(App& app) {
         const double ms =
           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - app.morph_job_t0).count();
         app.morph_out = std::move(out);
+        // 警告はアンカーが同じなら毎回同じ内容になる。リアルタイム更新でスライダーを
+        // 動かすたびに積むとログが埋まるので、内容が変わったときだけ出す。
+        static std::vector<std::string> last_warnings;
+        if (app.morph_out.warnings != last_warnings) {
+            last_warnings = app.morph_out.warnings;
+            for (const std::string& w : last_warnings) applog::add("警告: " + w);
+        }
         if (!app.morph_out.ok()) {
             applog::add(app.morph_out.error);
         } else {
