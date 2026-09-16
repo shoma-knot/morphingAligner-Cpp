@@ -341,12 +341,17 @@ void draw_right_panel(App& app) {
     const Minimap base_mm   = app.show_minimap ? Minimap::Above : Minimap::None;
     const Minimap target_mm = app.show_minimap ? Minimap::Below : Minimap::None;
 
+    // アンカーの強調対象を確定する。base を描く時点では target 側のホバーが未確定
+    // なので、前フレームに集めたものを今フレームの強調に使う（App のコメント参照）。
+    app.active_anchor = app.hover_anchor;
+    app.hover_anchor  = -1;
+
     static std::vector<EdgePoint> base_edges, target_edges;
     draw_spectrogram(app, app.base, /*is_base=*/true, each_h, base_edges, base_mm);
     ImGui::Spacing();
     draw_spectrogram(app, app.target, /*is_base=*/false, each_h, target_edges, target_mm);
 
-    draw_anchor_connectors(base_edges, target_edges);
+    draw_anchor_connectors(base_edges, target_edges, app.active_anchor);
 }
 
 // 画面下部の動作ログ領域。ヘッダで折りたたみ可能（開閉状態は app.log_open に保持し、

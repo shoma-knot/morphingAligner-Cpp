@@ -66,6 +66,15 @@ struct App {
     Track               target { "target" };
     std::vector<Anchor> anchors;    // base<->target time correspondences
     bool                show_minimap = false;    // スペクトログラムのミニマップ表示
+
+    // アンカーの番号と対応線は、カーソル近傍の時間アンカー1本ぶんだけ描く
+    // （24本まで増えると全点にラベルが出て読めないため）。色や太さでの強調は
+    // カーソル移動のたびに周囲が明滅してうるさかったので行わない。
+    // base/target の2パネルで共有する必要があるが、base を描く時点では target 側の
+    // ホバーが未確定なので、今フレームのホバーを hover_anchor に集めて次フレームの
+    // active_anchor に回す（ミニマップの表示枠と同じ1フレーム遅延）。
+    int active_anchor = -1;    // 番号と対応線を出す時間アンカー（-1 = なし）
+    int hover_anchor  = -1;    // 今フレームにホバーされたもの（次フレームの active）
     bool                log_open     = true;     // 下部ログ領域の展開状態
     ImFont*             mono_font    = nullptr;    // 等幅フォント（ライセンス表示用、null なら既定）
 

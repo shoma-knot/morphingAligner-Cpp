@@ -20,5 +20,7 @@ struct EdgePoint {
 // 描画・操作する。out_edges に相手パネルへ結ぶ端点を返す。
 void draw_anchors(App& app, bool is_base, const Spectrogram& sp, std::vector<EdgePoint>& out_edges);
 
-// base/target の対応する時間アンカーを結ぶ線を前面に描く。
-void draw_anchor_connectors(const std::vector<EdgePoint>& base_edges, const std::vector<EdgePoint>& target_edges);
+// base/target の対応する時間アンカーを結ぶ線を前面に描く（本数が多いと帯になるので薄く、
+// active（カーソルが近いアンカー）の1本だけ不透明にする）。
+void draw_anchor_connectors(const std::vector<EdgePoint>& base_edges,
+                            const std::vector<EdgePoint>& target_edges, int active);
