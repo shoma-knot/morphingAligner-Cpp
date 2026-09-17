@@ -28,6 +28,22 @@ file(GLOB SOURCES CONFIGURE_DEPENDS src/*.cpp)
 add_executable(main ${SOURCES})
 # tcmorph はヘッダオンリーの外部ライブラリ。
 target_include_directories(main PRIVATE ${CMAKE_SOURCE_DIR}/tcmorph/include)
+
+# Windows では実行ファイル自体にもアイコンを埋め込む。glfwSetWindowIcon が設定する
+# ウィンドウのアイコンとは別物で、こちらはエクスプローラーの表示やピン留めが参照する。
+# .rc は .ico を絶対パスで指す必要があるため configure_file で展開する。
+if (WIN32)
+    enable_language(RC)
+    if (MSVC)
+        # rc.exe は .rc をシステムの ANSI コードページとして読むため、UTF-8 の日本語
+        # コメントが化けて構文エラーになりうる（/utf-8 は C++ コンパイラ向けで rc には
+        # 効かない）。コードページを明示する。
+        string(APPEND CMAKE_RC_FLAGS " /c65001")
+    endif()
+    set(MORPHINGALIGNER_ICO "${CMAKE_SOURCE_DIR}/icon/morphingaligner.ico")
+    configure_file(${CMAKE_SOURCE_DIR}/src/app_icon.rc.in ${CMAKE_BINARY_DIR}/app_icon.rc @ONLY)
+    target_sources(main PRIVATE ${CMAKE_BINARY_DIR}/app_icon.rc)
+endif()
 target_link_libraries(main PRIVATE
     imgui::imgui
     implot::implot

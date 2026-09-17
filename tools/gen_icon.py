@@ -3,7 +3,8 @@
 
     python3 tools/gen_icon.py
 
-icon/ に PNG を、src/app_icon_data.inc にウィンドウアイコン用の RGBA を書き出す。
+icon/ に PNG と Windows 用の .ico を、src/app_icon_data.inc にウィンドウアイコン用の
+RGBA を書き出す。
 意匠はアプリ画面と同じ語彙（暗い背景・viridis のスペクトログラム・橙のアンカー）で、
 「長さの違う2つの発話を、アンカーで時間対応づける」ことを表す。
 
@@ -12,6 +13,7 @@ icon/ に PNG を、src/app_icon_data.inc にウィンドウアイコン用の R
 """
 from PIL import Image, ImageDraw
 import pathlib
+import struct
 
 SS     = 2048    # 描画解像度。各サイズへ縮小することでアンチエイリアスする
 BG     = (0x17, 0x17, 0x1C, 255)    # 背景（アプリのクリアカラーに合わせた暗色）
@@ -24,6 +26,11 @@ BAND_H       = 0.195            # 帯の高さ（キャンバスに対する比�
 Y_TOP, Y_BOT = 0.325, 0.675     # 上下の帯の中心
 SIZES        = (16, 32, 48, 64)    # ウィンドウアイコンに埋め込むサイズ
 PNG_SIZES    = (256, 128, 64, 48, 32, 16)
+ICO_SIZES    = (16, 24, 32, 48, 64, 128, 256)    # .ico に入れるサイズ
+# .ico の中でこのサイズ以下は BMP、それより大きいものは PNG で格納する。
+# PNG 形式のエントリは Vista 以降しか扱えず、小サイズでの扱いが実装依存になりがち
+# なので、慣例どおり大サイズだけ PNG にする。
+ICO_PNG_MIN  = 128
 
 
 def viridis(t):
@@ -87,14 +94,55 @@ def write_inc(img, path):
     path.write_text('\n'.join(out))
 
 
+def ico_bmp_entry(im):
+    """.ico に入れる BMP（DIB）形式の1エントリを作る。"""
+    s = im.size[0]
+    # XOR 画像は BGRA のボトムアップ。
+    px  = im.load()
+    xor = b''.join(bytes(v for x in range(s) for v in (lambda r, g, b, a: (b, g, r, a))(*px[x, y]))
+                   for y in range(s - 1, -1, -1))
+    # AND マスクは 1bpp で各行を4バイト境界に揃える。32bit アイコンでは XOR 側の
+    # アルファが使われるので中身は全0でよいが、形式上は必要。
+    and_mask = b'\x00' * (((s + 31) // 32) * 4 * s)
+    # BITMAPINFOHEADER。高さは XOR と AND を合わせた 2 倍を書く決まり。
+    header = struct.pack('<IiiHHIIiiII', 40, s, s * 2, 1, 32, 0,
+                         len(xor) + len(and_mask), 0, 0, 0, 0)
+    return header + xor + and_mask
+
+
+def write_ico(img, path):
+    """複数サイズをまとめた Windows の .ico を書き出す。"""
+    entries = []
+    for s in sorted(ICO_SIZES):
+        frame = img.resize((s, s), Image.LANCZOS).convert('RGBA')
+        if s >= ICO_PNG_MIN:
+            buf = __import__('io').BytesIO()
+            frame.save(buf, format='PNG')
+            entries.append((s, buf.getvalue()))
+        else:
+            entries.append((s, ico_bmp_entry(frame)))
+
+    offset = 6 + 16 * len(entries)    # ICONDIR + ICONDIRENTRY の合計
+    dir_bytes = struct.pack('<HHH', 0, 1, len(entries))
+    for s, data in entries:
+        # 256px は幅・高さのバイトに 0 を書く決まり。
+        b = 0 if s == 256 else s
+        dir_bytes += struct.pack('<BBBBHHII', b, b, 0, 0, 1, 32, len(data), offset)
+        offset += len(data)
+    path.write_bytes(dir_bytes + b''.join(d for _, d in entries))
+
+
 def main():
     root = pathlib.Path(__file__).resolve().parent.parent
     img  = render()
     (root / 'icon').mkdir(exist_ok=True)
     for s in PNG_SIZES:
         img.resize((s, s), Image.LANCZOS).save(root / 'icon' / f'icon_{s}.png')
+    write_ico(img, root / 'icon' / 'morphingaligner.ico')
     write_inc(img, root / 'src' / 'app_icon_data.inc')
-    print(f'icon/*.png と src/app_icon_data.inc を書き出しました（埋め込み: {SIZES}）')
+    print(f'icon/*.png, icon/morphingaligner.ico, src/app_icon_data.inc を書き出しました')
+    print(f'  ウィンドウアイコン埋め込み: {SIZES}')
+    print(f'  .ico: {ICO_SIZES}（{ICO_PNG_MIN}px 以上は PNG 格納）')
 
 
 if __name__ == '__main__':
