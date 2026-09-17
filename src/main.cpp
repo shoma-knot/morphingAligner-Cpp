@@ -17,6 +17,20 @@
 
 namespace {
 
+// CMake から渡される版（project() の VERSION）。CMake を通さずに単体で
+// コンパイルされた場合に備えて既定値を置く。
+#ifndef APP_VERSION
+    #define APP_VERSION "unknown"
+#endif
+
+constexpr const char* kWindowTitle = "morphingAligner v" APP_VERSION;
+
+// ウィンドウのクラス名（X11 の WM_CLASS / Wayland の app_id）。
+// GLFW は既定でこれをウィンドウタイトルから決めるため、タイトルに版を入れると
+// クラス名まで版込みになり、デスクトップエントリの StartupWMClass と一致しなくなって
+// タスクバーのアイコンが外れる。版と切り離すために明示する。
+constexpr const char* kWindowClass = "morphingAligner";
+
 // 日本語 UI 用フォント。同梱の Gen Interface JP（OFL v1.1、font/ 以下）を読み、
 // 見つからなければ ImGui 既定フォントにフォールバック（文字化けする旨をログに出す）。
 // 相対パスはカレントディレクトリ起動（プロジェクト/配布ルート）と bin/ 起動の両方を試す。
@@ -58,7 +72,12 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
 
-    GLFWwindow* window = glfwCreateWindow(1280, 720, "morphingAligner", nullptr, nullptr);
+    // タイトルに版を入れてもクラス名が変わらないよう固定する（kWindowClass のコメント参照）。
+    glfwWindowHintString(GLFW_X11_CLASS_NAME, kWindowClass);
+    glfwWindowHintString(GLFW_X11_INSTANCE_NAME, kWindowClass);
+    glfwWindowHintString(GLFW_WAYLAND_APP_ID, kWindowClass);
+
+    GLFWwindow* window = glfwCreateWindow(1280, 720, kWindowTitle, nullptr, nullptr);
     if (!window) {
         std::fprintf(stderr, "Failed to create window\n");
         glfwTerminate();

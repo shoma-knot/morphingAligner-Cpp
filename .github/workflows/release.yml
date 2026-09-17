@@ -1,29 +1,20 @@
-# Ubuntu と Windows の両方でビルドし、展開すればそのまま動く配布物を
-# アーティファクトとして残す。
+# タグを push したときに Ubuntu と Windows の配布物をビルドし、
+# GitHub のリリースとして公開する。
 #
 # 配布物の構成（font/ と licenses/ を実行時に相対パスで開くため、この形を崩さないこと）:
 #
 #   morphingAligner-<版>-<環境>/
-#     bin/morphingAlignerCpp(.exe)
-#     font/ licenses/        ← main.cpp と ui.cpp が "font/..." と "../font/..." を試す
-#     icon/ tools/           ← Linux のみ。デスクトップエントリ登録に使う
-#
-# bin/ から起動しても直下から起動しても、どちらかの候補パスで見つかる。
-name: build
+#     morphingAlignerCpp(.exe)   ← 直下に置く。作業ディレクトリがここになるので
+#     font/ licenses/              "font/..." がそのまま当たる
+#     icon/ tools/               ← Linux のみ。デスクトップエントリ登録に使う
+name: release
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
-  pull_request:
-  workflow_dispatch:
 
 permissions:
   contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   build:
@@ -52,6 +43,24 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: タグと project() の版が一致しているか見る
+        shell: bash
+        run: |
+          set -eu
+          PROJ_VER=$(sed -n 's/^project(.*VERSION \([0-9][0-9.]*\).*/\1/p' CMakeLists.txt)
+          echo "CMakeLists.txt: $PROJ_VER / タグ: $GITHUB_REF_NAME"
+          # タイトルバーに出る版は project() の VERSION から来る。食い違ったまま
+          # 公開すると、v0.2.0 のリリースなのにアプリが v0.1.0 と名乗ることになる。
+          # 接尾辞（-rc1 など）は許す。
+          case "$GITHUB_REF_NAME" in
+            "v$PROJ_VER" | "v$PROJ_VER-"*) ;;
+            *)
+              echo "タグと project() の VERSION が食い違っています。" >&2
+              echo "CMakeLists.txt の project(... VERSION ...) を更新してからタグを打ち直してください。" >&2
+              exit 1
+              ;;
+          esac
 
       - name: Linux のビルド依存を入れる
         if: runner.os == 'Linux'
@@ -101,7 +110,8 @@ jobs:
         shell: bash
         run: |
           set -eux
-          # タグから起動されたときはタグ名、それ以外はコミットの短縮ハッシュを版として使う。
+          # タグから起動されたときはタグ名を版とする。手動実行に備えて短縮ハッシュに
+          # 落ちる経路も残しておく。
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             VERSION="$GITHUB_REF_NAME"
           else
@@ -110,7 +120,14 @@ jobs:
           DIR="morphingAligner-${VERSION}-${{ matrix.name }}"
 
           mkdir -p "$DIR"
-          cp -r bin font licenses "$DIR"/
+          # 実行ファイルは配布物の直下に置く。ここから起動すれば作業ディレクトリが
+          # 配布ルートになり、font/ と licenses/ が相対パスで素直に見つかる。
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp bin/morphingAlignerCpp.exe "$DIR"/
+          else
+            cp bin/morphingAlignerCpp "$DIR"/
+          fi
+          cp -r font licenses "$DIR"/
           # Linux はデスクトップエントリの登録スクリプトとアイコンも入れる
           # （Windows はアイコンを実行ファイルに埋め込んでいるので不要）。
           if [ "$RUNNER_OS" = "Linux" ]; then
@@ -142,11 +159,11 @@ jobs:
             test -f "$DIR/$f" || { echo "配布物に不足: $f" >&2; exit 1; }
           done
           if [ "$RUNNER_OS" = "Windows" ]; then
-            test -f "$DIR/bin/morphingAlignerCpp.exe" || { echo "実行ファイルがない" >&2; exit 1; }
+            test -f "$DIR/morphingAlignerCpp.exe" || { echo "実行ファイルがない" >&2; exit 1; }
           else
-            test -x "$DIR/bin/morphingAlignerCpp" || { echo "実行ファイルがない" >&2; exit 1; }
+            test -x "$DIR/morphingAlignerCpp" || { echo "実行ファイルがない" >&2; exit 1; }
             # 動的リンクの取りこぼしがないか（未解決があれば "not found" が出る）。
-            ldd "$DIR/bin/morphingAlignerCpp" | (! grep "not found")
+            ldd "$DIR/morphingAlignerCpp" | (! grep "not found")
           fi
           echo "--- 構成 ---"
           find "$DIR" -type f | sort
@@ -157,3 +174,34 @@ jobs:
           name: morphingAligner-${{ matrix.name }}
           path: ${{ steps.package.outputs.archive }}
           if-no-files-found: error
+
+  release:
+    name: リリースを作る
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      # リリースの作成と資材の添付に要る。
+      contents: write
+    steps:
+      - name: 両環境の配布物を集める
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: リリースを作成して添付する
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          ls -l dist
+          # 同じタグで再実行されたときに落ちないよう、既にあれば差し替えにする。
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes
+          fi

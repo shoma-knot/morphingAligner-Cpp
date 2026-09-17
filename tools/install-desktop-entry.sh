@@ -14,8 +14,15 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 NAME=morphingaligner
 DESKTOP="$ROOT/$NAME.desktop"
-EXEC="$ROOT/bin/morphingAlignerCpp"
 ICON="$ROOT/icon/icon_256.png"
+
+# 実行ファイルの位置は構成によって違う。配布物では直下、リポジトリでビルドした
+# 場合は bin/ に出る。
+if [ -x "$ROOT/morphingAlignerCpp" ]; then
+    EXEC="$ROOT/morphingAlignerCpp"
+else
+    EXEC="$ROOT/bin/morphingAlignerCpp"
+fi
 LINK_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 LINK="$LINK_DIR/$NAME.desktop"
 

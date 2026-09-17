@@ -39,6 +39,9 @@ file(GLOB SOURCES CONFIGURE_DEPENDS src/*.cpp)
 add_executable(morphingAlignerCpp ${SOURCES})
 # tcmorph はヘッダオンリーの外部ライブラリ。
 target_include_directories(morphingAlignerCpp PRIVATE ${CMAKE_SOURCE_DIR}/tcmorph/include)
+# タイトルバーに出す版。上の project() の VERSION をそのまま使うので、リリース時は
+# そちらを更新すること。
+target_compile_definitions(morphingAlignerCpp PRIVATE APP_VERSION="${PROJECT_VERSION}")
 
 # Windows では実行ファイル自体にもアイコンを埋め込む。glfwSetWindowIcon が設定する
 # ウィンドウのアイコンとは別物で、こちらはエクスプローラーの表示やピン留めが参照する。
