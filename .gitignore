@@ -5,6 +5,8 @@ build
 .cache
 audio
 .test
+.tmp
+.venv
 
 compile_commands.json
 imgui.ini
