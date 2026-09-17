@@ -11,6 +11,7 @@
 #include <GLFW/glfw3.h>
 
 #include "app.hpp"
+#include "app_icon.hpp"
 #include "log.hpp"
 #include "ui.hpp"
 
@@ -63,6 +64,7 @@ int main() {
         glfwTerminate();
         return 1;
     }
+    set_window_icon(window);
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);    // vsync
 

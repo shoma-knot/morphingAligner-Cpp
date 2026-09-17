@@ -8,3 +8,6 @@ audio
 
 compile_commands.json
 imgui.ini
+
+# tools/install-desktop-entry.sh が生成する（絶対パスを含むので追跡しない）
+/morphingaligner.desktop
