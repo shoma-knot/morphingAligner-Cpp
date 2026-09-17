@@ -22,7 +22,13 @@ find_package(glfw3 CONFIG REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(tinyfiledialogs CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
-find_package(Eigen3 3.4 CONFIG REQUIRED)    # tcmorph(モーフィングエンジン)が要求
+# tcmorph(モーフィングエンジン)が要求する。
+# 版を指定しないのは、vcpkg の eigen3 が名乗る版(5.0.1)と Eigen 自身のバージョン
+# マクロ(3.5.0)が食い違っており、tcmorph が要求する 3.4 を書くと通らないため。
+# 実際に使う版は vcpkg-configuration.json の baseline が固定しているので、ここで
+# 重ねて縛る必要はない。3.4.0 と 5.0.1 でモーフィング結果が WAV のバイト単位で
+# 一致することは確認済み。
+find_package(Eigen3 CONFIG REQUIRED)
 find_package(Threads REQUIRED)    # std::async(モーフィングの別スレッド実行)用
 add_subdirectory(third-party/miniaudio_cpp)
 set(WORLD_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
