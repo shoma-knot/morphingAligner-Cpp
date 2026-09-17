@@ -14,7 +14,7 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 NAME=morphingaligner
 DESKTOP="$ROOT/$NAME.desktop"
-EXEC="$ROOT/bin/main"
+EXEC="$ROOT/bin/morphingAlignerCpp"
 ICON="$ROOT/icon/icon_256.png"
 LINK_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 LINK="$LINK_DIR/$NAME.desktop"

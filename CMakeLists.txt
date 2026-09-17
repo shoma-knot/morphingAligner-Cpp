@@ -30,9 +30,9 @@ add_subdirectory(third-party/world)
 
 
 file(GLOB SOURCES CONFIGURE_DEPENDS src/*.cpp)
-add_executable(main ${SOURCES})
+add_executable(morphingAlignerCpp ${SOURCES})
 # tcmorph はヘッダオンリーの外部ライブラリ。
-target_include_directories(main PRIVATE ${CMAKE_SOURCE_DIR}/tcmorph/include)
+target_include_directories(morphingAlignerCpp PRIVATE ${CMAKE_SOURCE_DIR}/tcmorph/include)
 
 # Windows では実行ファイル自体にもアイコンを埋め込む。glfwSetWindowIcon が設定する
 # ウィンドウのアイコンとは別物で、こちらはエクスプローラーの表示やピン留めが参照する。
@@ -47,9 +47,9 @@ if (WIN32)
     endif()
     set(MORPHINGALIGNER_ICO "${CMAKE_SOURCE_DIR}/icon/morphingaligner.ico")
     configure_file(${CMAKE_SOURCE_DIR}/src/app_icon.rc.in ${CMAKE_BINARY_DIR}/app_icon.rc @ONLY)
-    target_sources(main PRIVATE ${CMAKE_BINARY_DIR}/app_icon.rc)
+    target_sources(morphingAlignerCpp PRIVATE ${CMAKE_BINARY_DIR}/app_icon.rc)
 endif()
-target_link_libraries(main PRIVATE
+target_link_libraries(morphingAlignerCpp PRIVATE
     imgui::imgui
     implot::implot
     glfw

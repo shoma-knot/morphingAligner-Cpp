@@ -263,13 +263,13 @@ Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋�
 export VCPKG_ROOT="$HOME/.local/vcpkg"
 cmake --preset vcpkg      # 初回は依存インストールで数分
 cmake --build build
-./bin/main
+./bin/morphingAlignerCpp
 ```
 
 ## 既知の制約・メモ
 
 - **この開発環境（Wayland）ではGUIのスクリーンショットが撮れない**（scrot/importは黒画面、grim未導入）。
-  アプリ自体は正常動作。目視確認はユーザーが `./bin/main` を起動して行う。
+  アプリ自体は正常動作。目視確認はユーザーが `./bin/morphingAlignerCpp` を起動して行う。
 - ビルド/起動の検証は「数秒起動してstderrにエラーが出ないこと」で代替している。
 
 ## 注意点（fragile）

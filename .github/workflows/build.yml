@@ -4,7 +4,7 @@
 # 配布物の構成（font/ と licenses/ を実行時に相対パスで開くため、この形を崩さないこと）:
 #
 #   morphingAligner-<版>-<環境>/
-#     bin/main(.exe)
+#     bin/morphingAlignerCpp(.exe)
 #     font/ licenses/        ← main.cpp と ui.cpp が "font/..." と "../font/..." を試す
 #     icon/ tools/           ← Linux のみ。デスクトップエントリ登録に使う
 #
@@ -142,11 +142,11 @@ jobs:
             test -f "$DIR/$f" || { echo "配布物に不足: $f" >&2; exit 1; }
           done
           if [ "$RUNNER_OS" = "Windows" ]; then
-            test -f "$DIR/bin/main.exe" || { echo "実行ファイルがない" >&2; exit 1; }
+            test -f "$DIR/bin/morphingAlignerCpp.exe" || { echo "実行ファイルがない" >&2; exit 1; }
           else
-            test -x "$DIR/bin/main" || { echo "実行ファイルがない" >&2; exit 1; }
+            test -x "$DIR/bin/morphingAlignerCpp" || { echo "実行ファイルがない" >&2; exit 1; }
             # 動的リンクの取りこぼしがないか（未解決があれば "not found" が出る）。
-            ldd "$DIR/bin/main" | (! grep "not found")
+            ldd "$DIR/bin/morphingAlignerCpp" | (! grep "not found")
           fi
           echo "--- 構成 ---"
           find "$DIR" -type f | sort
