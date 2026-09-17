@@ -2,7 +2,12 @@ cmake_minimum_required(VERSION 4.0)
 project(morphingAlignerCpp VERSION 0.1.0)
 set(CMAKE_CXX_STANDARD 17)
 
-set(CMAKE_CXX_FLAGS "-fPIC -O2")
+# MSVC の CMAKE_CXX_FLAGS には /EHsc などの既定値が入っており、丸ごと上書きすると
+# 例外処理が壊れる（本体は try/catch に依存している）。-fPIC/-O2 も cl では無効なので、
+# GCC/Clang のときだけ設定する。最適化レベルは CMAKE_BUILD_TYPE でも指定できる。
+if (NOT MSVC)
+    set(CMAKE_CXX_FLAGS "-fPIC -O2")
+endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(LIBRARY_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/lib)
 set(EXECUTABLE_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/bin)
