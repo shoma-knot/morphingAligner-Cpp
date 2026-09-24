@@ -13,6 +13,7 @@
 #include "app.hpp"
 #include "app_icon.hpp"
 #include "log.hpp"
+#include "speech_tools.hpp"
 #include "ui.hpp"
 
 namespace {
@@ -39,6 +40,30 @@ constexpr const char* kJpFontCandidates[] = {
     "../font/Gen Interface JP/GenInterfaceJP-Regular.ttf",
 };
 
+// 音素記号（IPA）の補助フォント。MFA の日本語モデルは ɕ ʑ や無声化の ̥ を出すが、
+// Gen Interface JP にはこれらの字形が無い。OS 標準のフォントを見つかった場合だけ
+// 日本語フォントに合成（MergeMode）して、足りない字形だけを補う。同梱はしない。
+constexpr const char* kIpaFontCandidates[] = {
+    "C:/Windows/Fonts/segoeui.ttf",                         // Windows
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",      // Debian / Ubuntu
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",                  // Arch など
+    "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",    // Fedora
+};
+
+// 見つかった補助フォントを直前に追加したフォントへ合成する。
+void merge_ipa_font(float size) {
+    for (const char* path : kIpaFontCandidates) {
+        std::ifstream probe { path };
+        if (!probe.good()) continue;
+        ImFontConfig cfg;
+        cfg.MergeMode = true;
+        ImGui::GetIO().Fonts->AddFontFromFileTTF(path, size, &cfg);
+        applog::add(std::string { "補助フォント（音素記号用）: " } + path);
+        return;
+    }
+    applog::add("音素記号用の補助フォントが見つかりません（一部の IPA 記号が表示できません）");
+}
+
 // フォントを読み込む。UI 全体は日本語フォント、戻り値はライセンス表示用の
 // 等幅フォント（ImGui 埋め込みの ProggyClean。ASCII のみだがライセンス英文には十分）。
 ImFont* load_fonts() {
@@ -49,6 +74,7 @@ ImFont* load_fonts() {
         // 最初に追加したフォントが既定になるため、日本語フォントを先に読む。
         io.Fonts->AddFontFromFileTTF(path, 18.0f, nullptr, io.Fonts->GetGlyphRangesJapanese());
         applog::add(std::string { "フォント読み込み: " } + path);
+        merge_ipa_font(18.0f);
         return io.Fonts->AddFontDefault();    // 2番目: 等幅（ProggyClean）
     }
     applog::add("日本語フォントが見つからないため既定フォントを使用します（文字化けの可能性）");
@@ -127,6 +153,9 @@ int main() {
 
             glfwSwapBuffers(window);
         }
+        // 実行中の Python ツール（MFA は数十秒かかる）を止める。App を破棄すると実行中
+        // ジョブの future が子プロセスの終了を待つため、止めないと閉じた後も固まる。
+        terminate_speech_tools();
     } catch (const std::exception& e) {
         std::fprintf(stderr, "Fatal: %s\n", e.what());
     }

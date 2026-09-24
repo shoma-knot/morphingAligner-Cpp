@@ -7,6 +7,8 @@ audio
 .test
 .tmp
 .venv
+# Python ツール（python/speech_tools.py）用の micromamba 環境
+.env
 
 compile_commands.json
 imgui.ini

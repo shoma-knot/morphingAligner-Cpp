@@ -221,6 +221,10 @@ void apply_track(Track& tr, const std::string& path, Spectrogram&& spec) {
     tr.view_x1 = tr.spec.duration;
     tr.view_y0 = 0.0;
     tr.view_y1 = tr.y_max;
-    tr.path    = path;
+    // フォルマントと音素セグメンテーションは前の音声のものなので捨てる（書き起こしは残す。
+    // 同じ文を別の話者で読んだ音声に差し替えることが多いため）。
+    tr.formants     = {};
+    tr.segmentation = {};
+    tr.path         = path;
     applog::add(tr.name + " 読み込み完了: " + path);
 }

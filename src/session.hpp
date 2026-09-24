@@ -26,6 +26,7 @@ struct SessionLoadData {
     // 適用時は現在の base/target にアンカーだけを乗せる。
     bool                anchors_only = false;
     std::string         base_path, target_path;
+    std::string         base_transcript, target_transcript;    // MFA 用の書き起こし（任意）
     Spectrogram         base_spec, target_spec;    // 表示用スペクトログラム（解析済み）
     std::vector<Anchor> anchors;
 };

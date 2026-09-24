@@ -1,0 +1,72 @@
+#pragma once
+
+/// @file speech_tools.hpp
+/// @brief Python の音声解析ツール（python/speech_tools.py）の呼び出しと結果の型。
+///
+/// フォルマント推定（parselmouth = Praat）と音素セグメンテーション（Montreal Forced
+/// Aligner）を、./.env の Python を子プロセスとして起動して実行する。要求/応答は一時
+/// ディレクトリの JSON ファイルでやりとりする（Windows でコマンドライン経由の日本語が
+/// 化けるのを避けるため）。どの関数もブロックするので、必ずワーカースレッドで呼ぶこと。
+
+#include <string>
+#include <vector>
+
+// フォルマント1本分の軌跡。未定義のフレームは除いてあり、erb は表示用（Y軸=ERB レート）。
+struct FormantTrack {
+    std::vector<double> t;      // 時刻 [s]
+    std::vector<double> hz;     // 周波数 [Hz]
+    std::vector<double> erb;    // 同・ERB レート
+};
+
+// フォルマント推定の結果（tracks[0] = F1, tracks[1] = F2, ...）。
+struct Formants {
+    std::vector<FormantTrack> tracks;
+    bool empty() const { return tracks.empty(); }
+};
+
+// TextGrid の区間1つ。
+struct SegInterval {
+    double      start = 0, end = 0;    // [s]
+    std::string label;                 // UTF-8（音素は IPA 記号）
+};
+
+// 区間ティア（MFA の出力では "words" と "phones"）。
+struct SegTier {
+    std::string              name;
+    std::vector<SegInterval> intervals;
+};
+
+// 音素セグメンテーションの結果。
+struct Segmentation {
+    std::vector<SegTier> tiers;
+    bool empty() const { return tiers.empty(); }
+};
+
+// フォルマント推定のパラメータ（Praat の To Formant (burg) に対応）。
+struct FormantParams {
+    double max_formant_hz = 5500.0;    // 最大フォルマント（成人男性 5000 / 女性 5500 が目安）
+    int    num_formants   = 5;         // 推定するフォルマント数
+    int    num_tracks     = 4;         // 表示する本数（F1..F4）
+};
+
+// MFA のモデル指定（mfa model download で取得した名前、またはファイルパス）。
+struct AlignParams {
+    std::string acoustic_model = "japanese_mfa";
+    std::string dictionary     = "japanese_mfa";
+};
+
+// 使う Python と スクリプトの場所（見つからなければ空）。表示・診断用。
+// 環境変数 MORPHALIGNER_PYTHON があればそれを優先し、なければ ./.env（と ../.env）を探す。
+std::string find_python();
+std::string find_speech_script();
+
+// 実行中のツール（Python と、そこから起動された MFA）をすべて止め、以後の起動も断る。
+// アプリ終了時、実行中のジョブの future を破棄する前に呼ぶ（呼ばないと子の終了まで待たされる）。
+void terminate_speech_tools();
+
+// wav のフォルマントを推定する。失敗時は err に理由を入れて空を返す。
+Formants run_formants(const std::string& wav, const FormantParams& params, std::string& err);
+
+// wav を書き起こし text で強制アラインメントする。失敗時は err に理由を入れて空を返す。
+Segmentation run_alignment(const std::string& wav, const std::string& text, const AlignParams& params,
+                           std::string& err);

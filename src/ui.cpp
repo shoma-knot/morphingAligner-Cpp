@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <imgui.h>
+#include <imgui_stdlib.h>    // std::string 版 InputText
 #include <implot.h>
 #include <tinyfiledialogs.h>
 
@@ -21,6 +22,8 @@
 #include "log.hpp"
 #include "morphing.hpp"
 #include "session.hpp"
+#include "speech_tools.hpp"
+#include "speech_view.hpp"
 
 namespace {
 
@@ -92,6 +95,154 @@ void launch_load_track_job(App& app, bool is_base) {
             return {};
         }
     });
+}
+
+// ── Python ツールのジョブ ─────────────────────────────────────
+// フォルマント推定（数秒）や MFA（数十秒）をワーカーで実行する。ui_job と違い、
+// 実行中も他の操作を止めず、base/target を同時に走らせてもよい。結果の反映は
+// 完了回収時（poll_tool_jobs）にメインスレッドで行う。
+
+void launch_tool_job(App& app, std::function<std::function<void(App&)>()> work) {
+    app.tool_jobs.push_back(std::async(std::launch::async, std::move(work)));
+}
+
+// 毎フレーム: 完了したツールジョブを回収し、適用処理をメインスレッドで実行する。
+void poll_tool_jobs(App& app) {
+    for (auto it = app.tool_jobs.begin(); it != app.tool_jobs.end();) {
+        if (it->wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+            ++it;
+            continue;
+        }
+        std::function<void(App&)> apply = it->get();
+        it                              = app.tool_jobs.erase(it);
+        if (apply) apply(app);
+    }
+}
+
+// 経過秒数（ログ用）。
+double seconds_since(std::chrono::steady_clock::time_point t0) {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+}
+
+// フォルマント推定を開始する。完了時、音声が差し替わっていたら結果は捨てる。
+void launch_formant_job(App& app, bool is_base) {
+    Track& tr       = is_base ? app.base : app.target;
+    tr.formant_busy = true;
+    const std::string   name = tr.name, path = tr.path;
+    const FormantParams params = app.formant_params;
+    applog::add(name + " フォルマント推定中...");
+    launch_tool_job(app, [is_base, name, path, params]() -> std::function<void(App&)> {
+        const auto  t0 = std::chrono::steady_clock::now();
+        std::string err;
+        auto        f = std::make_shared<Formants>(run_formants(path, params, err));
+        if (!err.empty()) {
+            applog::add(name + " フォルマント推定失敗: " + err);
+        } else {
+            char buf[128];
+            std::snprintf(buf, sizeof buf, " フォルマント推定完了 (%.2f s)", seconds_since(t0));
+            applog::add(name + buf);
+        }
+        return [is_base, path, f, ok = err.empty()](App& a) {
+            Track& t       = is_base ? a.base : a.target;
+            t.formant_busy = false;
+            if (!ok || t.path != path) return;    // 失敗、または実行中に音声が差し替わった
+            t.formants = std::move(*f);
+        };
+    });
+}
+
+// 音素セグメンテーション（MFA）を開始する。完了時、音声が差し替わっていたら結果は捨てる。
+void launch_align_job(App& app, bool is_base) {
+    Track& tr     = is_base ? app.base : app.target;
+    tr.align_busy = true;
+    const std::string name = tr.name, path = tr.path, text = tr.transcript;
+    const AlignParams params = app.align_params;
+    applog::add(name + " 音素セグメンテーション中（MFA、数十秒かかります）...");
+    launch_tool_job(app, [is_base, name, path, text, params]() -> std::function<void(App&)> {
+        const auto  t0 = std::chrono::steady_clock::now();
+        std::string err;
+        auto        seg = std::make_shared<Segmentation>(run_alignment(path, text, params, err));
+        if (!err.empty()) {
+            applog::add(name + " 音素セグメンテーション失敗: " + err);
+        } else {
+            // 音素列もログに出す（辞書にない語は spn になるので、ここで気づけるように）。
+            std::string phones;
+            for (const SegTier& t : seg->tiers) {
+                if (t.name != "phones") continue;
+                for (const SegInterval& iv : t.intervals) {
+                    if (iv.label.empty() || iv.label == "sil") continue;
+                    if (!phones.empty()) phones += ' ';
+                    phones += iv.label;
+                }
+            }
+            char buf[128];
+            std::snprintf(buf, sizeof buf, " 音素セグメンテーション完了 (%.2f s): ", seconds_since(t0));
+            applog::add(name + buf + phones);
+        }
+        return [is_base, path, seg, ok = err.empty()](App& a) {
+            Track& t     = is_base ? a.base : a.target;
+            t.align_busy = false;
+            if (!ok || t.path != path) return;    // 失敗、または実行中に音声が差し替わった
+            t.segmentation = std::move(*seg);
+        };
+    });
+}
+
+// 左パネルの「音声解析（Python）」: 表示切替、トラックごとの書き起こしと実行ボタン、設定。
+void draw_speech_tools_panel(App& app) {
+    if (!ImGui::CollapsingHeader("音声解析（Python）", ImGuiTreeNodeFlags_DefaultOpen)) return;
+
+    ImGui::Checkbox("フォルマント", &app.show_formants);
+    // 凡例（スペクトログラム上の点の色）。
+    for (int k = 0; k < app.formant_params.num_tracks; ++k) {
+        ImGui::SameLine(0.0f, k == 0 ? -1.0f : 4.0f);
+        ImGui::TextColored(formant_color(k), "F%d", k + 1);
+    }
+    ImGui::Checkbox("音素セグメンテーション", &app.show_segmentation);
+
+    const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+    for (Track* tr : { &app.base, &app.target }) {
+        const bool is_base = tr == &app.base;
+        ImGui::PushID(tr);
+        ImGui::Spacing();
+        ImGui::TextUnformatted(is_base ? "Base" : "Target");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputTextWithHint("##transcript", "書き起こし（MFA 用）", &tr->transcript);
+
+        ImGui::BeginDisabled(!tr->loaded() || tr->formant_busy);
+        if (ImGui::Button(tr->formant_busy ? "推定中...##fm" : "フォルマント##fm", ImVec2(half, 0)))
+            launch_formant_job(app, is_base);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!tr->loaded() || tr->align_busy || tr->transcript.empty());
+        if (ImGui::Button(tr->align_busy ? "実行中...##al" : "音素アライン##al", ImVec2(half, 0)))
+            launch_align_job(app, is_base);
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Montreal Forced Aligner で書き起こしを音声に合わせ、\n"
+                              "単語と音素の区間を求めます（数十秒かかります）。");
+        ImGui::PopID();
+    }
+
+    if (ImGui::TreeNode("設定##speech")) {
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputDouble("##maxf", &app.formant_params.max_formant_hz, 250.0, 500.0, "最大フォルマント %.0f Hz");
+        app.formant_params.max_formant_hz = std::clamp(app.formant_params.max_formant_hz, 2000.0, 10000.0);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Praat の Maximum formant。成人男性は 5000 Hz、女性は 5500 Hz が目安です。");
+        ImGui::TextDisabled("MFA 音響モデル / 辞書");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputText("##acoustic", &app.align_params.acoustic_model);
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputText("##dictionary", &app.align_params.dictionary);
+        // 使う Python（見つからないときの切り分け用）。ファイルを確かめるので開いたときだけ。
+        const std::string py = find_python();
+        ImGui::TextDisabled("Python: %s", py.empty() ? "（見つかりません）" : "検出済み");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", py.empty() ? "./.env に環境を置くか、環境変数 MORPHALIGNER_PYTHON で指定してください"
+                                               : py.c_str());
+        ImGui::TreePop();
+    }
 }
 
 // 左パネル内の、トラック1つ分の読み込み/再生操作と情報表示。
@@ -208,8 +359,10 @@ enum class Minimap { None, Above, Below };
 // 指定ピクセル高さでスペクトル包絡スペクトログラムを1枚描き、アンカーを重ねる。
 // is_base はこのプロットがアンカーペアのどちら側を編集するかを選ぶ。
 // out_edges には対応線の端点を返す（何も描かなければ空）。minimap で上/下にミニマップ。
+// show_seg なら音素セグメンテーションのプロットを添える（base は上、target は下。
+// パネル間の対応線がまたがないよう、ミニマップと同じく外側に置く）。
 void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vector<EdgePoint>& out_edges,
-                      Minimap minimap) {
+                      Minimap minimap, bool show_seg) {
     out_edges.clear();
 
     ImGui::PushID(&tr);
@@ -228,12 +381,20 @@ void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vect
     constexpr float kScaleW = 90.0f;
     const float     plot_w  = ImGui::GetContentRegionAvail().x - kScaleW;
 
-    // ミニマップの分だけ本体を低くする（上/下は下で描き分ける）。
-    float       spec_h = height;
+    // ミニマップと音素セグメンテーションの分だけ本体を低くする（上/下は下で描き分ける）。
+    const float gap    = ImGui::GetStyle().ItemSpacing.y;
     const float mini_h = height * 0.22f;
-    if (minimap != Minimap::None)
-        spec_h = std::max(80.0f, height - mini_h - ImGui::GetStyle().ItemSpacing.y);
+    const float seg_h  = segmentation_plot_height();
+    float       spec_h = height;
+    if (minimap != Minimap::None) spec_h -= mini_h + gap;
+    if (show_seg) spec_h -= seg_h + gap;
+    spec_h = std::max(80.0f, spec_h);
     if (minimap == Minimap::Above) draw_minimap(tr, plot_w, mini_h);
+
+    // 音素セグメンテーションとはプロット領域の左右端を揃える（Y 軸の目盛り幅が違っても
+    // 時刻の位置が縦に一致するように）。時間軸は tr.view_x0/x1 へのリンクで共有する。
+    const bool aligned = show_seg && ImPlot::BeginAlignedPlots("##spec_seg");
+    if (show_seg && is_base) draw_segmentation(tr, plot_w, seg_h);
 
     // 右クリックをアンカー削除に使うため解放する: NoMenus で既定のコンテキストメニュー、
     // NoBoxSelect で右ドラッグの範囲ズームを無効化。
@@ -247,14 +408,16 @@ void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vect
         ImPlot::SetupAxes("時間 [s]", "周波数 [Hz]", x_flags, ImPlotAxisFlags_Lock);
         // Y軸は ERB レートを座標にし、目盛りは Hz で表示（テクスチャも ERB 等間隔）。
         setup_erb_yaxis_ticks(sp.fs / 2.0);
-        // X は初期のみ設定（以後ズーム/パン可）、Y は毎フレーム自前の表示範囲に追従。
-        ImPlot::SetupAxisLimits(ImAxis_X1, 0, sp.duration, ImPlotCond_Once);
+        // X は tr.view_x0/x1 にリンク（音素セグメンテーションのプロットと共有。初期値は
+        // apply_track が全体表示にする）、Y は毎フレーム自前の表示範囲に追従。
+        ImPlot::SetupAxisLinks(ImAxis_X1, &tr.view_x0, &tr.view_x1);
         ImPlot::SetupAxisLimits(ImAxis_Y1, tr.y_min, tr.y_max, ImPlotCond_Always);
         // 時間軸を [0, duration] 内に制約（データ範囲外へパン/ズームアウトさせない）。
         ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0, sp.duration);
         // 焼き込み済みテクスチャ: bin * frame 数に依らず1クアッドで描画。Y は ERB レート範囲。
         ImPlot::PlotImage("##env", static_cast<ImTextureID>(tr.tex), ImPlotPoint(0, 0),
                           ImPlotPoint(sp.duration, freqscale::hz_to_erb(sp.fs / 2.0)));
+        if (app.show_formants) draw_formants(tr.formants);
 
         handle_freq_axis_input(tr, sp);
         draw_anchors(app, is_base, sp, out_edges);
@@ -271,6 +434,8 @@ void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vect
     ImGui::SameLine();
     ImPlot::ColormapScale("dB", sp.db_min, sp.db_max, ImVec2(kScaleW, spec_h));
 
+    if (show_seg && !is_base) draw_segmentation(tr, plot_w, seg_h);
+    if (aligned) ImPlot::EndAlignedPlots();
     if (minimap == Minimap::Below) draw_minimap(tr, plot_w, mini_h);
 
     ImPlot::PopColormap();
@@ -301,6 +466,11 @@ void draw_left_panel(App& app) {
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Checkbox("ミニマップを表示", &app.show_minimap);
+
+    // ── 音声解析（フォルマント・音素セグメンテーション） ─────────
+    ImGui::Spacing();
+    ImGui::Separator();
+    draw_speech_tools_panel(app);
 
     // ── セッション（アンカー）の保存/読み込み ─────────────────
     ImGui::Spacing();
@@ -355,10 +525,16 @@ void draw_right_panel(App& app) {
     app.active_anchor = app.hover_anchor;
     app.hover_anchor  = -1;
 
+    // 音素セグメンテーションは片方にだけ結果があっても両方に枠を出す（base/target の
+    // スペクトログラム本体の高さを揃えるため）。
+    const bool show_seg = app.show_segmentation
+                       && (!app.base.segmentation.empty() || !app.target.segmentation.empty()
+                           || app.base.align_busy || app.target.align_busy);
+
     static std::vector<EdgePoint> base_edges, target_edges;
-    draw_spectrogram(app, app.base, /*is_base=*/true, each_h, base_edges, base_mm);
+    draw_spectrogram(app, app.base, /*is_base=*/true, each_h, base_edges, base_mm, show_seg);
     ImGui::Spacing();
-    draw_spectrogram(app, app.target, /*is_base=*/false, each_h, target_edges, target_mm);
+    draw_spectrogram(app, app.target, /*is_base=*/false, each_h, target_edges, target_mm, show_seg);
 
     draw_anchor_connectors(base_edges, target_edges, app.active_anchor);
 }
@@ -792,6 +968,7 @@ void draw_root(App& app) {
     // 非同期ジョブの完了回収（どのタブにいても回収できるようここで毎フレーム）。
     poll_ui_job(app);
     poll_morph_job(app);
+    poll_tool_jobs(app);
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);

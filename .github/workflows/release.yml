@@ -6,6 +6,7 @@
 #   morphingAligner-<版>-<環境>/
 #     morphingAlignerCpp(.exe)   ← 直下に置く。作業ディレクトリがここになるので
 #     font/ licenses/              "font/..." がそのまま当たる
+#     python/                    ← フォルマント推定・音素セグメンテーション（環境は別途）
 #     icon/ tools/               ← Linux のみ。デスクトップエントリ登録に使う
 name: release
 
@@ -127,7 +128,9 @@ jobs:
           else
             cp bin/morphingAlignerCpp "$DIR"/
           fi
-          cp -r font licenses "$DIR"/
+          # python/ はフォルマント推定・音素セグメンテーション用のスクリプト。実行に使う
+          # Python 環境（.env）は同梱しないので、使う人が配布ルートに用意する。
+          cp -r font licenses python "$DIR"/
           # Linux はデスクトップエントリの登録スクリプトとアイコンも入れる
           # （Windows はアイコンを実行ファイルに埋め込んでいるので不要）。
           if [ "$RUNNER_OS" = "Linux" ]; then
@@ -155,7 +158,8 @@ jobs:
           for f in "font/Gen Interface JP/GenInterfaceJP-Regular.ttf" \
                    "font/Gen Interface JP/OFL.txt" \
                    "licenses/imgui.txt" "licenses/implot.txt" \
-                   "licenses/nlohmann-json.txt" "licenses/world.txt"; do
+                   "licenses/nlohmann-json.txt" "licenses/world.txt" \
+                   "python/speech_tools.py"; do
             test -f "$DIR/$f" || { echo "配布物に不足: $f" >&2; exit 1; }
           done
           if [ "$RUNNER_OS" = "Windows" ]; then

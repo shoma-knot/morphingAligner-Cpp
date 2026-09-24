@@ -16,6 +16,7 @@
 
 #include "analysis.hpp"
 #include "morphing.hpp"    // MorphRates / MorphOutput
+#include "speech_tools.hpp"    // Formants / Segmentation
 
 // Viridis, shared by the pre-baked spectrogram texture and the on-screen legend.
 constexpr ImPlotColormap kColormap = ImPlotColormap_Viridis;
@@ -31,7 +32,16 @@ struct Track {
     double       y_max = 0;  // the axis, reset to [0, ERB(fs/2)] on load
 
     // メインプロットの現在の表示範囲（ミニマップの枠に使う）。X=秒, Y=ERB レート。
+    // view_x0/x1 はスペクトログラムと音素セグメンテーションの時間軸のリンク先も兼ねる
+    // （ImPlot::SetupAxisLinks で両プロットが同じ値を読み書きする）。
     double view_x0 = 0, view_x1 = 0, view_y0 = 0, view_y1 = 0;
+
+    // Python ツール（python/speech_tools.py）の結果。音声を読み直すと消える。
+    Formants     formants;           // フォルマント（parselmouth）
+    Segmentation segmentation;       // 単語/音素の区間（Montreal Forced Aligner）
+    std::string  transcript;         // MFA に渡す書き起こし（UI で入力）
+    bool         formant_busy = false;    // フォルマント推定を実行中
+    bool         align_busy   = false;    // 音素セグメンテーションを実行中
 
     explicit Track(std::string n) : name(std::move(n)) {}
     ~Track();    // frees the GL texture (defined in app.cpp)
@@ -66,6 +76,14 @@ struct App {
     Track               target { "target" };
     std::vector<Anchor> anchors;    // base<->target time correspondences
     bool                show_minimap = false;    // スペクトログラムのミニマップ表示
+    bool                show_formants = true;    // フォルマントをスペクトログラムに重ねる
+    bool                show_segmentation = true;    // 音素セグメンテーションのプロットを出す
+
+    // Python ツールの設定と実行中ジョブ（ワーカーでツールを呼び、完了時に「メインスレッドで
+    // 適用する処理」を返す。ui_job と違って複数を同時に走らせてよい）。
+    FormantParams                                       formant_params;
+    AlignParams                                         align_params;
+    std::vector<std::future<std::function<void(App&)>>> tool_jobs;
 
     // アンカーの番号と対応線は、カーソル近傍の時間アンカー1本ぶんだけ描く
     // （24本まで増えると全点にラベルが出て読めないため）。色や太さでの強調は

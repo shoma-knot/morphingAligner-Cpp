@@ -13,6 +13,8 @@
 - モーフィングエンジンは同梱の **tcmorph**（Kawahara の `wordTV2WmorphingEngineRev.m` の C++ 移植）の
   `aligner::WordTV2WMorphing`。自前実装（下の「モーフィング（旧・自前実装）」「MATLAB版との差分」）は廃止済み。
 - セッションは独自 JSON に加え、tcmorph の `anchors.json`（アンカーのみ）も読める。
+- **Python 連携**（2026-09-24）: `./.env` の Python を子プロセスで呼び、フォルマント（parselmouth）を
+  スペクトログラムに重ね、音素セグメンテーション（MFA）を時間軸を共有した独立プロットに出す。
 - 配布: `v*` タグの push で GitHub Actions が Ubuntu / Windows 版をビルドしリリースに添付する。
 - 以下の「実装済み機能」は時系列で追記しているため、前半の節には後で置き換わった記述がある
   （置き換わった箇所には注記を入れてある）。
@@ -30,6 +32,8 @@
 | 行列演算 | Eigen | vcpkg（`eigen3`。版は `vcpkg-configuration.json` の baseline で固定） |
 | セッション JSON | nlohmann-json | vcpkg（`nlohmann-json`） |
 | 日本語フォント | Gen Interface JP Regular（OFL v1.1） | 同梱 `font/Gen Interface JP/` |
+| フォルマント | parselmouth（Praat） | `./.env` の Python（micromamba、git 管理外） |
+| 音素セグメンテーション | Montreal Forced Aligner 3.4（japanese_mfa） | 同上（手順は「ビルド / 実行」） |
 
 - C++17、CMake 4.0 以上。ビルドは vcpkg マニフェストモード＋CMakePresets（Ninja）。
 - WORLD の example ビルドは `WORLD_BUILD_EXAMPLES=OFF` で無効化（ビルド時間短縮）。
@@ -49,6 +53,10 @@
 - `src/session.hpp` / `src/session.cpp` — セッション JSON の保存/読み込み（tcmorph のアンカー形式も読む）
 - `src/log.hpp` / `src/log.cpp` — スレッドセーフな動作ログ `applog`
 - `src/freqscale.hpp` — Hz ↔ ERB レート変換
+- `src/speech_tools.hpp` / `src/speech_tools.cpp` — Python ツールの呼び出し（子プロセス起動・JSON の
+  要求/応答・終了時の停止）と結果の型（`Formants` / `Segmentation`）
+- `src/speech_view.hpp` / `src/speech_view.cpp` — フォルマントの重ね描き、音素セグメンテーションのプロット
+- `python/speech_tools.py` — フォルマント推定（parselmouth）と音素セグメンテーション（MFA）の本体
 - `src/app_icon.*` / `src/app_icon_data.inc` / `src/app_icon.rc.in` — ウィンドウアイコン（埋め込み RGBA）と
   Windows 用リソース（.ico を実行ファイルに埋め込む）
 - `tcmorph/` — モーフィングエンジン（ドキュメントは `tcmorph/README.md`, `tcmorph/docs/`）
@@ -326,6 +334,51 @@ Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋�
   3.4 指定を満たさないため。3.4.0 と 5.0.1 で WAV がバイト一致することを確認済み。
 - 版を 26.09.17 に設定。
 
+### フォルマントと音素セグメンテーション（Python 連携、2026-09-24）
+C++ から `./.env` の Python を子プロセスで呼び、parselmouth（Praat）でフォルマント、
+Montreal Forced Aligner（MFA）で単語/音素の区間を求めて画面に重ねる。
+- **呼び出し方式**（`speech_tools.cpp` ↔ `python/speech_tools.py`）: 呼び出しごとに一時
+  ディレクトリを作り、要求/応答を UTF-8 の JSON ファイルでやりとりする（コマンドライン経由の
+  日本語が Windows の ANSI コードページで化けるのを避ける）。子の標準出力/エラーは同じ
+  ディレクトリのログに回し、応答が無いときだけ末尾をエラーに添える。想定内の失敗は
+  スクリプトが `ToolError` の文言を `error` に詰めて返す。
+  - Windows は `CreateProcessW`（`CREATE_NO_WINDOW`）。ログのハンドルは起動の瞬間だけ継承可にする
+    （同時に起動した別の子へ漏れて一時ディレクトリが消せなくなるのを防ぐ）。Linux は `posix_spawn`。
+  - Python は環境変数 `MORPHALIGNER_PYTHON` → `.env/python.exe`（Linux は `.env/bin/python`）→
+    `../.env/...` の順に探す。スクリプトは `python/` と `../python/`。
+  - 終了時: 子は Job Object（Linux はプロセスグループ）に入れ、`main.cpp` がループ後に
+    `terminate_speech_tools()` で孫の MFA ごと止める（止めないと future が子を待ち、閉じた後も
+    数十秒固まる）。スクリプトの作業ファイルも C++ 側の一時ディレクトリ内に作らせるので残らない。
+- **ジョブ**（`ui.cpp`）: `App::tool_jobs`（複数同時可、ui_job とは別枠）。完了時の適用処理で
+  `Track::path` が変わっていたら結果を捨てる。実行中は `Track::formant_busy / align_busy`。
+- **フォルマント**: Burg 法（time_step 5ms, 5 本推定, 最大フォルマント既定 5500Hz, 表示 F1–F4）。
+  未定義フレームを除いて ERB に変換して保持し、スペクトログラムに `PlotScatter`（半径 1.5px,
+  `NoFit`）で重ねる。色は F1 白 / F2 水色 / F3 桃 / F4 灰（viridis とアンカーの橙の両方から離す）。
+- **音素セグメンテーション**: `mfa align_one`。japanese_mfa の辞書は 54 万行あり毎回全部読む
+  ため 1 発話 3〜8 分かかっていた → **書き起こしの部分文字列になる語だけに絞った辞書**を渡して
+  約 20 秒に短縮（sudachi の分割結果は書き起こしの部分文字列なので結果は同じ）。
+  MFA は実行のたびにモデルを `<MFA_ROOT_DIR>/extracted_models` に展開し直し、同時実行で
+  展開が衝突して壊れた状態が残るため、子の `MFA_ROOT_DIR` を呼び出しごとの一時ディレクトリに
+  向け、音響モデルは zip のフルパスで渡す（base/target の同時実行・別の MFA と並行しても安全）。
+- **表示**（`speech_view.cpp`）: 単語/音素の2段の独立プロット。base は上、target は下（ミニマップと
+  同じく外側に置き、パネル間の対応線をまたがない）。時間軸は `SetupAxisLinks` で
+  `Track::view_x0/x1` を共有してスペクトログラムと連動し、`BeginAlignedPlots` でプロット領域の
+  左右端を揃える。無音（`<eps>`/`sil`）は塗らず、`spn`（辞書にない語）は橙。区間に収まらない
+  ラベルは出さずホバーのツールチップで読む。結果が片方だけでも両方に枠を出して本体の高さを揃える。
+- **UI**: 左パネルの「音声解析（Python）」に表示切替、トラックごとの書き起こし入力と
+  「フォルマント」「音素アライン」ボタン、設定（最大フォルマント、MFA のモデル名、Python の検出状況）。
+  書き起こしはセッション JSON の `transcripts`（任意項目）に保存/復元する。
+- **IPA の字形**: MFA の日本語音素は ɕ ʑ と無声化の ̥（U+0325）を含み、Gen Interface JP に無い。
+  OS のフォント（Windows: Segoe UI、Linux: DejaVu Sans）が見つかれば MergeMode で合成して補う
+  （同梱はしない）。ImGui は結合文字を合成しないので ̥ は直後に小さく出る。
+- 配布物に `python/` を追加（環境は同梱しない）。`.env` を `.gitignore` に追加。
+- 検証: 検証用プログラム（スクラッチ）で、フォルマント（F1–F4 各 81 フレーム）、日本語を含む
+  パス、base/target 同時アライン、空の書き起こしのエラー、終了処理（0.2 秒で戻り python/mfa が
+  残らない）、一時ディレクトリが残らないことを確認。GUI はフォルマントの重ね描きを目視確認し、
+  音素セグメンテーションのプロットはユーザーが動作確認済み。Linux 側のプロセス起動
+  （posix_spawn）はビルド・動作とも未確認。
+
+
 ## MATLAB版との差分
 
 ※ **旧・自前実装についての比較**。現在は tcmorph（MATLAB 版の移植、丸め誤差レベルで一致を
@@ -373,6 +426,23 @@ cmake --build build
 - Windows 機（開発機の1台）では `VCPKG_ROOT=C:\Users\skanno\.vcpkg`。既存の `build/` は
   Visual Studio ジェネレータで構成されており、出力は `bin/Release/`（CI は Ninja で `bin/` 直下）。
 
+### Python ツールの環境（`./.env`）
+フォルマント・音素セグメンテーションに使う。無くてもアプリは動く（該当ボタンが失敗をログに出す）。
+```sh
+micromamba create -p ./.env -c conda-forge python=3.13 montreal-forced-aligner
+./.env/python -m pip install praat-parselmouth "sudachipy==0.6.11" "sudachidict-core==20260428"
+# MFA のモデル（~/Documents/MFA/pretrained_models へ。環境を activate しない場合は
+# .env/Library/bin 等を PATH に通して実行する。Linux は .env/bin/mfa）
+mfa model download acoustic japanese_mfa
+mfa model download dictionary japanese_mfa
+```
+- **sudachi の版は固定**: sudachipy 0.7 は MFA 付属の char.def（`NOOOVBOW2`）を読めず、
+  sudachipy 0.6.11 は sudachidict-core 20260723 以降の辞書（ヘッダ版が新しい）を読めない。
+  0.6.11 ＋ 20260428 で動作確認済み（MFA 3.4.2）。
+- micromamba 環境を activate せずに python.exe を直接起動すると MFA が `libsndfile.dll` を
+  読めずに落ちる。スクリプトが子プロセスの PATH に環境の `Library/bin` などを足して対処している。
+- 別の場所の環境を使うときは環境変数 `MORPHALIGNER_PYTHON` に python のパスを入れる。
+
 ### リリース手順
 1. `CMakeLists.txt` の `project(... VERSION x.y.z)` を更新してコミット。
 2. `git tag vx.y.z && git push origin vx.y.z`（タグと VERSION が食い違うと CI が止まる）。
@@ -388,6 +458,12 @@ cmake --build build
 - base/target の fs 不一致は未対応（エラーで止める。リサンプリングなし）。
 - macOS / Wayland ネイティブでは `glfwSetWindowIcon` が効かない（XWayland 上では効く）。
 - `app.cpp` で `GL_CLAMP_TO_EDGE` を自前定義している（Windows の GL ヘッダに無いための応急処置、FIXME）。
+- MFA は1発話でも約 20 秒かかる（大半は MFA の起動とモデル展開）。書き起こしが音声と合わない、
+  または辞書に無い語（`spn` になる）があると区間がずれる。フォルマント・音素セグメンテーションの
+  結果は音声を読み直すと消え、セッションにも保存しない（書き起こしだけ保存する）。
+- Windows の GUI 自動確認: 実マウスの操作は前面の別ウィンドウを誤操作しうるので使わない。
+  `PostMessage` のクリックは実カーソルが窓外だと GLFW がカーソル離脱として扱い効かない。
+  撮影だけなら `PrintWindow`（PW_RENDERFULLCONTENT）で隠れていても撮れる。
 
 ## 注意点（fragile）
 
@@ -407,4 +483,9 @@ cmake --build build
 - base/target の fs 不一致への対応（リサンプリング）。
 - 拡大時の見た目調整（`GL_LINEAR` ↔ `GL_NEAREST`）。
 - Windows 版の実機確認（CI ビルド・.ico 埋め込み・フォント/ライセンスの表示）。
-- 済: 時間アンカーの個別削除（右クリック）、対応線、周波数アンカー、モーフィング本体（tcmorph）。
+- 音素セグメンテーションのプロットの目視確認と調整、Linux での Python 連携の動作確認。
+- 音素セグメンテーションの活用: 境界をスペクトログラムにも薄く重ねる、ホバー中の区間を
+  スペクトログラム側で強調する、音素境界から時間アンカーを自動で打つ、など。
+- フォルマント/セグメンテーション結果のセッション保存（再計算を省く）。
+- 済: 時間アンカーの個別削除（右クリック）、対応線、周波数アンカー、モーフィング本体（tcmorph）、
+  フォルマント表示・音素セグメンテーション（Python 連携）。
