@@ -224,6 +224,7 @@ void apply_track(Track& tr, const std::string& path, Spectrogram&& spec) {
     // フォルマントと音素セグメンテーションは前の音声のものなので捨てる。フォルマントは
     // パスが変わったことを ui.cpp の ensure_formants が見て、自動で推定し直す。
     tr.formants     = {};
+    tr.formants_ma  = {};
     tr.segmentation = {};
     tr.path         = path;
     applog::add(tr.name + " 読み込み完了: " + path);

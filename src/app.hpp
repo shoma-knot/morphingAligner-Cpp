@@ -38,6 +38,7 @@ struct Track {
 
     // Python ツール（python/speech_tools.py）の結果。音声を読み直すと消える。
     Formants     formants;           // フォルマント（parselmouth。読み込み時に自動で推定）
+    Formants     formants_ma;        // その移動平均（結果の受け取り時と窓幅の変更時に作り直す）
     Segmentation segmentation;       // 単語/音素の区間（Montreal Forced Aligner）
     std::string  formant_path;       // formants を推定した（または試みた）音声のパス
     bool         formant_busy = false;    // フォルマント推定を実行中
@@ -77,6 +78,8 @@ struct App {
     std::vector<Anchor> anchors;    // base<->target time correspondences
     bool                show_minimap = false;    // スペクトログラムのミニマップ表示
     bool                show_formants = false;    // フォルマントをスペクトログラムに重ねる
+    bool                show_formant_ma = false;    // フォルマントの移動平均を線で重ねる
+    int                 formant_ma_ms   = 50;       // 移動平均の窓幅 [ms]
     bool                show_segmentation = true;    // 音素セグメンテーションのプロットを出す
 
     // Python ツールの設定と実行中ジョブ（ワーカーでツールを呼び、完了時に「メインスレッドで

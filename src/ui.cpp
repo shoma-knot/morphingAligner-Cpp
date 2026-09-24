@@ -147,7 +147,8 @@ void launch_formant_job(App& app, bool is_base) {
             Track& t       = is_base ? a.base : a.target;
             t.formant_busy = false;
             if (!ok || t.path != path) return;    // 失敗、または実行中に音声が差し替わった
-            t.formants = std::move(*f);
+            t.formants    = std::move(*f);
+            t.formants_ma = smooth_formants(t.formants, a.formant_ma_ms / 1000.0);
         };
     });
 }
@@ -228,6 +229,23 @@ void draw_speech_tools_panel(App& app) {
         ImGui::SameLine(0.0f, k == 0 ? -1.0f : 4.0f);
         ImGui::TextColored(formant_color(k), "F%d", k + 1);
     }
+    // 移動平均（フォルマント表示の下位設定）。窓幅は ms 単位のスピンボックス。
+    ImGui::Indent();
+    ImGui::BeginDisabled(!app.show_formants);
+    ImGui::Checkbox("移動平均", &app.show_formant_ma);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(std::max(60.0f, ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize("ms").x
+                                              - ImGui::GetStyle().ItemInnerSpacing.x));
+    if (ImGui::InputInt("ms##ma_window", &app.formant_ma_ms, 5, 25)) {
+        app.formant_ma_ms = std::clamp(app.formant_ma_ms, 5, 500);
+        // 計算は軽い（点数に比例）ので、値が変わるたびに作り直す。
+        for (Track* tr : { &app.base, &app.target })
+            tr->formants_ma = smooth_formants(tr->formants, app.formant_ma_ms / 1000.0);
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("移動平均の窓幅（各時刻を中心とする幅）。5〜500 ms。");
+    ImGui::EndDisabled();
+    ImGui::Unindent();
     ImGui::Checkbox("音素セグメンテーション", &app.show_segmentation);
 
     // 書き起こしは base/target 共通（同じ文を読んだ2音声を想定）。ボタンで両方を整列する。
@@ -242,7 +260,7 @@ void draw_speech_tools_panel(App& app) {
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Montreal Forced Aligner で書き起こしを base / target の音声に合わせ、\n"
-                          "単語と音素の区間を求めます（数十秒かかります）。");
+                          "音素の区間を求めます（数十秒かかります）。");
 
     if (ImGui::TreeNode("設定##speech")) {
         ImGui::SetNextItemWidth(-1);
@@ -442,7 +460,7 @@ void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vect
         // 焼き込み済みテクスチャ: bin * frame 数に依らず1クアッドで描画。Y は ERB レート範囲。
         ImPlot::PlotImage("##env", static_cast<ImTextureID>(tr.tex), ImPlotPoint(0, 0),
                           ImPlotPoint(sp.duration, freqscale::hz_to_erb(sp.fs / 2.0)));
-        if (app.show_formants) draw_formants(tr.formants);
+        if (app.show_formants) draw_formants(tr.formants, app.show_formant_ma ? &tr.formants_ma : nullptr);
 
         handle_freq_axis_input(tr, sp);
         draw_anchors(app, is_base, sp, out_edges);
