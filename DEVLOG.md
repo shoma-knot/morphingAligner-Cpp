@@ -1,11 +1,21 @@
 # morphingAligner 開発ログ
 
-最終更新: 2026-07-21
+最終更新: 2026-09-24（現行版 v26.09.17）
 
 ## 最終目標
 
 2つの音声（**base** / **target**）を読み込み、両者の**時間軸的・周波数軸的な対応をとるためのアンカー**を打てるようにする。
-アンカーによる対応づけをもとに、将来的に音声モーフィング/アライメントを行う。
+アンカーによる対応づけをもとに音声モーフィングを行う（モーフィング本体は tcmorph で実装済み）。
+
+## 現状の要約（2026-09-24 時点）
+
+- タブ構成: **アライメント**（アンカー編集）／**モーフィング**（5軸スライダー＋3×3 プロット＋再生/WAV 保存）／**ライセンス表示**。下部に全タブ共通のログ。
+- モーフィングエンジンは同梱の **tcmorph**（Kawahara の `wordTV2WmorphingEngineRev.m` の C++ 移植）の
+  `aligner::WordTV2WMorphing`。自前実装（下の「モーフィング（旧・自前実装）」「MATLAB版との差分」）は廃止済み。
+- セッションは独自 JSON に加え、tcmorph の `anchors.json`（アンカーのみ）も読める。
+- 配布: `v*` タグの push で GitHub Actions が Ubuntu / Windows 版をビルドしリリースに添付する。
+- 以下の「実装済み機能」は時系列で追記しているため、前半の節には後で置き換わった記述がある
+  （置き換わった箇所には注記を入れてある）。
 
 ## アーキテクチャ / 技術スタック
 
@@ -15,22 +25,39 @@
 | GUI / プロット | Dear ImGui 1.92 / ImPlot | vcpkg（`imgui`, `implot`） |
 | ファイルダイアログ | tinyfiledialogs（ネイティブ、Linuxはzenity/kdialog） | vcpkg（`tinyfiledialogs`） |
 | 音声デコード/再生 | miniaudio（C++ラッパ `ma::`） | 同梱 `third-party/miniaudio_cpp/`（pimplラッパ） |
-| 音声分析 | WORLD（Harvest, CheapTrick） | git submodule `third-party/world/`（mmorise/World） |
-| 日本語フォント | Noto Sans CJK（system） | `/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc` |
+| 音声分析/合成 | WORLD（Harvest, CheapTrick, D4C, Synthesis） | git submodule `third-party/world/`（mmorise/World） |
+| モーフィング | tcmorph（ヘッダオンリー、Eigen 依存） | 同梱 `tcmorph/`（Apache 2.0） |
+| 行列演算 | Eigen | vcpkg（`eigen3`。版は `vcpkg-configuration.json` の baseline で固定） |
+| セッション JSON | nlohmann-json | vcpkg（`nlohmann-json`） |
+| 日本語フォント | Gen Interface JP Regular（OFL v1.1） | 同梱 `font/Gen Interface JP/` |
 
-- C++17。ビルドは vcpkg マニフェストモード＋CMakePresets（Ninja）。
+- C++17、CMake 4.0 以上。ビルドは vcpkg マニフェストモード＋CMakePresets（Ninja）。
 - WORLD の example ビルドは `WORLD_BUILD_EXAMPLES=OFF` で無効化（ビルド時間短縮）。
+- 版は `CMakeLists.txt` の `project(... VERSION 26.09.17)`。`APP_VERSION` としてコンパイル定義で渡し、
+  タイトルバーに `morphingAligner v<版>` と出す（CMake は先頭ゼロを正規化しないので `26.09.17` のまま）。
 
 ## ファイル構成（自作分）
 
-- `src/analysis.hpp` / `src/analysis.cpp` — 音声ファイル → スペクトル包絡スペクトログラムの解析（GL非依存）
-- `src/app.hpp` / `src/app.cpp` — 状態モデル（`Anchor`/`Track`/`App`）、`load_track`、
-  テクスチャ生成、共有 `kColormap`
-- `src/ui.hpp` / `src/ui.cpp` — 描画（`draw_left_panel`/`draw_right_panel` と内部ヘルパ、
-  `EdgePoint`/`kAnchorCol`）
-- `src/main.cpp` — プラットフォーム初期化（GLFW/ImGui/ImPlot）、フォント、メインループ
+- `src/analysis.hpp` / `src/analysis.cpp` — 音声ファイル → 表示用スペクトル包絡スペクトログラムの解析（GL非依存）
+- `src/app.hpp` / `src/app.cpp` — 状態モデル（`Anchor`/`FreqAnchor`/`Track`/`App`）、`apply_track`、
+  テクスチャ生成（ERB 等間隔）、共有 `kColormap`
+- `src/ui.hpp` / `src/ui.cpp` — 画面全体（`draw_root`）。タブ、左パネル、スペクトログラム、ミニマップ、
+  モーフィングタブ、ライセンス表示、ログ、非同期ジョブ（`launch_ui_job` / `request_morph`）
+- `src/anchors.hpp` / `src/anchors.cpp` — 時間/周波数アンカーの描画・操作、パネル間の対応線
+- `src/morphing.hpp` / `src/morphing.cpp` — WORLD 解析（`analyze_channel`）と tcmorph によるモーフィング
+  （`morphing_channels`）、WAV 書き出し
+- `src/session.hpp` / `src/session.cpp` — セッション JSON の保存/読み込み（tcmorph のアンカー形式も読む）
+- `src/log.hpp` / `src/log.cpp` — スレッドセーフな動作ログ `applog`
+- `src/freqscale.hpp` — Hz ↔ ERB レート変換
+- `src/app_icon.*` / `src/app_icon_data.inc` / `src/app_icon.rc.in` — ウィンドウアイコン（埋め込み RGBA）と
+  Windows 用リソース（.ico を実行ファイルに埋め込む）
+- `tcmorph/` — モーフィングエンジン（ドキュメントは `tcmorph/README.md`, `tcmorph/docs/`）
+- `tools/gen_icon.py` — アイコン（`icon/*.png`, `icon/morphingaligner.ico`, `src/app_icon_data.inc`）の生成
+- `tools/install-desktop-entry.sh` / `uninstall-desktop-entry.sh` — Linux のデスクトップエントリ登録/解除
+- `.github/workflows/release.yml` — タグ push で配布物をビルドしてリリース
 - `CMakeLists.txt` / `vcpkg.json` / `CMakePresets.json` / `vcpkg-configuration.json` — ビルド構成
-  - `src/*` を再帰 glob（`CONFIGURE_DEPENDS`）するのでファイル追加時の CMake 変更は不要。
+  - `src/*.cpp` を**直下のみ** glob（`CONFIGURE_DEPENDS`）。ファイル追加時の CMake 変更は不要。
+    再帰 glob にすると tcmorph の examples（`main()` を持つ）を巻き込むので不可。
 
 ## 実装済み機能
 
@@ -43,6 +70,7 @@
    - `Spectrogram`: `num_frames`, `num_bins`, `fs`, `duration`, `db_min`, `db_max`, `values`（float, dB）
 
 ### GUI（`main.cpp`）
+※ 初期実装の記録。現在の描画は `ui.cpp`（`draw_root`）、アンカーは `anchors.cpp` に分離済み。
 - 画面を**縦に 1:4 分割**（左=操作パネル、右=表示パネル）。フルビューポートの単一ウィンドウ。
 - `Track` 構造体（1音声分の状態: `name` / `path` / `status` / `spec` / `tex`）を base・target の2つ保持。
   GLテクスチャを所有するため**非コピー**。
@@ -96,8 +124,9 @@
   - Ctrl+左クリック（点以外の線上, ピクセル距離で最寄り線を判定）で追加、
     Ctrl+左ドラッグで移動、Ctrl+右クリックで削除。
 - `main.cpp` で `GetInputMap().OverrideMod = ImGuiMod_None`（既定の Ctrl=DnD/入力無視を解除）。
-- 番号は時間アンカー内の並び順（`j+1`）を `Annotation` で表示。base/target が同番号＝対応。
+- 番号は時間アンカー内の並び順（`j+1`）。base/target が同番号＝対応。
   表示範囲（`GetPlotLimits`）外の点はラベルを出さない。
+  ※ 2026-09-16 に自前描画＋カーソル近傍の1本のみ表示へ変更（下の「アンカーの視認性の改善」）。
 
 ### アンカーの保存/読み込み（`session.cpp`）
 - `nlohmann-json` で JSON 保存/読み込み。スキーマ:
@@ -114,7 +143,10 @@
 - 左パネルに保存/読み込みボタン。既定パスはカレントディレクトリ
   （実行ファイルのパス取得は OS 固有になるため移植性優先）。
 
-### モーフィング（`morphing.cpp`）
+### モーフィング（旧・自前実装、`morphing.cpp`）
+※ **2026-09-16 に tcmorph へ差し替えて廃止**（下の「モーフィングエンジンを tcmorph に差し替え」）。
+UI も後にモーフィングタブへ移動している。以下は当時の記録。
+
 Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋軸ごとの率
 (tx=時間 / fx=周波数 / fo=F0 / sl=スペクトル / ap=非周期性)で実装。UI は一律スライダ
 （`MorphRates::uniform(r)` で全軸同値を渡す）。
@@ -228,7 +260,77 @@ Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋�
   追加ファイル・追加ライセンス不要（imgui 同梱・MIT）。vcpkg の imgui ポートは
   `misc/fonts/` の TTF（Roboto, Cousine 等）をインストールしない点に注意。
 
+### モーフィングエンジンを tcmorph に差し替え（2026-09-16）
+- 自前のワープ/補間実装を廃し、`tcmorph::aligner::WordTV2WMorphing`（`wordTV2WmorphingEngineRev.m`
+  の移植）を使う。本アプリは morphingAligner 相当（2素材）なので N 素材の `GeneralizedTCMorphing`
+  ではなく aligner 側。オプションは既定（MATLAB の挙動を再現する側、声道長比 1.0）。
+- `MorphChannel` は `tcmorph::WorldParameter` を直接保持。sp/ap は Eigen の `MatrixXd(nbin, n_frames)`
+  列優先で、CheapTrick/D4C へ各列の先頭ポインタをそのまま渡す（コピー不要）。
+- アンカーの整形（`build_anchors`）: tcmorph は時間アンカーの**狭義単調増加**を要求する。崩れると
+  モーフ後タイムラインが後戻りし広帯域ノイズになるため、範囲外・重複を落としたうえで target 側が
+  単調になる最大部分列を **DP** で選ぶ（貪欲だと1本の交差で以降が全滅する）。周波数アンカーは
+  base_f 昇順に並べ替え、`(本数, 時間アンカー数)` の 0 詰め行列にする。範囲は最終フレーム時刻基準。
+- 読み飛ばしたアンカー数とエンジンの警告は `MorphOutput::warnings` → ログ（内容が変わったときだけ）。
+- 合成長は最終フレーム時刻ちょうど（MATLAB の Synthesis と同じ長さ）。
+- 検証: rate 0/0.25/0.5/0.75/1 で NaN・フレーム欠落なし。rate 0/1 と元音声の短時間パワー包絡の
+  相関 0.994 / 0.996。アンカー0本・交差・範囲外・0Hz でも例外なし。
+
+### tcmorph 形式のアンカー JSON の読み込み（2026-09-16）
+- 「セッション読み込み」はトップレベルに `objects` があれば tcmorph 形式（`anchor_io.hpp`）と判定。
+  音声パスを持たないので、**現在の base/target にアンカーだけを乗せる**（未読み込みなら中止）。
+- `objects[0]`=base、`objects[1]`=target。形式検証は `tcmorph::io::ParseAnchorSet` に任せる。
+  周波数アンカーの 0 詰めは落とす。
+- 本アプリは周波数アンカーを base 側周波数順に並べ替えるため、逆転したアンカーを含むファイルは
+  tcmorph 単体と結果が変わる（読み込み時にログで補足）。
+
+### パス表示と「離したら再生」（2026-09-16）
+- 左パネルの Base/Target はファイル名のみ表示（フルパスはツールチップ）。
+- モーフィングタブに「離したら再生」（既定 OFF）。再生予約を `morph_play_request`（次に開始する
+  ジョブ）と `morph_job_play`（実行中ジョブ、開始時に確定）に分け、pending に畳まれた古い率の
+  結果が再生を横取りしないようにした。リアルタイム更新 ON でも離したフレームで再合成を要求する。
+
+### アンカーの視認性の改善（2026-09-16、`anchors.cpp`）
+- 番号ラベルは**カーソル近傍の時間アンカー1本ぶんだけ**表示。対象は「ドラッグ中の線 → ホバー中の
+  周波数点 → 最も近い線（15px 以内）」の順。base/target で共有するため、今フレームのホバーを
+  `App::hover_anchor` に集めて次フレームの `active_anchor` にする（1フレーム遅延）。
+- 同じ線上のラベルは画面 Y でソートして最小すき間だけ押し広げ、引き出し線を必ず引く
+  （`ImPlot::Annotation` は位置を厳密に決められないので同じ見た目を自前描画）。
+- 対応線は常に全部を α0.35 で描き、active の1本だけ不透明。時間線は 1.0px、active のみ 2.0px。
+  点は 3.5px。※「1本強調＋残り減光」は一斉に明滅してうるさかったので不採用。
+
+### Ctrl+ホイールで周波数軸ズーム（2026-09-16）
+- プロット領域上で Ctrl+ホイール → Y（周波数）ズーム（従来は軸ラベル上のみ）。「Ctrl=周波数方向」で
+  アンカー操作と揃う。Ctrl 中は X 軸も Lock して時間軸ズームの同時発火を防ぐ（副作用: Ctrl 中は X の
+  中ドラッグパンも止まる。許容）。
+
+### アプリアイコン（2026-09-17）
+- 意匠は `tools/gen_icon.py` が持ち、`icon/*.png`・`icon/morphingaligner.ico`・`src/app_icon_data.inc`
+  を生成。ウィンドウアイコン（16/32/48/64px RGBA）は実行ファイルに埋め込み `glfwSetWindowIcon` へ。
+- Windows: `.ico` を `app_icon.rc.in`（configure_file で絶対パス展開）で実行ファイルに埋め込む。
+  rc.exe には `/c65001` を渡す（UTF-8 コメントが化けるため）。.ico は 128px 未満 BMP / 以上 PNG。
+- Linux(GNOME): タスクバーは WM_CLASS で .desktop に紐づけるため、`tools/install-desktop-entry.sh`
+  で登録（外に出るのはシンボリックリンク1個、`Path=` で作業ディレクトリを固定、`NoDisplay=true`）。
+- WM_CLASS / Wayland app_id は `main.cpp` で `morphingAligner` に固定（タイトルに版を入れても
+  `StartupWMClass` と一致させるため）。
+
+### 配布・リリース（2026-09-17）
+- 実行ファイル名を `morphingAlignerCpp`（Windows は `.exe`）に変更。
+- `.github/workflows/release.yml`: `v*` タグ push で linux-x64 / windows-x64（`x64-windows-static`、
+  静的 CRT）をビルドし、tar.gz / zip を GitHub リリースに添付。両環境 Ninja（Windows は
+  `ilammy/msvc-dev-cmd`）、CMake は `lukka/get-cmake`、vcpkg バイナリキャッシュあり。
+- 配布物は実行ファイルを直下に置き、`font/` `licenses/`（Linux は `icon/` `tools/` も）を同梱。
+  中身の検査（必要ファイル・ldd の未解決）もワークフロー内で行う。
+- タグと `project()` の VERSION が食い違うとビルドを止める（`-rc1` などの接尾辞は可）。
+- MSVC では `CMAKE_CXX_FLAGS` を上書きしない（`/EHsc` が消えて例外処理が壊れるため）。
+- Eigen は `find_package(Eigen3 CONFIG REQUIRED)`（版指定なし）。vcpkg の eigen3 は 5.0.1 を名乗り
+  3.4 指定を満たさないため。3.4.0 と 5.0.1 で WAV がバイト一致することを確認済み。
+- 版を 26.09.17 に設定。
+
 ## MATLAB版との差分
+
+※ **旧・自前実装についての比較**。現在は tcmorph（MATLAB 版の移植、丸め誤差レベルで一致を
+検証済み）を使っているため、この節は履歴として残している。tcmorph と MATLAB の差分は
+`tcmorph/docs/porting-notes.md`、2つのエンジンの違いは `tcmorph/docs/engines.md` を参照。
 
 `generalizedTCmorphing.m` を精読して現状実装と比較した結果（2026-07-21）。
 
@@ -266,11 +368,26 @@ cmake --build build
 ./bin/morphingAlignerCpp
 ```
 
+- 実行時に `font/` と `licenses/` を相対パス（カレント起動と bin/ 起動の2候補）で開くので、
+  リポジトリ直下（または配布物のルート）から起動する。
+- Windows 機（開発機の1台）では `VCPKG_ROOT=C:\Users\skanno\.vcpkg`。既存の `build/` は
+  Visual Studio ジェネレータで構成されており、出力は `bin/Release/`（CI は Ninja で `bin/` 直下）。
+
+### リリース手順
+1. `CMakeLists.txt` の `project(... VERSION x.y.z)` を更新してコミット。
+2. `git tag vx.y.z && git push origin vx.y.z`（タグと VERSION が食い違うと CI が止まる）。
+3. `release.yml` が両環境をビルドし、GitHub リリースを作成（同じタグの再実行は差し替え）。
+
 ## 既知の制約・メモ
 
-- **この開発環境（Wayland）ではGUIのスクリーンショットが撮れない**（scrot/importは黒画面、grim未導入）。
+- **Linux 開発機（Wayland）ではGUIのスクリーンショットが撮れない**（scrot/importは黒画面、grim未導入）。
   アプリ自体は正常動作。目視確認はユーザーが `./bin/morphingAlignerCpp` を起動して行う。
 - ビルド/起動の検証は「数秒起動してstderrにエラーが出ないこと」で代替している。
+- ヘッドレス検証用の素材は `.test/`（`hai1.wav`, `hai2.wav`, `test_session.json`）。`.gitignore` 対象なので
+  マシン間では手で同期する（リポジトリには入らない）。
+- base/target の fs 不一致は未対応（エラーで止める。リサンプリングなし）。
+- macOS / Wayland ネイティブでは `glfwSetWindowIcon` が効かない（XWayland 上では効く）。
+- `app.cpp` で `GL_CLAMP_TO_EDGE` を自前定義している（Windows の GL ヘッダに無いための応急処置、FIXME）。
 
 ## 注意点（fragile）
 
@@ -279,13 +396,15 @@ cmake --build build
   自前で保持して毎フレーム `SetupAxisLimits(Always)` で再適用している。ImPlot の軸状態を
   複製しているため壊れやすい（`IsPlotHovered` ゲートが2段プロット間のドラッグ跨ぎで誤作動、
   Lock 解除や Y 軸追加でデシンク等）。拡張時は自前処理を伸ばさず ImPlot に軸を任せる方向で。
+  Ctrl+ホイールの Y ズームもこのブロックに乗っている。
+- **周波数アンカーの並べ替え**: モーフィング時に base_f 順へ並べ替えるため、逆転したアンカーは
+  tcmorph 単体と結果が変わる（UI に順序の概念がないための意図的な仕様）。
 
 ## 次にやること
 
-- 時間軸アンカーの拡張: アンカーの**個別削除**（右クリック/選択して削除）、base↔target の
-  対応が分かる表示（ペアの色分けや結線）、アンカーの整列/ソート。
-- アンカーを使った**アライメント/モーフィング本体**の実装（time-warping 等）。
-- 周波数軸アンカー（必要なら `DragLineY` / `DragPoint` で同様に）。
-- 再生の停止/一時停止・再生位置バー（現状は `play_oneshot` で頭から再生のみ）。
+- 再生の停止/一時停止・再生位置バー（現状は `play_oneshot` / `play_pcm` で頭から再生のみ）。
+- アンカーの整列/ソートや、アンカー編集の Undo。
+- base/target の fs 不一致への対応（リサンプリング）。
 - 拡大時の見た目調整（`GL_LINEAR` ↔ `GL_NEAREST`）。
-- morphing/alignment 本体の実装。
+- Windows 版の実機確認（CI ビルド・.ico 埋め込み・フォント/ライセンスの表示）。
+- 済: 時間アンカーの個別削除（右クリック）、対応線、周波数アンカー、モーフィング本体（tcmorph）。
