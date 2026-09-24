@@ -128,6 +128,7 @@ double seconds_since(std::chrono::steady_clock::time_point t0) {
 void launch_formant_job(App& app, bool is_base) {
     Track& tr       = is_base ? app.base : app.target;
     tr.formant_busy = true;
+    tr.formant_path = tr.path;    // 失敗しても同じ音声で毎フレーム再試行しないよう先に記録
     const std::string   name = tr.name, path = tr.path;
     const FormantParams params = app.formant_params;
     applog::add(name + " フォルマント推定中...");
@@ -151,11 +152,24 @@ void launch_formant_job(App& app, bool is_base) {
     });
 }
 
+// 毎フレーム: 読み込まれている音声のフォルマントが未推定なら推定を始める（音声の読み込み・
+// セッション読み込みのどちらの経路でも、パスが変われば自動で走る）。
+void ensure_formants(App& app) {
+    for (Track* tr : { &app.base, &app.target })
+        if (tr->loaded() && !tr->formant_busy && tr->formant_path != tr->path)
+            launch_formant_job(app, tr == &app.base);
+}
+
+// 設定（最大フォルマントなど）を変えたときに、読み込み済みの音声で推定し直す。
+void invalidate_formants(App& app) {
+    for (Track* tr : { &app.base, &app.target }) tr->formant_path.clear();
+}
+
 // 音素セグメンテーション（MFA）を開始する。完了時、音声が差し替わっていたら結果は捨てる。
-void launch_align_job(App& app, bool is_base) {
+void launch_align_job(App& app, bool is_base, const std::string& text) {
     Track& tr     = is_base ? app.base : app.target;
     tr.align_busy = true;
-    const std::string name = tr.name, path = tr.path, text = tr.transcript;
+    const std::string name = tr.name, path = tr.path;
     const AlignParams params = app.align_params;
     applog::add(name + " 音素セグメンテーション中（MFA、数十秒かかります）...");
     launch_tool_job(app, [is_base, name, path, text, params]() -> std::function<void(App&)> {
@@ -188,7 +202,23 @@ void launch_align_job(App& app, bool is_base) {
     });
 }
 
-// 左パネルの「音声解析（Python）」: 表示切替、トラックごとの書き起こしと実行ボタン、設定。
+// 直前の項目と同じ行に "(?)" を出し、ホバーで説明を表示する。
+void help_marker(const char* text) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", text);
+}
+
+// 直前の項目と同じ行の右端にボタンを置く（幅はラベルに合わせる）。
+bool right_aligned_button(const char* label) {
+    const float w = ImGui::CalcTextSize(label, nullptr, true).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    ImGui::SameLine();
+    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetContentRegionMax().x - w));
+    return ImGui::Button(label);
+}
+
+// 左パネルの「音声解析（Python）」: 表示切替、共通の書き起こしと音素アライメント、設定。
+// フォルマントは読み込み時に自動で推定する（ensure_formants）ので、ここでは表示の切替だけ。
 void draw_speech_tools_panel(App& app) {
     if (!ImGui::CollapsingHeader("音声解析（Python）", ImGuiTreeNodeFlags_DefaultOpen)) return;
 
@@ -200,34 +230,26 @@ void draw_speech_tools_panel(App& app) {
     }
     ImGui::Checkbox("音素セグメンテーション", &app.show_segmentation);
 
-    const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
-    for (Track* tr : { &app.base, &app.target }) {
-        const bool is_base = tr == &app.base;
-        ImGui::PushID(tr);
-        ImGui::Spacing();
-        ImGui::TextUnformatted(is_base ? "Base" : "Target");
-        ImGui::SetNextItemWidth(-1);
-        ImGui::InputTextWithHint("##transcript", "書き起こし（MFA 用）", &tr->transcript);
-
-        ImGui::BeginDisabled(!tr->loaded() || tr->formant_busy);
-        if (ImGui::Button(tr->formant_busy ? "推定中...##fm" : "フォルマント##fm", ImVec2(half, 0)))
-            launch_formant_job(app, is_base);
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        ImGui::BeginDisabled(!tr->loaded() || tr->align_busy || tr->transcript.empty());
-        if (ImGui::Button(tr->align_busy ? "実行中...##al" : "音素アライン##al", ImVec2(half, 0)))
-            launch_align_job(app, is_base);
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("Montreal Forced Aligner で書き起こしを音声に合わせ、\n"
-                              "単語と音素の区間を求めます（数十秒かかります）。");
-        ImGui::PopID();
-    }
+    // 書き起こしは base/target 共通（同じ文を読んだ2音声を想定）。ボタンで両方を整列する。
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##transcript", "書き起こし（MFA 用）", &app.transcript);
+    const bool any_loaded = app.base.loaded() || app.target.loaded();
+    const bool busy       = app.base.align_busy || app.target.align_busy;
+    ImGui::BeginDisabled(!any_loaded || busy || app.transcript.empty());
+    if (ImGui::Button(busy ? "音素アライメント実行中..." : "音素アライメント", ImVec2(-1, 0)))
+        for (Track* tr : { &app.base, &app.target })
+            if (tr->loaded()) launch_align_job(app, tr == &app.base, app.transcript);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Montreal Forced Aligner で書き起こしを base / target の音声に合わせ、\n"
+                          "単語と音素の区間を求めます（数十秒かかります）。");
 
     if (ImGui::TreeNode("設定##speech")) {
         ImGui::SetNextItemWidth(-1);
         ImGui::InputDouble("##maxf", &app.formant_params.max_formant_hz, 250.0, 500.0, "最大フォルマント %.0f Hz");
         app.formant_params.max_formant_hz = std::clamp(app.formant_params.max_formant_hz, 2000.0, 10000.0);
+        // 値を確定したら推定し直す（入力中の1文字ごとには走らせない）。
+        if (ImGui::IsItemDeactivatedAfterEdit()) invalidate_formants(app);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Praat の Maximum formant。成人男性は 5000 Hz、女性は 5500 Hz が目安です。");
         ImGui::TextDisabled("MFA 音響モデル / 辞書");
@@ -250,12 +272,15 @@ void draw_track_controls(App& app, Track& tr, const char* label) {
     ImGui::PushID(&tr);
     ImGui::TextUnformatted(label);
 
+    // 「読み込む」「再生」を1行に並べる。
+    const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
     ImGui::BeginDisabled(app.ui_job_running);
-    if (ImGui::Button("読み込む", ImVec2(-1, 0))) launch_load_track_job(app, &tr == &app.base);
+    if (ImGui::Button("読み込む", ImVec2(half, 0))) launch_load_track_job(app, &tr == &app.base);
     ImGui::EndDisabled();
+    ImGui::SameLine();
 
     ImGui::BeginDisabled(!tr.loaded());
-    if (ImGui::Button("再生", ImVec2(-1, 0))) {
+    if (ImGui::Button("再生", ImVec2(half, 0))) {
         try {
             app.engine.play_oneshot(tr.path);
         } catch (const std::exception& e) {
@@ -454,12 +479,17 @@ void draw_left_panel(App& app) {
 
     ImGui::Spacing();
     ImGui::Separator();
+    // アンカー数・操作説明（ホバーで表示）・全消去を1行に。
+    ImGui::AlignTextToFramePadding();
     ImGui::Text("アンカー: %d", static_cast<int>(app.anchors.size()));
-    ImGui::TextDisabled("左クリックで追加 / 右クリックで削除");
-    ImGui::TextDisabled("Ctrl+左クリックで周波数アンカー追加/ドラッグで移動");
-    ImGui::TextDisabled("Ctrl+右クリックで周波数アンカー削除");
+    help_marker("左クリック: 時間アンカーを追加（線はドラッグで移動）\n"
+                "右クリック: 時間アンカーを削除\n"
+                "Ctrl+左クリック: 線上に周波数アンカーを追加（点はドラッグで移動）\n"
+                "Ctrl+右クリック: 周波数アンカーを削除\n"
+                "ホイール: 時間軸ズーム / Ctrl+ホイール: 周波数軸ズーム\n"
+                "中ボタンドラッグ: 表示範囲の移動");
     ImGui::BeginDisabled(app.anchors.empty());
-    if (ImGui::Button("アンカーを全消去", ImVec2(-1, 0))) app.anchors.clear();
+    if (right_aligned_button("全消去")) app.anchors.clear();
     ImGui::EndDisabled();
 
     // ── 表示設定 ─────────────────────────────────────────────
@@ -969,6 +999,7 @@ void draw_root(App& app) {
     poll_ui_job(app);
     poll_morph_job(app);
     poll_tool_jobs(app);
+    ensure_formants(app);    // 読み込まれた音声のフォルマントを自動で推定
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);

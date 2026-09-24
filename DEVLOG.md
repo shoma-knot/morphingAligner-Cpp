@@ -365,9 +365,9 @@ Montreal Forced Aligner（MFA）で単語/音素の区間を求めて画面に�
   `Track::view_x0/x1` を共有してスペクトログラムと連動し、`BeginAlignedPlots` でプロット領域の
   左右端を揃える。無音（`<eps>`/`sil`）は塗らず、`spn`（辞書にない語）は橙。区間に収まらない
   ラベルは出さずホバーのツールチップで読む。結果が片方だけでも両方に枠を出して本体の高さを揃える。
-- **UI**: 左パネルの「音声解析（Python）」に表示切替、トラックごとの書き起こし入力と
-  「フォルマント」「音素アライン」ボタン、設定（最大フォルマント、MFA のモデル名、Python の検出状況）。
-  書き起こしはセッション JSON の `transcripts`（任意項目）に保存/復元する。
+- **UI**: 左パネルの「音声解析（Python）」。当初はトラックごとに書き起こしと「フォルマント」
+  「音素アライン」ボタンを置いたが、同日の整理（下の「左パネルの整理」）で共通化・自動化した。
+  設定（最大フォルマント、MFA のモデル名、Python の検出状況）は折りたたみの「設定」内。
 - **IPA の字形**: MFA の日本語音素は ɕ ʑ と無声化の ̥（U+0325）を含み、Gen Interface JP に無い。
   OS のフォント（Windows: Segoe UI、Linux: DejaVu Sans）が見つかれば MergeMode で合成して補う
   （同梱はしない）。ImGui は結合文字を合成しないので ̥ は直後に小さく出る。
@@ -378,6 +378,18 @@ Montreal Forced Aligner（MFA）で単語/音素の区間を求めて画面に�
   音素セグメンテーションのプロットはユーザーが動作確認済み。Linux 側のプロセス起動
   （posix_spawn）はビルド・動作とも未確認。
 
+### 左パネルの整理（2026-09-24）
+- Base/Target の「読み込む」「再生」を1行に。
+- 「アンカー: n」の右に「(?)」（ホバーで操作説明の全文）と右寄せの「全消去」を置き、
+  3 行あった操作説明をツールチップへ移した（`help_marker` / `right_aligned_button`）。
+- **フォルマントは読み込み時に自動で推定**: `ensure_formants`（draw_root で毎フレーム）が
+  `Track::formant_path != Track::path` を見て起動する。音声の読み込み・セッション読み込みの
+  どちらの経路でも走り、起動時に formant_path を記録するので失敗しても再試行ループしない。
+  最大フォルマントを変更・確定すると `invalidate_formants` で推定し直す。UI は表示の切替のみで、
+  **表示は既定でオフ**（`App::show_formants = false`）。
+- **書き起こしと音素アライメントを base/target で共通化**: `App::transcript` を1つだけ持ち、
+  「音素アライメント」ボタンで読み込み済みの両方に MFA を走らせる（同時実行、約 20 秒）。
+  セッション JSON は `transcript`（文字列、任意項目）で保存/復元する。
 
 ## MATLAB版との差分
 
@@ -427,7 +439,7 @@ cmake --build build
   Visual Studio ジェネレータで構成されており、出力は `bin/Release/`（CI は Ninja で `bin/` 直下）。
 
 ### Python ツールの環境（`./.env`）
-フォルマント・音素セグメンテーションに使う。無くてもアプリは動く（該当ボタンが失敗をログに出す）。
+フォルマント・音素セグメンテーションに使う。無くてもアプリは動く（読み込み時のフォルマント推定や音素アライメントが失敗をログに出す）。
 ```sh
 micromamba create -p ./.env -c conda-forge python=3.13 montreal-forced-aligner
 ./.env/python -m pip install praat-parselmouth "sudachipy==0.6.11" "sudachidict-core==20260428"
@@ -458,6 +470,7 @@ mfa model download dictionary japanese_mfa
 - base/target の fs 不一致は未対応（エラーで止める。リサンプリングなし）。
 - macOS / Wayland ネイティブでは `glfwSetWindowIcon` が効かない（XWayland 上では効く）。
 - `app.cpp` で `GL_CLAMP_TO_EDGE` を自前定義している（Windows の GL ヘッダに無いための応急処置、FIXME）。
+- 書き起こしは base/target 共通なので、別の文を読んだ2音声には音素アライメントを使えない。
 - MFA は1発話でも約 20 秒かかる（大半は MFA の起動とモデル展開）。書き起こしが音声と合わない、
   または辞書に無い語（`spn` になる）があると区間がずれる。フォルマント・音素セグメンテーションの
   結果は音声を読み直すと消え、セッションにも保存しない（書き起こしだけ保存する）。

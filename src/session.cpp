@@ -74,8 +74,8 @@ bool save_session(const App& app, const std::string& path) {
     json j;
     j["version"] = kSchemaVersion;
     j["waves"]   = { { "base", app.base.path }, { "target", app.target.path } };
-    // MFA 用の書き起こし（任意。古いセッションには無いので読み込み側は省略可として扱う）。
-    j["transcripts"] = { { "base", app.base.transcript }, { "target", app.target.transcript } };
+    // MFA 用の書き起こし（base/target 共通。古いセッションには無いので読み込み側は省略可）。
+    j["transcript"] = app.transcript;
 
     json anchors = json::array();
     for (const Anchor& a : app.anchors) {
@@ -140,10 +140,7 @@ SessionLoadData load_session_data(const std::string& path) {
     }
 
     // 書き起こしは任意項目（無ければ空のまま）。
-    if (const auto it = j.find("transcripts"); it != j.end() && it->is_object()) {
-        d.base_transcript   = it->value("base", std::string {});
-        d.target_transcript = it->value("target", std::string {});
-    }
+    if (const auto it = j.find("transcript"); it != j.end() && it->is_string()) d.transcript = it->get<std::string>();
 
     // 音声ファイルの存在を先に確認（片方だけ復元して中途半端な状態になるのを防ぐ）。
     if (!file_readable(d.base_path)) {
@@ -214,7 +211,6 @@ void apply_session_data(App& app, SessionLoadData&& d) {
 
     apply_track(app.base, d.base_path, std::move(d.base_spec));
     apply_track(app.target, d.target_path, std::move(d.target_spec));
-    app.anchors           = std::move(d.anchors);
-    app.base.transcript   = std::move(d.base_transcript);
-    app.target.transcript = std::move(d.target_transcript);
+    app.anchors    = std::move(d.anchors);
+    app.transcript = std::move(d.transcript);
 }

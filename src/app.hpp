@@ -37,9 +37,9 @@ struct Track {
     double view_x0 = 0, view_x1 = 0, view_y0 = 0, view_y1 = 0;
 
     // Python ツール（python/speech_tools.py）の結果。音声を読み直すと消える。
-    Formants     formants;           // フォルマント（parselmouth）
+    Formants     formants;           // フォルマント（parselmouth。読み込み時に自動で推定）
     Segmentation segmentation;       // 単語/音素の区間（Montreal Forced Aligner）
-    std::string  transcript;         // MFA に渡す書き起こし（UI で入力）
+    std::string  formant_path;       // formants を推定した（または試みた）音声のパス
     bool         formant_busy = false;    // フォルマント推定を実行中
     bool         align_busy   = false;    // 音素セグメンテーションを実行中
 
@@ -76,13 +76,14 @@ struct App {
     Track               target { "target" };
     std::vector<Anchor> anchors;    // base<->target time correspondences
     bool                show_minimap = false;    // スペクトログラムのミニマップ表示
-    bool                show_formants = true;    // フォルマントをスペクトログラムに重ねる
+    bool                show_formants = false;    // フォルマントをスペクトログラムに重ねる
     bool                show_segmentation = true;    // 音素セグメンテーションのプロットを出す
 
     // Python ツールの設定と実行中ジョブ（ワーカーでツールを呼び、完了時に「メインスレッドで
     // 適用する処理」を返す。ui_job と違って複数を同時に走らせてよい）。
     FormantParams                                       formant_params;
     AlignParams                                         align_params;
+    std::string transcript;    // MFA に渡す書き起こし（base/target 共通。同じ文を読んだ2音声を想定）
     std::vector<std::future<std::function<void(App&)>>> tool_jobs;
 
     // アンカーの番号と対応線は、カーソル近傍の時間アンカー1本ぶんだけ描く
