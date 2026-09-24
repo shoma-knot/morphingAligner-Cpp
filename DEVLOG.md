@@ -1,6 +1,6 @@
 # morphingAligner 開発ログ
 
-最終更新: 2026-09-24（現行版 v26.09.17）
+最終更新: 2026-09-25（現行版 v26.09.25）
 
 ## 最終目標
 
@@ -37,8 +37,8 @@
 
 - C++17、CMake 4.0 以上。ビルドは vcpkg マニフェストモード＋CMakePresets（Ninja）。
 - WORLD の example ビルドは `WORLD_BUILD_EXAMPLES=OFF` で無効化（ビルド時間短縮）。
-- 版は `CMakeLists.txt` の `project(... VERSION 26.09.17)`。`APP_VERSION` としてコンパイル定義で渡し、
-  タイトルバーに `morphingAligner v<版>` と出す（CMake は先頭ゼロを正規化しないので `26.09.17` のまま）。
+- 版は `CMakeLists.txt` の `project(... VERSION 26.09.25)`。`APP_VERSION` としてコンパイル定義で渡し、
+  タイトルバーに `morphingAligner v<版>` と出す（CMake は先頭ゼロを正規化しないので `26.09.25` のまま）。
 
 ## ファイル構成（自作分）
 
@@ -442,6 +442,10 @@ Montreal Forced Aligner（MFA）で単語/音素の区間を求めて画面に�
   この環境では「OpenGL: 3.3.0 - Build 32.0.101.7085（頂点オフセット: 有効）」になることを確認。
 - ついでに、**同じファイルを読み込み直すとフォルマントが消えたまま再推定されない**不具合を修正
   （`apply_track` で `Track::formant_path` も消す）。
+
+### 版を 26.09.25 に更新（2026-09-25）
+- Python 連携（フォルマント・音素セグメンテーション）、アンカー自動生成、OpenGL 3.3 化までを含めて
+  `v26.09.25` としてタグを打ち、リリースした。
 
 ## MATLAB版との差分
 

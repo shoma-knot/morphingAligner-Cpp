@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 4.0)
-project(morphingAlignerCpp VERSION 26.09.17)
+project(morphingAlignerCpp VERSION 26.09.25)
 set(CMAKE_CXX_STANDARD 17)
 
 # MSVC の CMAKE_CXX_FLAGS には /EHsc などの既定値が入っており、丸ごと上書きすると
