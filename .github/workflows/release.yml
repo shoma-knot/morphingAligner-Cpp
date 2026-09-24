@@ -1,13 +1,5 @@
-# タグを push したときに Ubuntu と Windows の配布物をビルドし、
-# GitHub のリリースとして公開する。
-#
-# 配布物の構成（font/ と licenses/ を実行時に相対パスで開くため、この形を崩さないこと）:
-#
-#   morphingAligner-<版>-<環境>/
-#     morphingAlignerCpp(.exe)   ← 直下に置く。作業ディレクトリがここになるので
-#     font/ licenses/              "font/..." がそのまま当たる
-#     python/                    ← フォルマント推定・音素セグメンテーション（環境は別途）
-#     icon/ tools/               ← Linux のみ。デスクトップエントリ登録に使う
+# タグを push したときに Ubuntu と Windows の配布物をビルドし（build.yml）、
+# GitHub のリリースとして公開する。配布物の構成は build.yml の先頭を参照。
 name: release
 
 on:
@@ -19,165 +11,7 @@ permissions:
 
 jobs:
   build:
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: linux-x64
-            os: ubuntu-latest
-            triplet: x64-linux
-            extra_cmake: ""
-          - name: windows-x64
-            os: windows-latest
-            # 静的トリプレットにして、再頒布可能パッケージや DLL を同梱せずに済ませる。
-            triplet: x64-windows-static
-            # x64-windows-static は静的 CRT なので、本体側もそれに合わせる。
-            extra_cmake: "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"
-
-    env:
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
-
-    steps:
-      - name: チェックアウト（WORLD はサブモジュール）
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: タグと project() の版が一致しているか見る
-        shell: bash
-        run: |
-          set -eu
-          PROJ_VER=$(sed -n 's/^project(.*VERSION \([0-9][0-9.]*\).*/\1/p' CMakeLists.txt)
-          echo "CMakeLists.txt: $PROJ_VER / タグ: $GITHUB_REF_NAME"
-          # タイトルバーに出る版は project() の VERSION から来る。食い違ったまま
-          # 公開すると、v0.2.0 のリリースなのにアプリが v0.1.0 と名乗ることになる。
-          # 接尾辞（-rc1 など）は許す。
-          case "$GITHUB_REF_NAME" in
-            "v$PROJ_VER" | "v$PROJ_VER-"*) ;;
-            *)
-              echo "タグと project() の VERSION が食い違っています。" >&2
-              echo "CMakeLists.txt の project(... VERSION ...) を更新してからタグを打ち直してください。" >&2
-              exit 1
-              ;;
-          esac
-
-      - name: Linux のビルド依存を入れる
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            xorg-dev libxinerama-dev libxcursor-dev libglu1-mesa-dev \
-            libasound2-dev pkg-config
-
-      - name: CMake と Ninja を入れる
-        # ランナー同梱の CMake は 3.x のことがあり、cmake_minimum_required(VERSION 4.0)
-        # を満たさないため明示的に導入する。Ninja も一緒に入る。
-        uses: lukka/get-cmake@latest
-
-      - name: MSVC の環境を用意する
-        # Ninja（単一構成ジェネレータ）を Linux と揃えて使うため、cl.exe への
-        # パスと環境変数をここで通す。Visual Studio ジェネレータだと出力先が
-        # bin/Release/ になり、後段の取り回しが環境ごとに変わってしまう。
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: vcpkg のバイナリキャッシュを復元する
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-${{ matrix.name }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
-          restore-keys: vcpkg-${{ matrix.name }}-
-
-      - name: 構成
-        shell: bash
-        run: |
-          set -eux
-          # vcpkg はキャッシュ先が存在しないと失敗する。
-          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
-          cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
-            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
-            ${{ matrix.extra_cmake }}
-
-      - name: ビルド
-        shell: bash
-        run: cmake --build build
-
-      - name: 配布物をまとめる
-        id: package
-        shell: bash
-        run: |
-          set -eux
-          # タグから起動されたときはタグ名を版とする。手動実行に備えて短縮ハッシュに
-          # 落ちる経路も残しておく。
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            VERSION="$GITHUB_REF_NAME"
-          else
-            VERSION="$(git rev-parse --short HEAD)"
-          fi
-          DIR="morphingAligner-${VERSION}-${{ matrix.name }}"
-
-          mkdir -p "$DIR"
-          # 実行ファイルは配布物の直下に置く。ここから起動すれば作業ディレクトリが
-          # 配布ルートになり、font/ と licenses/ が相対パスで素直に見つかる。
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            cp bin/morphingAlignerCpp.exe "$DIR"/
-          else
-            cp bin/morphingAlignerCpp "$DIR"/
-          fi
-          # python/ はフォルマント推定・音素セグメンテーション用のスクリプト。実行に使う
-          # Python 環境（.env）は同梱しないので、使う人が配布ルートに用意する。
-          cp -r font licenses python "$DIR"/
-          # Linux はデスクトップエントリの登録スクリプトとアイコンも入れる
-          # （Windows はアイコンを実行ファイルに埋め込んでいるので不要）。
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            cp -r icon "$DIR"/
-            mkdir -p "$DIR/tools"
-            cp tools/install-desktop-entry.sh tools/uninstall-desktop-entry.sh "$DIR/tools/"
-          fi
-
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            7z a -tzip "${DIR}.zip" "$DIR" > /dev/null
-            echo "archive=${DIR}.zip" >> "$GITHUB_OUTPUT"
-          else
-            tar -czf "${DIR}.tar.gz" "$DIR"
-            echo "archive=${DIR}.tar.gz" >> "$GITHUB_OUTPUT"
-          fi
-          echo "dir=${DIR}" >> "$GITHUB_OUTPUT"
-
-      - name: 配布物の中身を検査する
-        shell: bash
-        run: |
-          set -eu
-          DIR="${{ steps.package.outputs.dir }}"
-          # 実行時に開くファイルが揃っているか。欠けていると日本語が化けたり
-          # ライセンス表示が空になったりするが、起動自体はしてしまうので明示的に見る。
-          for f in "font/Gen Interface JP/GenInterfaceJP-Regular.ttf" \
-                   "font/Gen Interface JP/OFL.txt" \
-                   "licenses/imgui.txt" "licenses/implot.txt" \
-                   "licenses/nlohmann-json.txt" "licenses/world.txt" \
-                   "python/speech_tools.py"; do
-            test -f "$DIR/$f" || { echo "配布物に不足: $f" >&2; exit 1; }
-          done
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            test -f "$DIR/morphingAlignerCpp.exe" || { echo "実行ファイルがない" >&2; exit 1; }
-          else
-            test -x "$DIR/morphingAlignerCpp" || { echo "実行ファイルがない" >&2; exit 1; }
-            # 動的リンクの取りこぼしがないか（未解決があれば "not found" が出る）。
-            ldd "$DIR/morphingAlignerCpp" | (! grep "not found")
-          fi
-          echo "--- 構成 ---"
-          find "$DIR" -type f | sort
-
-      - name: アーティファクトとして上げる
-        uses: actions/upload-artifact@v4
-        with:
-          name: morphingAligner-${{ matrix.name }}
-          path: ${{ steps.package.outputs.archive }}
-          if-no-files-found: error
+    uses: ./.github/workflows/build.yml
 
   release:
     name: リリースを作る
@@ -191,6 +25,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: morphingAligner-*
           merge-multiple: true
 
       - name: リリースを作成して添付する

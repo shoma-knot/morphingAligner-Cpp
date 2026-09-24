@@ -1,0 +1,101 @@
+# push・プルリクエストごとのビルド確認と、音声解析（Python 連携）のテスト。
+#
+#   build        … 本体のビルドと配布物の検査（build.yml）。結合テストの実行ファイルも作る。
+#   speech-tools … 各 OS で、配布物と同じ手順（利用者と同じ micromamba の入手 →
+#                  install-win.bat / install.sh）で Python 環境を作り、C++ から子プロセスで
+#                  Python を呼ぶ結合テスト（tests/speech_tools_test.cpp）を実行する。
+#
+# 週に1回も走らせる。こちらが何も変えていなくても、conda-forge / PyPI 側の変化で環境構築が
+# 壊れることがあるため（environment.yml で版を固定していても、依存の依存は動く）。
+# リリース（release.yml）はこの結果を待たない。環境構築の一時的な不調で本体のリリースを
+# 止めないため。
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    - cron: "0 3 * * 1"    # 毎週月曜 12:00（JST）
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      with_tests: true
+
+  speech-tools:
+    name: speech-tools (${{ matrix.name }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+          - name: windows-x64
+            os: windows-latest
+
+    steps:
+      - name: チェックアウト
+        uses: actions/checkout@v4
+
+      - name: micromamba を入れる
+        # 利用者向けの自動インストールスクリプトは対話式なので、公式手順のうち
+        # バイナリを直接取得する方法で入れる。インストールスクリプトは PATH から見つける。
+        shell: bash
+        run: |
+          set -eux
+          mkdir -p "$RUNNER_TEMP/micromamba"
+          cd "$RUNNER_TEMP/micromamba"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            curl -Ls https://micro.mamba.pm/api/micromamba/win-64/latest -o micromamba.tar.bz2
+            tar -xjf micromamba.tar.bz2 Library/bin/micromamba.exe
+            echo "$RUNNER_TEMP/micromamba/Library/bin" >> "$GITHUB_PATH"
+          else
+            curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj bin/micromamba
+            echo "$RUNNER_TEMP/micromamba/bin" >> "$GITHUB_PATH"
+          fi
+          echo "MAMBA_ROOT_PREFIX=$RUNNER_TEMP/micromamba-root" >> "$GITHUB_ENV"
+
+      - name: MFA のモデルのキャッシュを復元する
+        # 日本語モデル（約 100 MB）を毎回ダウンロードしないようにする。取得先は MFA の既定
+        # （~/Documents/MFA/pretrained_models）。
+        uses: actions/cache@v4
+        with:
+          path: ~/Documents/MFA/pretrained_models
+          key: mfa-models-japanese_mfa-v1
+
+      - name: Python 環境を作る（Linux）
+        if: runner.os == 'Linux'
+        run: ./install.sh -y
+
+      - name: Python 環境を作る（Windows）
+        if: runner.os == 'Windows'
+        shell: cmd
+        env:
+          MORPHALIGNER_NO_PAUSE: "1"
+        run: install-win.bat -Yes
+
+      - name: 結合テストの実行ファイルを取得する
+        uses: actions/download-artifact@v4
+        with:
+          name: speech-tools-test-${{ matrix.name }}
+          path: bin
+
+      - name: 結合テスト（C++ → Python の子プロセス呼び出し）
+        # ルートで実行する（./.env と ./python/speech_tools.py を相対パスで探すため）。
+        shell: bash
+        run: |
+          set -eux
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ./bin/speech_tools_test.exe
+          else
+            chmod +x ./bin/speech_tools_test
+            ./bin/speech_tools_test
+          fi

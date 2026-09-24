@@ -1,0 +1,6 @@
+# スクリプトの改行コードを OS に合わせて固定する（チェックアウト先の設定に左右されないように）。
+# .bat / .ps1 は CRLF でないと cmd / PowerShell で行の解釈がずれることがあり、
+# .sh は CRLF だと sh が \r をコマンドの一部として読んで失敗する。
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.sh  text eol=lf

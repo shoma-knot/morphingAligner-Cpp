@@ -2,6 +2,10 @@
 
 使い方:
     python speech_tools.py <request.json> <response.json>
+    python speech_tools.py --check          # 環境チェックの結果を表示（インストールスクリプト・CI 用）
+    python speech_tools.py --write-marker   # 環境を作った定義を .env に記録（インストールスクリプト用）
+    python speech_tools.py --check-marker   # 環境が今の定義で作られていれば終了コード 0
+    python speech_tools.py --download-models  # MFA の日本語モデルを取得（インストールスクリプト用）
 
 C++ 側は要求を JSON ファイルで渡し、結果を JSON ファイルで受け取る。コマンドライン
 引数を一時ファイルのパスだけにしているのは、Windows でコマンドライン経由の日本語
@@ -12,12 +16,15 @@ C++ 側は要求を JSON ファイルで渡し、結果を JSON ファイルで�
      "num_tracks": 4, "time_step": 0.005}
     {"command": "align", "wav": "...", "text": "...", "acoustic_model": "japanese_mfa",
      "dictionary": "japanese_mfa"}
+    {"command": "check", "acoustic_model": "japanese_mfa", "dictionary": "japanese_mfa"}
 
 応答（成功時 ok=true。失敗時は ok=false と error）:
     formants: {"ok": true, "times": [...], "tracks": [[F1...], [F2...], ...]}
               未定義のフレームは null。
     align:    {"ok": true, "tiers": [{"name": "words", "intervals": [[start, end, label], ...]},
                                      {"name": "phones", ...}]}
+    check:    {"ok": true, "ready": bool, "problems": [...], "warnings": [...], "info": {...}}
+              ok はチェック自体が動いたこと。使えるかどうかは ready（false なら problems に理由）。
 
 経過は標準出力/標準エラーに出す（C++ 側がログファイルに回し、失敗時に末尾を表示する）。
 """
@@ -222,7 +229,153 @@ def cmd_align(req):
         shutil.rmtree(work, ignore_errors=True)
 
 
-COMMANDS = {"formants": cmd_formants, "align": cmd_align}
+ENV_MARKER = "morphaligner-env.json"    # インストールスクリプトが .env に置く印（environment.yml のハッシュ）
+
+
+def environment_sha256():
+    """この環境の定義（python/environment.yml）の SHA-256。無ければ None。"""
+    import hashlib
+
+    p = pathlib.Path(__file__).with_name("environment.yml")
+    return hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+
+
+def non_ascii_paths():
+    """ASCII 以外の文字を含む作業用のパス。MFA の中の Kaldi は、このようなパスで動かないことがある。"""
+    places = {
+        "一時フォルダ": tempfile.gettempdir(),
+        "MFA のフォルダ": str(mfa_root()),
+        "Python 環境": sys.prefix,
+    }
+    return [f"{name}のパスに ASCII 以外の文字が含まれています（音素アライメントが失敗することがあります）: {p}"
+            for name, p in places.items() if not p.isascii()]
+
+
+def cmd_check(req):
+    """音声解析の環境が使えるかを調べる。使えない理由は problems、注意点は warnings に入れる。"""
+    problems, warnings, info = [], [], {"python": sys.version.split()[0], "prefix": sys.prefix}
+
+    # フォルマント推定（parselmouth）: 合成した母音らしい音で実際に推定してみる。
+    try:
+        import parselmouth
+
+        info["parselmouth"] = parselmouth.__version__
+        snd = parselmouth.Sound(
+            [[sum(math.sin(2 * math.pi * 120 * k * n / 16000) / k for k in range(1, 30)) for n in range(4000)]],
+            sampling_frequency=16000)
+        if not list(snd.to_formant_burg().ts()):
+            problems.append("parselmouth でフォルマントを推定できませんでした")
+    except Exception as e:  # 入っていない・壊れている
+        problems.append(f"parselmouth を使えません（{type(e).__name__}: {e}）")
+
+    # 音素アライメント（MFA）: コマンドが環境の PATH で起動できること。
+    env = conda_env()
+    try:
+        mfa = find_mfa(env)
+        proc = subprocess.run([mfa, "version"], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              encoding="utf-8", errors="replace", timeout=300)
+        if proc.returncode != 0:
+            problems.append("mfa を起動できません: " + output_tail(proc.stdout))
+        else:
+            info["mfa"] = output_tail(proc.stdout, 1)
+    except ToolError as e:
+        problems.append(str(e))
+    except Exception as e:
+        problems.append(f"mfa を起動できません（{type(e).__name__}: {e}）")
+
+    # 日本語の単語分割（sudachi）: MFA が使う設定で辞書を読めること。版の相性で壊れやすい
+    # （environment.yml のコメント参照）。MFA 本体は import しない（DLL の検索パスが要るため）。
+    try:
+        import importlib.util
+
+        import sudachipy
+
+        spec = importlib.util.find_spec("montreal_forced_aligner")
+        if spec is None or not spec.submodule_search_locations:
+            raise ToolError("montreal_forced_aligner が見つかりません")
+        config = (pathlib.Path(list(spec.submodule_search_locations)[0])
+                  / "tokenization" / "resources" / "japanese" / "sudachi_config.json")
+        tok = sudachipy.Dictionary(dict="core", config_path=str(config)).create()
+        if not list(tok.tokenize("はい")):
+            problems.append("sudachi の単語分割が結果を返しません")
+    except Exception as e:
+        problems.append(f"日本語の単語分割（sudachi）を使えません（{type(e).__name__}: {e}）")
+
+    # MFA のモデル（mfa model download で取得するもの）。
+    for resolve in (lambda: resolve_acoustic_model(req.get("acoustic_model") or "japanese_mfa"),
+                    lambda: resolve_dictionary(req.get("dictionary") or "japanese_mfa")):
+        try:
+            resolve()
+        except ToolError as e:
+            problems.append(str(e))
+
+    # インストールスクリプトで作った環境なら、定義が変わっていないか（古い環境の検出）。
+    # 印の無い環境（手で作った開発用の環境など）は対象外。
+    if (pathlib.Path(sys.prefix) / ENV_MARKER).is_file() and not marker_matches():
+        warnings.append("Python 環境が今の版の定義と違います。インストールスクリプトを実行し直してください")
+
+    warnings.extend(non_ascii_paths())
+    return {"ok": True, "ready": not problems, "problems": problems, "warnings": warnings, "info": info}
+
+
+def print_check():
+    """--check: 環境チェックの結果を人が読める形で表示する。使えるなら終了コード 0。"""
+    res = cmd_check({})
+    for key, value in res["info"].items():
+        print(f"  {key}: {value}")
+    for w in res["warnings"]:
+        print(f"[警告] {w}")
+    for p in res["problems"]:
+        print(f"[問題] {p}")
+    print("音声解析の環境: " + ("使えます" if res["ready"] else "使えません"))
+    return 0 if res["ready"] else 1
+
+
+DEFAULT_MODELS = (("acoustic", "japanese_mfa"), ("dictionary", "japanese_mfa"))    # 日本語のみ対応
+
+
+def download_models():
+    """--download-models: MFA の日本語モデル（音響モデル・発音辞書）を取得する（取得済みなら飛ばす）。
+
+    mfa はこの環境の PATH（conda_env）で起動する。activate していない環境から直接起動すると
+    DLL が見つからずに落ちるため、どの conda 系ツールで環境を作っても同じ方法で呼べるようにする。
+    """
+    env = conda_env()
+    mfa = find_mfa(env)
+    for kind, name in DEFAULT_MODELS:
+        resolve = resolve_acoustic_model if kind == "acoustic" else resolve_dictionary
+        try:
+            print(f"取得済み: {kind} {name}（{resolve(name)}）", flush=True)
+            continue
+        except ToolError:
+            pass
+        print(f"取得中: {kind} {name}", flush=True)
+        proc = subprocess.run([mfa, "model", "download", kind, name], env=env)
+        if proc.returncode != 0:
+            print(f"取得に失敗しました: {kind} {name}（終了コード {proc.returncode}）", flush=True)
+            return 1
+    return 0
+
+
+def marker_matches():
+    """この環境が今の environment.yml から作られたか（印が無ければ False）。"""
+    marker = pathlib.Path(sys.prefix) / ENV_MARKER
+    try:
+        built = json.loads(marker.read_text(encoding="utf-8")).get("environment_sha256")
+    except Exception:
+        return False
+    return built is not None and built == environment_sha256()
+
+
+def write_marker():
+    """--write-marker: この環境を作った定義のハッシュを .env に記録する（古い環境の検出用）。"""
+    marker = pathlib.Path(sys.prefix) / ENV_MARKER
+    marker.write_text(json.dumps({"environment_sha256": environment_sha256()}), encoding="utf-8")
+    print(f"記録しました: {marker}")
+    return 0
+
+
+COMMANDS = {"formants": cmd_formants, "align": cmd_align, "check": cmd_check}
 
 
 def main():
@@ -230,6 +383,18 @@ def main():
     # 音素記号を print した時点で落ちるので UTF-8 に固定する。
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8", errors="replace")
+    if sys.argv[1:] == ["--check"]:
+        return print_check()
+    if sys.argv[1:] == ["--write-marker"]:
+        return write_marker()
+    if sys.argv[1:] == ["--check-marker"]:
+        return 0 if marker_matches() else 1
+    if sys.argv[1:] == ["--download-models"]:
+        try:
+            return download_models()
+        except ToolError as e:
+            print(e, flush=True)
+            return 1
     if len(sys.argv) != 3:
         print(__doc__, file=sys.stderr)
         return 2

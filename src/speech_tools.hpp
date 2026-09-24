@@ -68,6 +68,14 @@ struct AlignParams {
     std::string dictionary     = "japanese_mfa";
 };
 
+// 音声解析の環境チェック（speech_tools.py の check）の結果。
+struct SpeechEnvStatus {
+    bool                     ready = false;    // フォルマント推定・音素アライメントが使えるか
+    std::vector<std::string> problems;         // 使えない理由（ready=false のとき）
+    std::vector<std::string> warnings;         // 使えるが注意が要る点（パスの文字、古い環境など）
+    std::string              summary;          // 版などの情報（ログ用）
+};
+
 // 使う Python と スクリプトの場所（見つからなければ空）。表示・診断用。
 // 環境変数 MORPHALIGNER_PYTHON があればそれを優先し、なければ ./.env（と ../.env）を探す。
 std::string find_python();
@@ -76,6 +84,9 @@ std::string find_speech_script();
 // 実行中のツール（Python と、そこから起動された MFA）をすべて止め、以後の起動も断る。
 // アプリ終了時、実行中のジョブの future を破棄する前に呼ぶ（呼ばないと子の終了まで待たされる）。
 void terminate_speech_tools();
+
+// 音声解析の環境を調べる（Python が見つからない・起動できない場合も ready=false で返す）。
+SpeechEnvStatus run_check(const AlignParams& params);
 
 // wav のフォルマントを推定する。失敗時は err に理由を入れて空を返す。
 Formants run_formants(const std::string& wav, const FormantParams& params, std::string& err);

@@ -16,6 +16,8 @@
 - **Python 連携**（2026-09-24）: `./.env` の Python を子プロセスで呼び、フォルマント（parselmouth）を
   スペクトログラムに重ね、音素セグメンテーション（MFA）を時間軸を共有した独立プロットに出す。
 - 配布: `v*` タグの push で GitHub Actions が Ubuntu / Windows 版をビルドしリリースに添付する。
+  音声解析の Python 環境は同梱せず、利用者が配布物の `install-win.bat` / `install.sh` で作る（README）。
+- CI: push ごとにビルド確認と、各 OS での環境構築＋C++ → Python の結合テスト（`ci.yml`）。
 - 以下の「実装済み機能」は時系列で追記しているため、前半の節には後で置き換わった記述がある
   （置き換わった箇所には注記を入れてある）。
 
@@ -63,7 +65,13 @@
 - `tcmorph/` — モーフィングエンジン（ドキュメントは `tcmorph/README.md`, `tcmorph/docs/`）
 - `tools/gen_icon.py` — アイコン（`icon/*.png`, `icon/morphingaligner.ico`, `src/app_icon_data.inc`）の生成
 - `tools/install-desktop-entry.sh` / `uninstall-desktop-entry.sh` — Linux のデスクトップエントリ登録/解除
-- `.github/workflows/release.yml` — タグ push で配布物をビルドしてリリース
+- `python/environment.yml` — 音声解析の Python 環境の定義（conda-forge のみ、版を固定）
+- `install-win.bat` + `python/install-env.ps1` / `install.sh` — 音声解析の Python 環境（`./.env`）を作る
+- `tests/speech_tools_test.cpp` — C++ → Python の結合テスト（`-DMORPHALIGNER_BUILD_TESTS=ON` で作る）
+- `README.md` — 利用者向けの説明（インストール・音声解析のセットアップ・ライセンス）
+- `.github/workflows/build.yml` — ビルド・配布物の作成と検査（再利用ワークフロー）
+- `.github/workflows/release.yml` — タグ push で build.yml を呼び、リリースを作る
+- `.github/workflows/ci.yml` — push ごとのビルド確認と、音声解析の環境構築＋結合テスト（週1回も）
 - `CMakeLists.txt` / `vcpkg.json` / `CMakePresets.json` / `vcpkg-configuration.json` — ビルド構成
   - `src/*.cpp` を**直下のみ** glob（`CONFIGURE_DEPENDS`）。ファイル追加時の CMake 変更は不要。
     再帰 glob にすると tcmorph の examples（`main()` を持つ）を巻き込むので不可。
@@ -447,6 +455,43 @@ Montreal Forced Aligner（MFA）で単語/音素の区間を求めて画面に�
 - Python 連携（フォルマント・音素セグメンテーション）、アンカー自動生成、OpenGL 3.3 化までを含めて
   `v26.09.25` としてタグを打ち、リリースした。
 
+### 音声解析の導入動線: インストールスクリプト・環境チェック・CI（2026-09-25）
+リリース物だけで全機能を使えるようにするための整備。方針（ユーザーと合意）: 日本語のみ、macOS は対象外、
+環境は配布物の中（`./.env`）、conda 系ツールはユーザーが入れる（同梱・自動ダウンロードはしない）。
+- **環境定義** `python/environment.yml`: チャンネルは `conda-forge` + `nodefaults`（Anaconda の defaults は
+  商用利用に条件付きの利用規約があるため、利用者の conda 設定に関係なく使わない）。python 3.13、MFA 3.4.2、
+  pip で parselmouth 0.4.7・sudachipy 0.6.11・sudachidict-core 20260428（版の相性はファイル内のコメント）。
+- **インストールスクリプト**: Windows は `install-win.bat`（ダブルクリック用。実体は `python/install-env.ps1`、
+  BOM 付き UTF-8。PowerShell 5.1 は BOM 無し UTF-8 を Shift_JIS として読むため）、Linux は `install.sh`。
+  手順: micromamba → mamba → conda の順に PATH と `MAMBA_EXE`/`CONDA_EXE` から探す（無ければ公式の入れ方を
+  案内して終了）→ `env create -p ./.env -f python/environment.yml` → MFA の日本語モデル取得 → 構築に使った
+  定義のハッシュを `.env/morphaligner-env.json` に記録 → 環境チェック。2回目以降は定義が同じなら作り直さず、
+  違えば確認のうえ作り直す。`-Yes`（Linux は `-y`）で非対話。`MORPHALIGNER_NO_PAUSE` で .bat の pause を省く。
+  必要容量は約 5 GB（環境 2.6 GB + パッケージのキャッシュ 1.4 GB + モデル 0.1 GB。この Windows 機で実測）。
+  `.gitattributes` で .bat/.ps1 は CRLF、.sh は LF に固定。
+- **speech_tools.py の追加コマンド**: `check`（JSON。parselmouth で合成音のフォルマント推定、`mfa version`、
+  MFA の設定での sudachi 辞書の読み込み、モデルの有無、定義のハッシュの照合、ASCII 以外を含むパスの警告）。
+  CLI の `--check` / `--check-marker` / `--write-marker` / `--download-models` はスクリプトと CI 用。
+  mfa の起動はどれも環境の PATH（`conda_env`）で行うので、どの conda 系ツールで作った環境でも同じに動く。
+- **アプリ側**: 起動時に `ensure_speech_env` が `run_check` をバックグラウンドで実行（温まった状態で約 5 秒）。
+  結果が出るまでフォルマントの自動推定は走らせない。使えなければ「音声解析」欄に「未セットアップ」
+  （ホバーで理由）、実行すべきスクリプト名、「再確認」ボタンを出し、音素アライメントのボタンを無効にする。
+  警告（パスの文字・古い環境）はログに出すだけ。
+- **README.md**（新規）とライセンス: tcmorph（Apache-2.0、NOTICE + LICENSE）と Eigen（MPL-2.0、ソースの入手先つき）
+  の条文を `licenses/` に追加し、ライセンス表示タブと配布物の検査に加えた（従来は漏れていた）。
+  parselmouth（GPL-3.0）などは配布物に含めないので README での案内にとどめる。
+- **CI**: `build.yml`（再利用。ビルド・配布物の作成と検査。`with_tests` で結合テストも作ってアーティファクトに）
+  を `release.yml`（タグ push）と `ci.yml`（push・PR・週1回・手動）から呼ぶ。`ci.yml` の `speech-tools` ジョブは
+  各 OS で micromamba をバイナリで取得（公式の手動インストール。自動インストールスクリプトは対話式のため）→
+  インストールスクリプトで環境構築 → 結合テスト（C++ から子プロセスで環境チェックとフォルマント推定。
+  ASCII 以外を含むファイル名で UTF-8 のパスが届くことも見る）。Linux の `posix_spawn` 経路はこれで初めて
+  実際に走る。MFA のモデルは actions/cache でキャッシュ。リリースはこの結果を待たない。
+- 検証（この Windows 機）: 配布物と同じレイアウトの一時フォルダでインストールスクリプトを非対話で実行し、
+  環境作成・モデル確認・チェックまで成功、2回目は作り直さない、conda 系ツールが無いと案内して終了コード 1、
+  作った環境で実際の音素アライメント（hai1.wav「はい」）が成功することを確認。アプリは環境あり/なしで起動し、
+  「使えます」のログ/「未セットアップ」の表示を確認。結合テストはこの機で成功（F1 = 767 Hz、合成音の
+  700 Hz 付近）。**CI（特に Linux）での実行はまだ**（push 後に確認する）。
+
 ## MATLAB版との差分
 
 ※ **旧・自前実装についての比較**。現在は tcmorph（MATLAB 版の移植、丸め誤差レベルで一致を
@@ -495,15 +540,16 @@ cmake --build build
   Visual Studio ジェネレータで構成されており、出力は `bin/Release/`（CI は Ninja で `bin/` 直下）。
 
 ### Python ツールの環境（`./.env`）
-フォルマント・音素セグメンテーションに使う。無くてもアプリは動く（読み込み時のフォルマント推定や音素アライメントが失敗をログに出す）。
+フォルマント・音素セグメンテーションに使う。無くてもアプリは動く（「音声解析」欄が「未セットアップ」になる）。
+リポジトリのルートでもインストールスクリプトで作れる（利用者と同じ手順。conda 系ツールが PATH に要る）。
 ```sh
-micromamba create -p ./.env -c conda-forge python=3.13 montreal-forced-aligner
-./.env/python -m pip install praat-parselmouth "sudachipy==0.6.11" "sudachidict-core==20260428"
-# MFA のモデル（~/Documents/MFA/pretrained_models へ。環境を activate しない場合は
-# .env/Library/bin 等を PATH に通して実行する。Linux は .env/bin/mfa）
-mfa model download acoustic japanese_mfa
-mfa model download dictionary japanese_mfa
+install-win.bat          # Windows（-Yes で非対話）
+./install.sh             # Linux（-y で非対話）
+./.env/python python/speech_tools.py --check    # 確認だけ（Linux は ./.env/bin/python）
 ```
+- 定義は `python/environment.yml`。版を変えたら `--check` と CI（ci.yml）で確かめる。
+- 結合テスト: `cmake -DMORPHALIGNER_BUILD_TESTS=ON ...` でビルドし、ルートで `bin/speech_tools_test`
+  （または `ctest`）。
 - **sudachi の版は固定**: sudachipy 0.7 は MFA 付属の char.def（`NOOOVBOW2`）を読めず、
   sudachipy 0.6.11 は sudachidict-core 20260723 以降の辞書（ヘッダ版が新しい）を読めない。
   0.6.11 ＋ 20260428 で動作確認済み（MFA 3.4.2）。
@@ -527,6 +573,8 @@ mfa model download dictionary japanese_mfa
 - macOS / Wayland ネイティブでは `glfwSetWindowIcon` が効かない（XWayland 上では効く）。
 - `app.cpp` で `GL_CLAMP_TO_EDGE` を自前定義している（Windows の GL ヘッダに無いための応急処置、FIXME）。
 - 書き起こしは base/target 共通なので、別の文を読んだ2音声には音素アライメントを使えない。
+- 環境を手で作った場合（定義のハッシュの印が無い）、インストールスクリプトは「今の定義で作られたもの
+  ではない」として作り直しを確認してくる（開発用の .env も同様）。
 - MFA は1発話でも約 20 秒かかる（大半は MFA の起動とモデル展開）。書き起こしが音声と合わない、
   または辞書に無い語（`spn` になる）があると区間がずれる。フォルマント・音素セグメンテーションの
   結果は音声を読み直すと消え、セッションにも保存しない（書き起こしだけ保存する）。
@@ -555,7 +603,8 @@ mfa model download dictionary japanese_mfa
 - base/target の fs 不一致への対応（リサンプリング）。
 - 拡大時の見た目調整（`GL_LINEAR` ↔ `GL_NEAREST`）。
 - Windows 版の実機確認（CI ビルド・.ico 埋め込み・フォント/ライセンスの表示）。
-- Linux での Python 連携の動作確認。
+- CI（ci.yml）の初回実行の確認（特に Linux の環境構築と posix_spawn 経路、Windows の micromamba 取得）。
+- ASCII 以外を含むパスで音素アライメントが実際に失敗するかの確認（今は警告を出すだけ）。
 - 音素セグメンテーションの活用: 境界をスペクトログラムにも薄く重ねる、ホバー中の区間を
   スペクトログラム側で強調する、など。
 - アンカー自動生成の改良: 音素数が違うときの対応づけ（ラベルの編集距離で揃える等）、

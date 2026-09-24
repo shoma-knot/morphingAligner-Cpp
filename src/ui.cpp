@@ -154,9 +154,41 @@ void launch_formant_job(App& app, bool is_base) {
     });
 }
 
+// 音声解析の環境をセットアップするスクリプト（配布物のルートにある）。
+#ifdef _WIN32
+constexpr const char* kInstallScript = "install-win.bat";
+#else
+constexpr const char* kInstallScript = "install.sh";
+#endif
+
+// 毎フレーム: 音声解析の環境が未確認なら、バックグラウンドで確認を始める（起動時と「再確認」時）。
+// 結果が出るまではフォルマント推定・音素アライメントを走らせない（環境が無いときに、音声を
+// 読み込むたびに失敗がログに積もるのを防ぐ）。
+void ensure_speech_env(App& app) {
+    if (app.speech_env != App::SpeechEnv::Unknown) return;
+    app.speech_env = App::SpeechEnv::Checking;
+    const AlignParams params = app.align_params;
+    launch_tool_job(app, [params]() -> std::function<void(App&)> {
+        auto st = std::make_shared<SpeechEnvStatus>(run_check(params));
+        if (st->ready) {
+            applog::add("音声解析の環境: 使えます（" + st->summary + "）");
+        } else {
+            applog::add(std::string { "音声解析の環境: 使えません。" } + kInstallScript
+                        + " を実行してください（フォルマント表示と音素アライメントに必要）");
+            for (const std::string& p : st->problems) applog::add("  理由: " + p);
+        }
+        for (const std::string& w : st->warnings) applog::add("警告: " + w);
+        return [st](App& a) {
+            a.speech_env          = st->ready ? App::SpeechEnv::Ready : App::SpeechEnv::Unavailable;
+            a.speech_env_problems = st->problems;
+        };
+    });
+}
+
 // 毎フレーム: 読み込まれている音声のフォルマントが未推定なら推定を始める（音声の読み込み・
-// セッション読み込みのどちらの経路でも、パスが変われば自動で走る）。
+// セッション読み込みのどちらの経路でも、パスが変われば自動で走る）。環境の確認が済むまで待つ。
 void ensure_formants(App& app) {
+    if (app.speech_env != App::SpeechEnv::Ready) return;
     for (Track* tr : { &app.base, &app.target })
         if (tr->loaded() && !tr->formant_busy && tr->formant_path != tr->path)
             launch_formant_job(app, tr == &app.base);
@@ -283,6 +315,22 @@ void draw_auto_anchor_controls(App& app) {
 void draw_speech_tools_panel(App& app) {
     if (!ImGui::CollapsingHeader("音声解析（Python）", ImGuiTreeNodeFlags_DefaultOpen)) return;
 
+    // 環境の状態。使えないときはセットアップの案内と「再確認」ボタンを出す。
+    if (app.speech_env == App::SpeechEnv::Checking || app.speech_env == App::SpeechEnv::Unknown) {
+        ImGui::TextDisabled("環境を確認中...");
+    } else if (app.speech_env == App::SpeechEnv::Unavailable) {
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "未セットアップ");
+        if (ImGui::IsItemHovered() && !app.speech_env_problems.empty()) {
+            std::string tip = "使えない理由:";
+            for (const std::string& p : app.speech_env_problems) tip += "\n- " + p;
+            ImGui::SetTooltip("%s", tip.c_str());
+        }
+        ImGui::TextWrapped("配布物の %s を実行してから「再確認」を押してください（手順は README）。",
+                           kInstallScript);
+        if (ImGui::Button("再確認", ImVec2(-1, 0))) app.speech_env = App::SpeechEnv::Unknown;
+    }
+    const bool env_ready = app.speech_env == App::SpeechEnv::Ready;
+
     ImGui::Checkbox("フォルマント", &app.show_formants);
     // 凡例（スペクトログラム上の点の色）。
     for (int k = 0; k < app.formant_params.num_tracks; ++k) {
@@ -313,14 +361,15 @@ void draw_speech_tools_panel(App& app) {
     ImGui::InputTextWithHint("##transcript", "書き起こし（MFA 用）", &app.transcript);
     const bool any_loaded = app.base.loaded() || app.target.loaded();
     const bool busy       = app.base.align_busy || app.target.align_busy;
-    ImGui::BeginDisabled(!any_loaded || busy || app.transcript.empty());
+    ImGui::BeginDisabled(!env_ready || !any_loaded || busy || app.transcript.empty());
     if (ImGui::Button(busy ? "音素アライメント実行中..." : "音素アライメント", ImVec2(-1, 0)))
         for (Track* tr : { &app.base, &app.target })
             if (tr->loaded()) launch_align_job(app, tr == &app.base, app.transcript);
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Montreal Forced Aligner で書き起こしを base / target の音声に合わせ、\n"
-                          "音素の区間を求めます（数十秒かかります）。");
+                          "音素の区間を求めます（数十秒かかります）。%s",
+                          env_ready ? "" : "\n音声解析の環境がセットアップされていないため使えません。");
 
     draw_auto_anchor_controls(app);
 
@@ -1024,8 +1073,10 @@ void draw_license_tab(App& app) {
         const char* path;     // 条文ファイル（カレントディレクトリ起動）
         const char* alt;      // 同（bin/ 起動）
     };
-    // バイナリ配布時に条文の同梱が必要なもの（MIT/BSD/OFL）。zlib 系（GLFW,
+    // バイナリ配布時に条文の同梱が必要なもの（MIT/BSD/OFL/Apache-2.0/MPL-2.0）。zlib 系（GLFW,
     // tinyfiledialogs）と public domain/MIT-0 の miniaudio は明記義務がないため省略。
+    // Python 環境（parselmouth・MFA など）は配布物に含めず、ユーザーが install-win.bat /
+    // install.sh で入れるので、ここには載せない（README で案内する）。
     static const Entry kLicenseEntries[] = {
         { "Gen Interface JP（フォント / OFL v1.1）", "font/Gen Interface JP/OFL.txt",
           "../font/Gen Interface JP/OFL.txt" },
@@ -1033,6 +1084,8 @@ void draw_license_tab(App& app) {
         { "ImPlot（MIT）", "licenses/implot.txt", "../licenses/implot.txt" },
         { "nlohmann JSON（MIT）", "licenses/nlohmann-json.txt", "../licenses/nlohmann-json.txt" },
         { "WORLD（修正BSD）", "licenses/world.txt", "../licenses/world.txt" },
+        { "tcmorph（Apache-2.0）", "licenses/tcmorph.txt", "../licenses/tcmorph.txt" },
+        { "Eigen（MPL-2.0）", "licenses/eigen.txt", "../licenses/eigen.txt" },
     };
     static int         selected = 0;
     static int         loaded   = -1;    // 読み込み済みの選択（変わったら読み直す）
@@ -1079,7 +1132,8 @@ void draw_root(App& app) {
     poll_ui_job(app);
     poll_morph_job(app);
     poll_tool_jobs(app);
-    ensure_formants(app);    // 読み込まれた音声のフォルマントを自動で推定
+    ensure_speech_env(app);    // 音声解析の環境を確認（起動時と「再確認」時）
+    ensure_formants(app);      // 読み込まれた音声のフォルマントを自動で推定（環境が使えるときだけ）
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);

@@ -69,3 +69,16 @@ target_link_libraries(morphingAlignerCpp PRIVATE
     Threads::Threads
     miniaudio_cpp
     world::core)
+
+# 結合テスト（C++ から Python の音声解析ツールを子プロセスで呼ぶ経路）。既定では作らない。
+# CI（.github/workflows/ci.yml）が ON にして各 OS で実行する。実行にはルートに .env
+# （install-win.bat / install.sh で作る Python 環境）が要るので、WORKING_DIRECTORY は
+# ソースのルートにする。
+option(MORPHALIGNER_BUILD_TESTS "speech_tools の結合テストを作る" OFF)
+if (MORPHALIGNER_BUILD_TESTS)
+    add_executable(speech_tools_test tests/speech_tools_test.cpp src/speech_tools.cpp)
+    target_include_directories(speech_tools_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(speech_tools_test PRIVATE nlohmann_json::nlohmann_json Threads::Threads)
+    enable_testing()
+    add_test(NAME speech_tools COMMAND speech_tools_test WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+endif()

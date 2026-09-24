@@ -1,0 +1,22 @@
+# morphingAligner の音声解析ツール（python/speech_tools.py）用の環境。
+# install-win.bat / install.sh が配布物のルートに ./.env として作る。
+#
+# チャンネルは conda-forge のみ（nodefaults）。Anaconda の defaults チャンネルには
+# 商用利用の条件付きの利用規約があるため、既存の conda 設定に関係なく使わない。
+#
+# 版は動作確認済みの組み合わせに固定している。特に sudachi の2つは相性がある:
+#   - sudachipy 0.7 は MFA 付属の char.def（NOOOVBOW2）を読めない
+#   - sudachipy 0.6.11 は sudachidict-core 20260723 以降の辞書を読めない
+# 版を変えたら speech_tools.py の check で動作を確かめること（CI の ci.yml でも確認する）。
+name: morphingaligner
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.13
+  - montreal-forced-aligner=3.4.2
+  - pip
+  - pip:
+      - praat-parselmouth==0.4.7
+      - sudachipy==0.6.11
+      - sudachidict-core==20260428

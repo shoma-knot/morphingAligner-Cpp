@@ -87,6 +87,11 @@ struct App {
     // 適用する処理」を返す。ui_job と違って複数を同時に走らせてよい）。
     FormantParams                                       formant_params;
     AlignParams                                         align_params;
+
+    // 音声解析の環境（起動時にバックグラウンドで確認。Ready になるまでツールは走らせない）。
+    enum class SpeechEnv { Unknown, Checking, Ready, Unavailable };
+    SpeechEnv                speech_env = SpeechEnv::Unknown;
+    std::vector<std::string> speech_env_problems;    // Unavailable の理由（ツールチップ用）
     std::string transcript;    // MFA に渡す書き起こし（base/target 共通。同じ文を読んだ2音声を想定）
     std::vector<std::future<std::function<void(App&)>>> tool_jobs;
 

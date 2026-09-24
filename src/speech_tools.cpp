@@ -366,6 +366,35 @@ std::string find_speech_script() {
     return first_existing({ "python/speech_tools.py", "../python/speech_tools.py" });
 }
 
+SpeechEnvStatus run_check(const AlignParams& params) {
+    SpeechEnvStatus st;
+    std::string     err;
+    const json      res = call_tool({ { "command", "check" },
+                                      { "acoustic_model", params.acoustic_model },
+                                      { "dictionary", params.dictionary } },
+                                    err);
+    if (res.is_null()) {    // Python が見つからない・起動できない・スクリプトが落ちた
+        st.problems.push_back(err);
+        return st;
+    }
+    try {
+        st.ready    = res.value("ready", false);
+        st.problems = res.value("problems", std::vector<std::string> {});
+        st.warnings = res.value("warnings", std::vector<std::string> {});
+        // value() は一時オブジェクトを返すので、items() を回す前に変数に受ける（そのまま
+        // 範囲 for に渡すと、破棄された一時オブジェクトを参照することになる）。
+        const json info = res.value("info", json::object());
+        for (const auto& [key, value] : info.items()) {
+            if (!st.summary.empty()) st.summary += ", ";
+            st.summary += key + " " + (value.is_string() ? value.get<std::string>() : value.dump());
+        }
+    } catch (const std::exception& e) {
+        st.ready = false;
+        st.problems.push_back(std::string { "応答の形式が不正です: " } + e.what());
+    }
+    return st;
+}
+
 Formants run_formants(const std::string& wav, const FormantParams& params, std::string& err) {
     const json res = call_tool({ { "command", "formants" },
                                  { "wav", wav },
