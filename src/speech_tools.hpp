@@ -40,7 +40,20 @@ struct SegTier {
 struct Segmentation {
     std::vector<SegTier> tiers;
     bool empty() const { return tiers.empty(); }
+
+    // 音素ティア（MFA の "phones"。無ければ最後のティア）。無ければ nullptr。
+    // MFA は単語ティア（"words"）も返すが、本アプリは音素ティアだけを使う。
+    const SegTier* phones() const {
+        for (const SegTier& t : tiers)
+            if (t.name == "phones") return &t;
+        return tiers.empty() ? nullptr : &tiers.back();
+    }
 };
+
+// 無音を表すラベルか（MFA は音素ティアで "sil"、単語ティアで "<eps>" を出す）。
+inline bool is_silence_label(const std::string& l) {
+    return l.empty() || l == "<eps>" || l == "sil" || l == "sp";
+}
 
 // フォルマント推定のパラメータ（Praat の To Formant (burg) に対応）。
 struct FormantParams {

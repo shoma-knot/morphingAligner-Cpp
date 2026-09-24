@@ -80,6 +80,7 @@ struct App {
     bool                show_formants = false;    // フォルマントをスペクトログラムに重ねる
     bool                show_formant_ma = false;    // フォルマントの移動平均を線で重ねる
     int                 formant_ma_ms   = 50;       // 移動平均の窓幅 [ms]
+    int                 auto_anchor_divisions = 2;    // アンカー自動生成で各音素の区間を何等分するか
     bool                show_segmentation = true;    // 音素セグメンテーションのプロットを出す
 
     // Python ツールの設定と実行中ジョブ（ワーカーでツールを呼び、完了時に「メインスレッドで

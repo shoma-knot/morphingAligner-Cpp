@@ -22,19 +22,6 @@ constexpr ImU32 kTextCol      = IM_COL32(255, 255, 255, 255);
 
 constexpr float kRawAlphaWithMa = 0.35f;    // 移動平均を重ねるときの元の点の不透明度
 
-// 無音を表すラベル（MFA は音素ティアで "sil" を出す）。
-bool is_silence(const std::string& l) {
-    return l.empty() || l == "<eps>" || l == "sil" || l == "sp";
-}
-
-// 表示する音素ティア（MFA の "phones"。無ければ最後のティア）。無ければ nullptr。
-// MFA は単語ティア（"words"）も返すが、表示には使わない。
-const SegTier* phone_tier(const Segmentation& seg) {
-    for (const SegTier& t : seg.tiers)
-        if (t.name == "phones") return &t;
-    return seg.tiers.empty() ? nullptr : &seg.tiers.back();
-}
-
 }    // namespace
 
 ImVec4 formant_color(int k) {
@@ -131,7 +118,7 @@ float segmentation_plot_height() {
 }
 
 void draw_segmentation(Track& tr, float width, float height) {
-    const SegTier* tier = phone_tier(tr.segmentation);
+    const SegTier* tier = tr.segmentation.phones();
     const double   dur  = tr.spec.duration;
 
     ImGui::PushID("segmentation");
@@ -179,12 +166,13 @@ void draw_segmentation(Track& tr, float width, float height) {
         const ImVec2 a = ImPlot::PlotToPixels(iv.start, 1.0);
         const ImVec2 b = ImPlot::PlotToPixels(iv.end, 0.0);
 
-        if (!is_silence(iv.label)) dl->AddRectFilled(a, b, iv.label == "spn" ? kUnknownFill : kPhoneFill[i % 2]);
+        if (!is_silence_label(iv.label))
+            dl->AddRectFilled(a, b, iv.label == "spn" ? kUnknownFill : kPhoneFill[i % 2]);
         dl->AddLine(ImVec2(a.x, a.y), ImVec2(a.x, b.y), kBoundaryCol);
         dl->AddLine(ImVec2(b.x, a.y), ImVec2(b.x, b.y), kBoundaryCol);
 
         // ラベルは区間に収まるときだけ出す（収まらないものはホバーで読む）。
-        if (!is_silence(iv.label)) {
+        if (!is_silence_label(iv.label)) {
             const ImVec2 ts = ImGui::CalcTextSize(iv.label.c_str());
             if (ts.x + 4.0f <= b.x - a.x)
                 dl->AddText(ImVec2((a.x + b.x - ts.x) * 0.5f, (a.y + b.y - ts.y) * 0.5f), kTextCol,
@@ -200,7 +188,7 @@ void draw_segmentation(Track& tr, float width, float height) {
 
     if (hover != nullptr) {
         ImGui::BeginTooltip();
-        ImGui::TextUnformatted(is_silence(hover->label) ? "（無音）" : hover->label.c_str());
+        ImGui::TextUnformatted(is_silence_label(hover->label) ? "（無音）" : hover->label.c_str());
         ImGui::Text("%.3f - %.3f s（%.0f ms）", hover->start, hover->end, (hover->end - hover->start) * 1000.0);
         ImGui::EndTooltip();
     }

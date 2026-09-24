@@ -18,6 +18,7 @@
 
 #include "anchors.hpp"
 #include "app.hpp"
+#include "auto_anchors.hpp"
 #include "freqscale.hpp"
 #include "log.hpp"
 #include "morphing.hpp"
@@ -218,6 +219,65 @@ bool right_aligned_button(const char* label) {
     return ImGui::Button(label);
 }
 
+// ── アンカー自動生成 ─────────────────────────────────────────
+// 音素アライメントとフォルマントの移動平均から時間/周波数アンカーを作り、既存のアンカーと
+// 置き換える（生成の中身は auto_anchors.cpp）。
+
+void run_auto_anchors(App& app) {
+    AutoAnchorResult r = generate_auto_anchors(app.base, app.target, app.auto_anchor_divisions);
+    for (const std::string& w : r.warnings) applog::add("警告: " + w);
+    if (!r.ok()) {
+        applog::add("アンカー自動生成失敗: " + r.error);
+        return;
+    }
+    app.anchors = std::move(r.anchors);
+    char buf[160];
+    std::snprintf(buf, sizeof buf, "アンカー自動生成: 時間アンカー %d 個、周波数アンカー %d 個（分割数 %d、窓幅 %d ms）",
+                  static_cast<int>(app.anchors.size()), r.n_freq, app.auto_anchor_divisions, app.formant_ma_ms);
+    applog::add(buf);
+}
+
+// 分割数のスピンボックスと「アンカー自動生成」ボタン。音素アライメントとフォルマント推定が
+// base/target の両方で終わってから押せる。既存のアンカーがあれば確認してから置き換える。
+void draw_auto_anchor_controls(App& app) {
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("分割数");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::InputInt("##auto_div", &app.auto_anchor_divisions, 1, 1))
+        app.auto_anchor_divisions = std::clamp(app.auto_anchor_divisions, 1, 10);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("各音素の区間を何等分してアンカーを追加するか（1 なら音素境界のみ）。");
+
+    const auto ready = [](const Track& t) {
+        return t.loaded() && !t.segmentation.empty() && !t.formants.empty() && !t.align_busy && !t.formant_busy;
+    };
+    const char* kConfirm = "アンカーの自動生成";
+    ImGui::BeginDisabled(!(ready(app.base) && ready(app.target)));
+    if (ImGui::Button("アンカー自動生成", ImVec2(-1, 0))) {
+        if (app.anchors.empty()) run_auto_anchors(app);
+        else ImGui::OpenPopup(kConfirm);
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("音素境界と、各音素を分割数で等分した位置に時間アンカーを打ち、\n"
+                          "その時刻の移動平均フォルマント（窓幅は上の設定）に周波数アンカーを打ちます。\n"
+                          "既存のアンカーは置き換えます。音素アライメントとフォルマント推定が\n"
+                          "base / target の両方で終わると押せます。");
+
+    if (ImGui::BeginPopupModal(kConfirm, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("既存のアンカー %d 個を消して、自動生成したアンカーに置き換えます。",
+                    static_cast<int>(app.anchors.size()));
+        if (ImGui::Button("置き換える")) {
+            run_auto_anchors(app);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("キャンセル")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+}
+
 // 左パネルの「音声解析（Python）」: 表示切替、共通の書き起こしと音素アライメント、設定。
 // フォルマントは読み込み時に自動で推定する（ensure_formants）ので、ここでは表示の切替だけ。
 void draw_speech_tools_panel(App& app) {
@@ -261,6 +321,8 @@ void draw_speech_tools_panel(App& app) {
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Montreal Forced Aligner で書き起こしを base / target の音声に合わせ、\n"
                           "音素の区間を求めます（数十秒かかります）。");
+
+    draw_auto_anchor_controls(app);
 
     if (ImGui::TreeNode("設定##speech")) {
         ImGui::SetNextItemWidth(-1);
