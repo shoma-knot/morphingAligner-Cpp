@@ -94,16 +94,39 @@ int main() {
         return 1;
     }
 
-    const char* glsl_version = "#version 130";
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+    // OpenGL 3.3 core を要求する。3.0 だと ImGui の OpenGL3 バックエンドが頂点オフセット
+    // （RendererHasVtxOffset。GL 3.2 以上で有効）を使わず、1つのウィンドウの描画が 16bit
+    // インデックスの上限（65536 頂点）を超えると、それ以降の描画が崩れる。実際に Intel の
+    // Windows ドライバで 3.0.0 が返り、base/target の両方にフォルマントと移動平均を描くと
+    // target 側の線やカラースケールが消えた。3.3 core を作れない環境向けに 3.0 へ戻す。
+    struct GlRequest {
+        int         major, minor;
+        bool        core;
+        const char* glsl;
+    };
+    constexpr GlRequest kGlRequests[] = { { 3, 3, true, "#version 330" }, { 3, 0, false, "#version 130" } };
 
-    // タイトルに版を入れてもクラス名が変わらないよう固定する（kWindowClass のコメント参照）。
-    glfwWindowHintString(GLFW_X11_CLASS_NAME, kWindowClass);
-    glfwWindowHintString(GLFW_X11_INSTANCE_NAME, kWindowClass);
-    glfwWindowHintString(GLFW_WAYLAND_APP_ID, kWindowClass);
+    GLFWwindow* window       = nullptr;
+    const char* glsl_version = nullptr;
+    for (const GlRequest& req : kGlRequests) {
+        glfwDefaultWindowHints();
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, req.major);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, req.minor);
+        if (req.core) {
+            glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+            glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);    // macOS で core を作るのに必要
+        }
+        // タイトルに版を入れてもクラス名が変わらないよう固定する（kWindowClass のコメント参照）。
+        glfwWindowHintString(GLFW_X11_CLASS_NAME, kWindowClass);
+        glfwWindowHintString(GLFW_X11_INSTANCE_NAME, kWindowClass);
+        glfwWindowHintString(GLFW_WAYLAND_APP_ID, kWindowClass);
 
-    GLFWwindow* window = glfwCreateWindow(1280, 720, kWindowTitle, nullptr, nullptr);
+        window = glfwCreateWindow(1280, 720, kWindowTitle, nullptr, nullptr);
+        if (window) {
+            glsl_version = req.glsl;
+            break;
+        }
+    }
     if (!window) {
         std::fprintf(stderr, "Failed to create window\n");
         glfwTerminate();
@@ -128,6 +151,15 @@ int main() {
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
+
+    // OpenGL の版と、描画リストの頂点数上限（16bit インデックスで 65536）を超えられるか。
+    // 頂点オフセットが無効だと、1つのウィンドウで上限を超えた分の描画が崩れる。
+    {
+        const char* ver     = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+        const bool  vtx_off = (ImGui::GetIO().BackendFlags & ImGuiBackendFlags_RendererHasVtxOffset) != 0;
+        applog::add(std::string { "OpenGL: " } + (ver ? ver : "?") + "（頂点オフセット: "
+                    + (vtx_off ? "有効" : "無効。描画が多いと表示が欠けることがあります") + "）");
+    }
 
     try {
         App app;

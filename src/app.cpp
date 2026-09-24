@@ -225,6 +225,7 @@ void apply_track(Track& tr, const std::string& path, Spectrogram&& spec) {
     // パスが変わったことを ui.cpp の ensure_formants が見て、自動で推定し直す。
     tr.formants     = {};
     tr.formants_ma  = {};
+    tr.formant_path.clear();    // 同じファイルを読み直した場合も推定し直させる
     tr.segmentation = {};
     tr.path         = path;
     applog::add(tr.name + " 読み込み完了: " + path);

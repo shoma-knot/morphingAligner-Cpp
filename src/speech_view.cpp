@@ -88,11 +88,13 @@ void draw_formants(const Formants& f, const Formants* ma) {
         if (tr.t.empty()) continue;
         ImVec4 col = formant_color(k);
         if (ma != nullptr) col.w = kRawAlphaWithMa;    // 移動平均を主役にして元の点は薄く
+        // 塗りだけの円にする（輪郭線も描くと1点あたり約 50 頂点、塗りだけなら 10 頂点）。
+        // 点数が多いと描画リストの頂点数が膨らむため（main.cpp の OpenGL 版の注記を参照）。
         ImPlotSpec spec;
         spec.Marker          = ImPlotMarker_Circle;
         spec.MarkerSize      = 1.5f;
         spec.MarkerFillColor = col;
-        spec.MarkerLineColor = col;
+        spec.MarkerLineColor = ImVec4(0, 0, 0, 0);
         spec.Flags           = ImPlotItemFlags_NoFit;    // 軸の自動フィットに関与させない
         char label[16];
         std::snprintf(label, sizeof label, "##F%d", k + 1);
