@@ -19,6 +19,7 @@
   音声解析の Python 環境は同梱せず、利用者が配布物の `install-win.bat` / `install.sh` で作る（README）。
 - CI: push ごとにビルド確認とコアの単体テスト、各 OS での環境構築＋C++ → Python の結合テスト（`ci.yml`）。
 - リファクタリング（issue #1）: GUI に依存しない処理を静的ライブラリ `morphaligner_core` に分けた（第1段階）。
+  base/target の分岐を `Side` に、GL テクスチャを RAII の `GlTexture` にした（第2段階）。
 - 以下の「実装済み機能」は時系列で追記しているため、前半の節には後で置き換わった記述がある
   （置き換わった箇所には注記を入れてある）。
 
@@ -48,7 +49,8 @@
 ## ファイル構成（自作分）
 
 - `src/analysis.hpp` / `src/analysis.cpp` — 音声ファイル → 表示用スペクトル包絡スペクトログラムの解析（GL非依存）
-- `src/anchor.hpp` — アンカーの型（`Anchor`/`FreqAnchor`。GUI 非依存）
+- `src/anchor.hpp` — アンカーの型（`Anchor`/`FreqAnchor`）と `Side`（base/target の別）。GUI 非依存
+- `src/gl_texture.hpp` / `src/gl_texture.cpp` — GL テクスチャの所有者 `GlTexture`（RAII、ムーブのみ）
 - `src/app.hpp` / `src/app.cpp` — 状態モデル（`Track`/`App`）、`apply_track`、
   テクスチャ生成（ERB 等間隔）、共有 `kColormap`
 - `src/ui.hpp` / `src/ui.cpp` — 画面全体（`draw_root`）。タブ、左パネル、スペクトログラム、ミニマップ、
@@ -533,6 +535,19 @@ Montreal Forced Aligner（MFA）で単語/音素の区間を求めて画面に�
   並べ替え）、自動生成（境界・分割・音素数の不一致・ラベル違い）、セッション JSON（往復・旧形式・不正・
   tcmorph 形式）。build.yml が `with_tests` のときビルド直後に実行する。
 
+### リファクタリング第2段階: `Side` の導入と GL テクスチャの RAII 化（2026-09-25、issue #1）
+- `enum class Side { Base, Target }`・`kSides`・`side_index` を `anchor.hpp` に追加。`Anchor::time(Side)` /
+  `FreqAnchor::freq(Side)` / `App::track(Side)` / `App::morph_channel(Side)` で参照し、`ui.cpp` と
+  `anchors.cpp` の `bool is_base` と `is_base ? A : B` の分岐（18 か所）をなくした。`base_t` などの
+  名前付きのメンバはそのまま（セッション・モーフィングはこちらで読む方が読みやすいため）。
+- モーフィング用の解析チャンネルは `morph_base` / `morph_target`（と `_path`）から、`side_index` で引く
+  配列 `morph_ch[2]` / `morph_ch_path[2]` にした。
+- `GlTexture`（ムーブのみ、破棄・差し替えで `glDeleteTextures`）を追加し、`Track::tex` と
+  `App::morph_tex_sp/ap` をこれにした。`Track::~Track`・`App::~App`・`delete_tex` と `apply_track` の
+  手動解放はなくなった。`App` は main.cpp でウィンドウを閉じる前に破棄されるので、GL コンテキストが
+  あるうちに解放される（起動→終了で終了コード 0 を確認）。
+- 単体テストに `Side` による参照の2項目を追加（計 24 項目）。
+
 ## MATLAB版との差分
 
 ※ **旧・自前実装についての比較**。現在は tcmorph（MATLAB 版の移植、丸め誤差レベルで一致を
@@ -640,8 +655,8 @@ install-win.bat          # Windows（-Yes で非対話）
 
 ## 次にやること
 
-- リファクタリング（issue #1）の続き: 第2段階（`Side` の導入・GL テクスチャの RAII）、第3段階（ジョブの統一・
-  `ui.cpp` の分割・`App` の分割）、第4段階（解析の一本化）。
+- リファクタリング（issue #1）の続き: 第3段階（ジョブの統一・`ui.cpp` の分割・`App` の分割）、
+  第4段階（解析の一本化）。
 
 - 再生の停止/一時停止・再生位置バー（現状は `play_oneshot` / `play_pcm` で頭から再生のみ）。
 - アンカーの整列/ソートや、アンカー編集の Undo。

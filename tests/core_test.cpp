@@ -1,6 +1,6 @@
 // コアのライブラリ（GUI に依存しない部分）の単体テスト。
 //
-// 対象: 周波数尺度の変換、フォルマントの移動平均、モーフィング用のアンカー整形、
+// 対象: 周波数尺度の変換、アンカーの Side による参照、フォルマントの移動平均、モーフィング用のアンカー整形、
 // アンカー自動生成、セッション JSON の読み書き。音声ファイルや Python は使わないので、
 // どこで実行してもよい（CI の build.yml がビルド直後に各 OS で実行する）。
 //
@@ -50,6 +50,19 @@ void test_freqscale() {
         ok &= near(freqscale::erb_to_hz(freqscale::hz_to_erb(hz)), hz, 1e-6);
     expect(ok, "freqscale: Hz → ERB → Hz で元に戻る");
     expect(near(freqscale::hz_to_erb(0.0), 0.0), "freqscale: 0 Hz は ERB 0");
+}
+
+// ── アンカーの Side による参照 ──────────────────────────────
+void test_anchor_side() {
+    Anchor a { 0.1, 0.2, { { 500, 600 } } };
+    a.time(Side::Target) += 0.1;
+    a.freqs[0].freq(Side::Base) = 550;
+    const Anchor& c = a;
+    expect(near(c.time(Side::Base), 0.1) && near(a.target_t, 0.3) && near(a.freqs[0].base_f, 550)
+             && near(c.freqs[0].freq(Side::Target), 600),
+           "anchor: time(Side) / freq(Side) が base / target の値を指す");
+    expect(side_index(Side::Base) == 0 && side_index(Side::Target) == 1 && kSides[1] == Side::Target,
+           "anchor: side_index と kSides");
 }
 
 // ── フォルマントの移動平均 ──────────────────────────────────
@@ -229,6 +242,7 @@ void test_session_json() {
 
 int main() {
     test_freqscale();
+    test_anchor_side();
     test_smooth_formants();
     test_build_anchor_matrices();
     test_auto_anchors();

@@ -65,6 +65,7 @@ add_executable(morphingAlignerCpp
     src/anchors.cpp
     src/app.cpp
     src/app_icon.cpp
+    src/gl_texture.cpp
     src/log.cpp
     src/main.cpp
     src/session.cpp

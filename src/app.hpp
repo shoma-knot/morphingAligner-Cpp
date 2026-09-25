@@ -16,19 +16,20 @@
 
 #include "analysis.hpp"
 #include "anchor.hpp"
+#include "gl_texture.hpp"
 #include "morphing.hpp"    // MorphRates / MorphOutput
 #include "speech_tools.hpp"    // Formants / Segmentation
 
 // Viridis, shared by the pre-baked spectrogram texture and the on-screen legend.
 constexpr ImPlotColormap kColormap = ImPlotColormap_Viridis;
 
-// One loaded audio source (base or target) with its analysis and GPU texture.
-// Owns a GL texture, so it is non-copyable.
+// 読み込んだ音声1つ（base または target）と、その解析結果・表示用テクスチャ。
+// GL テクスチャを持つのでコピー不可。
 struct Track {
-    std::string  name;       // "base" / "target", shown in dialog + labels
-    std::string  path;       // loaded file ("" = none)
-    Spectrogram  spec;       // spectral envelope
-    unsigned int tex = 0;    // baked GPU texture
+    std::string  name;       // "base" / "target"（ダイアログとラベルに出す）
+    std::string  path;       // 読み込んだファイル（"" = 未読み込み）
+    Spectrogram  spec;       // スペクトル包絡
+    GlTexture    tex;        // spec を焼き込んだテクスチャ
     double       y_min = 0;  // frequency-axis view range [ERB レート]; zoomable over
     double       y_max = 0;  // the axis, reset to [0, ERB(fs/2)] on load
 
@@ -46,9 +47,6 @@ struct Track {
     bool         align_busy   = false;    // 音素セグメンテーションを実行中
 
     explicit Track(std::string n) : name(std::move(n)) {}
-    ~Track();    // frees the GL texture (defined in app.cpp)
-    Track(const Track&)            = delete;
-    Track& operator=(const Track&) = delete;
 
     bool loaded() const { return !path.empty(); }
 };
@@ -58,6 +56,8 @@ struct App {
     ma::engine          engine;    // audio output device (shared by both tracks)
     Track               base { "base" };
     Track               target { "target" };
+    Track&       track(Side s) { return s == Side::Base ? base : target; }
+    const Track& track(Side s) const { return s == Side::Base ? base : target; }
     std::vector<Anchor> anchors;    // base<->target time correspondences
     bool                show_minimap = false;    // スペクトログラムのミニマップ表示
     bool                show_formants = false;    // フォルマントをスペクトログラムに重ねる
@@ -95,10 +95,10 @@ struct App {
     bool       morph_realtime = true;     // スライダー操作中も逐次再合成するか（OFF=離した時のみ）
     bool       morph_autoplay = false;    // スライダーのつまみを離したら自動で再生するか
 
-    // base/target の解析チャンネル（タブ表示時に解析、パス変更で再解析）。
+    // base/target の解析チャンネル（添字は side_index。タブ表示時に解析、パス変更で再解析）。
     // 非同期ジョブと安全に共有するため immutable な shared_ptr で保持する（失敗時は nullptr）。
-    std::shared_ptr<const MorphChannel> morph_base, morph_target;
-    std::string                         morph_base_path, morph_target_path;    // 解析済みチャンネルの元パス
+    std::shared_ptr<const MorphChannel> morph_ch[2];
+    std::string                         morph_ch_path[2];    // 解析済みチャンネルの元パス
     MorphOutput                         morph_out;    // 再合成の結果（morphed の f0/sp/ap＋wave）
 
     // 非同期モーフィングジョブ（ワーカーで morphing_channels を実行。GL への反映は
@@ -122,11 +122,12 @@ struct App {
     bool                                   ui_job_running = false;
 
     // モーフィングタブの sp/ap ヒートマップ用テクスチャ（0=base, 1=morphed, 2=target）。
-    unsigned int morph_tex_sp[3] = { 0, 0, 0 };
-    unsigned int morph_tex_ap[3] = { 0, 0, 0 };
-    double       morph_db_min = 0, morph_db_max = 0;    // sp 共通の dB レンジ
+    GlTexture morph_tex_sp[3];
+    GlTexture morph_tex_ap[3];
+    double    morph_db_min = 0, morph_db_max = 0;    // sp 共通の dB レンジ
 
-    ~App();    // モーフィング用テクスチャを解放（app.cpp で定義）
+    // base/target の解析チャンネル（未解析・失敗なら nullptr）。
+    const MorphChannel* morph_channel(Side s) const { return morph_ch[side_index(s)].get(); }
 };
 
 // base/target の sp/ap テクスチャと共通 dB レンジを作り直す（morphed テクスチャも

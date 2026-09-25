@@ -8,6 +8,16 @@
 
 #include <vector>
 
+// base / target のどちら側か。値は配列の添字に使う（side_index）。
+enum class Side { Base = 0, Target = 1 };
+
+// 両側を順に回すための列（for (Side s : kSides)）。
+constexpr Side kSides[] = { Side::Base, Side::Target };
+
+constexpr int side_index(Side s) {
+    return static_cast<int>(s);
+}
+
 // 時間アンカー上に打つ周波数の対応。作成時は base/target 同じ周波数で、
 // あとから各パネルの線上でドラッグして周波数対応を編集する。
 // 表示番号は所属する時間アンカー内の並び順（インデックス+1）で、base/target 両方の
@@ -15,6 +25,9 @@
 struct FreqAnchor {
     double base_f;      // [Hz]
     double target_f;    // [Hz]
+
+    double&       freq(Side s) { return s == Side::Base ? base_f : target_f; }
+    const double& freq(Side s) const { return s == Side::Base ? base_f : target_f; }
 };
 
 // 時間軸の対応。base/target のスペクトログラムに縦線を1本ずつ立てる。
@@ -24,4 +37,7 @@ struct Anchor {
     double                  base_t;      // [s]
     double                  target_t;    // [s]
     std::vector<FreqAnchor> freqs;
+
+    double&       time(Side s) { return s == Side::Base ? base_t : target_t; }
+    const double& time(Side s) const { return s == Side::Base ? base_t : target_t; }
 };

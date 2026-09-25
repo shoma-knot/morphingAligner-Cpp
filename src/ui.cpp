@@ -77,9 +77,9 @@ void poll_ui_job(App& app) {
 }
 
 // 音声ファイルの選択→解析をワーカーで行い、完了時に Track へ反映する。
-void launch_load_track_job(App& app, bool is_base) {
-    const std::string name = is_base ? app.base.name : app.target.name;
-    launch_ui_job(app, [name, is_base]() -> std::function<void(App&)> {
+void launch_load_track_job(App& app, Side side) {
+    const std::string name = app.track(side).name;
+    launch_ui_job(app, [name, side]() -> std::function<void(App&)> {
         static const char* kAudioFilter[] = { "*.wav", "*.flac", "*.mp3", "*.ogg" };
         const std::string  title          = name + " 音声を選択";
         const char* picked = tinyfd_openFileDialog(title.c_str(), "", 4, kAudioFilter, "音声ファイル", 0);
@@ -89,9 +89,7 @@ void launch_load_track_job(App& app, bool is_base) {
         try {
             // std::function はコピー可能な呼び出し体を要求するので shared_ptr で持ち回す。
             auto spec = std::make_shared<Spectrogram>(analyze_file(path));
-            return [is_base, path, spec](App& a) {
-                apply_track(is_base ? a.base : a.target, path, std::move(*spec));
-            };
+            return [side, path, spec](App& a) { apply_track(a.track(side), path, std::move(*spec)); };
         } catch (const std::exception& e) {
             applog::add(name + " 読み込み失敗: " + e.what());
             return {};
@@ -127,14 +125,14 @@ double seconds_since(std::chrono::steady_clock::time_point t0) {
 }
 
 // フォルマント推定を開始する。完了時、音声が差し替わっていたら結果は捨てる。
-void launch_formant_job(App& app, bool is_base) {
-    Track& tr       = is_base ? app.base : app.target;
+void launch_formant_job(App& app, Side side) {
+    Track& tr       = app.track(side);
     tr.formant_busy = true;
     tr.formant_path = tr.path;    // 失敗しても同じ音声で毎フレーム再試行しないよう先に記録
     const std::string   name = tr.name, path = tr.path;
     const FormantParams params = app.formant_params;
     applog::add(name + " フォルマント推定中...");
-    launch_tool_job(app, [is_base, name, path, params]() -> std::function<void(App&)> {
+    launch_tool_job(app, [side, name, path, params]() -> std::function<void(App&)> {
         const auto  t0 = std::chrono::steady_clock::now();
         std::string err;
         auto        f = std::make_shared<Formants>(run_formants(path, params, err));
@@ -145,8 +143,8 @@ void launch_formant_job(App& app, bool is_base) {
             std::snprintf(buf, sizeof buf, " フォルマント推定完了 (%.2f s)", seconds_since(t0));
             applog::add(name + buf);
         }
-        return [is_base, path, f, ok = err.empty()](App& a) {
-            Track& t       = is_base ? a.base : a.target;
+        return [side, path, f, ok = err.empty()](App& a) {
+            Track& t       = a.track(side);
             t.formant_busy = false;
             if (!ok || t.path != path) return;    // 失敗、または実行中に音声が差し替わった
             t.formants    = std::move(*f);
@@ -190,9 +188,10 @@ void ensure_speech_env(App& app) {
 // セッション読み込みのどちらの経路でも、パスが変われば自動で走る）。環境の確認が済むまで待つ。
 void ensure_formants(App& app) {
     if (app.speech_env != App::SpeechEnv::Ready) return;
-    for (Track* tr : { &app.base, &app.target })
-        if (tr->loaded() && !tr->formant_busy && tr->formant_path != tr->path)
-            launch_formant_job(app, tr == &app.base);
+    for (Side s : kSides) {
+        const Track& tr = app.track(s);
+        if (tr.loaded() && !tr.formant_busy && tr.formant_path != tr.path) launch_formant_job(app, s);
+    }
 }
 
 // 設定（最大フォルマントなど）を変えたときに、読み込み済みの音声で推定し直す。
@@ -201,13 +200,13 @@ void invalidate_formants(App& app) {
 }
 
 // 音素セグメンテーション（MFA）を開始する。完了時、音声が差し替わっていたら結果は捨てる。
-void launch_align_job(App& app, bool is_base, const std::string& text) {
-    Track& tr     = is_base ? app.base : app.target;
+void launch_align_job(App& app, Side side, const std::string& text) {
+    Track& tr     = app.track(side);
     tr.align_busy = true;
     const std::string name = tr.name, path = tr.path;
     const AlignParams params = app.align_params;
     applog::add(name + " 音素セグメンテーション中（MFA、数十秒かかります）...");
-    launch_tool_job(app, [is_base, name, path, text, params]() -> std::function<void(App&)> {
+    launch_tool_job(app, [side, name, path, text, params]() -> std::function<void(App&)> {
         const auto  t0 = std::chrono::steady_clock::now();
         std::string err;
         auto        seg = std::make_shared<Segmentation>(run_alignment(path, text, params, err));
@@ -228,8 +227,8 @@ void launch_align_job(App& app, bool is_base, const std::string& text) {
             std::snprintf(buf, sizeof buf, " 音素セグメンテーション完了 (%.2f s): ", seconds_since(t0));
             applog::add(name + buf + phones);
         }
-        return [is_base, path, seg, ok = err.empty()](App& a) {
-            Track& t     = is_base ? a.base : a.target;
+        return [side, path, seg, ok = err.empty()](App& a) {
+            Track& t     = a.track(side);
             t.align_busy = false;
             if (!ok || t.path != path) return;    // 失敗、または実行中に音声が差し替わった
             t.segmentation = std::move(*seg);
@@ -367,8 +366,8 @@ void draw_speech_tools_panel(App& app) {
     const bool busy       = app.base.align_busy || app.target.align_busy;
     ImGui::BeginDisabled(!env_ready || !any_loaded || busy || app.transcript.empty());
     if (ImGui::Button(busy ? "音素アライメント実行中..." : "音素アライメント", ImVec2(-1, 0)))
-        for (Track* tr : { &app.base, &app.target })
-            if (tr->loaded()) launch_align_job(app, tr == &app.base, app.transcript);
+        for (Side s : kSides)
+            if (app.track(s).loaded()) launch_align_job(app, s, app.transcript);
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Montreal Forced Aligner で書き起こしを base / target の音声に合わせ、\n"
@@ -401,14 +400,15 @@ void draw_speech_tools_panel(App& app) {
 }
 
 // 左パネル内の、トラック1つ分の読み込み/再生操作と情報表示。
-void draw_track_controls(App& app, Track& tr, const char* label) {
+void draw_track_controls(App& app, Side side, const char* label) {
+    Track& tr = app.track(side);
     ImGui::PushID(&tr);
     ImGui::TextUnformatted(label);
 
     // 「読み込む」「再生」を1行に並べる。
     const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
     ImGui::BeginDisabled(app.ui_job_running);
-    if (ImGui::Button("読み込む", ImVec2(half, 0))) launch_load_track_job(app, &tr == &app.base);
+    if (ImGui::Button("読み込む", ImVec2(half, 0))) launch_load_track_job(app, side);
     ImGui::EndDisabled();
     ImGui::SameLine();
 
@@ -498,7 +498,7 @@ void draw_minimap(Track& tr, float width, float height) {
         ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoDecorations, ImPlotAxisFlags_NoDecorations);
         ImPlot::SetupAxisLimits(ImAxis_X1, 0, sp.duration, ImPlotCond_Always);
         ImPlot::SetupAxisLimits(ImAxis_Y1, 0, erb_max, ImPlotCond_Always);
-        ImPlot::PlotImage("##mini", static_cast<ImTextureID>(tr.tex), ImPlotPoint(0, 0),
+        ImPlot::PlotImage("##mini", tr.tex.imgui_id(), ImPlotPoint(0, 0),
                           ImPlotPoint(sp.duration, erb_max));
         // 現在の表示範囲を白の半透明ボックスで重ねる（Y は上が y_max）。
         const ImVec2 pmin = ImPlot::PlotToPixels(tr.view_x0, tr.view_y1);
@@ -515,14 +515,15 @@ void draw_minimap(Track& tr, float width, float height) {
 enum class Minimap { None, Above, Below };
 
 // 指定ピクセル高さでスペクトル包絡スペクトログラムを1枚描き、アンカーを重ねる。
-// is_base はこのプロットがアンカーペアのどちら側を編集するかを選ぶ。
+// side はこのプロットがアンカーペアのどちら側を編集するかを選ぶ。
 // out_edges には対応線の端点を返す（何も描かなければ空）。minimap で上/下にミニマップ。
 // show_seg なら音素セグメンテーションのプロットを添える（base は上、target は下。
 // パネル間の対応線がまたがないよう、ミニマップと同じく外側に置く）。
-void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vector<EdgePoint>& out_edges,
+void draw_spectrogram(App& app, Side side, float height, std::vector<EdgePoint>& out_edges,
                       Minimap minimap, bool show_seg) {
     out_edges.clear();
 
+    Track& tr = app.track(side);
     ImGui::PushID(&tr);
     ImGui::TextUnformatted(tr.name.c_str());
 
@@ -552,7 +553,7 @@ void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vect
     // 音素セグメンテーションとはプロット領域の左右端を揃える（Y 軸の目盛り幅が違っても
     // 時刻の位置が縦に一致するように）。時間軸は tr.view_x0/x1 へのリンクで共有する。
     const bool aligned = show_seg && ImPlot::BeginAlignedPlots("##spec_seg");
-    if (show_seg && is_base) draw_segmentation(tr, plot_w, seg_h);
+    if (show_seg && side == Side::Base) draw_segmentation(tr, plot_w, seg_h);
 
     // 右クリックをアンカー削除に使うため解放する: NoMenus で既定のコンテキストメニュー、
     // NoBoxSelect で右ドラッグの範囲ズームを無効化。
@@ -573,12 +574,12 @@ void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vect
         // 時間軸を [0, duration] 内に制約（データ範囲外へパン/ズームアウトさせない）。
         ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0, sp.duration);
         // 焼き込み済みテクスチャ: bin * frame 数に依らず1クアッドで描画。Y は ERB レート範囲。
-        ImPlot::PlotImage("##env", static_cast<ImTextureID>(tr.tex), ImPlotPoint(0, 0),
+        ImPlot::PlotImage("##env", tr.tex.imgui_id(), ImPlotPoint(0, 0),
                           ImPlotPoint(sp.duration, freqscale::hz_to_erb(sp.fs / 2.0)));
         if (app.show_formants) draw_formants(tr.formants, app.show_formant_ma ? &tr.formants_ma : nullptr);
 
         handle_freq_axis_input(tr, sp);
-        draw_anchors(app, is_base, sp, out_edges);
+        draw_anchors(app, side, sp, out_edges);
 
         // 現在の表示範囲をミニマップ用に保存（X=秒, Y=ERB レート）。
         const ImPlotRect vlim = ImPlot::GetPlotLimits();
@@ -592,7 +593,7 @@ void draw_spectrogram(App& app, Track& tr, bool is_base, float height, std::vect
     ImGui::SameLine();
     ImPlot::ColormapScale("dB", sp.db_min, sp.db_max, ImVec2(kScaleW, spec_h));
 
-    if (show_seg && !is_base) draw_segmentation(tr, plot_w, seg_h);
+    if (show_seg && side == Side::Target) draw_segmentation(tr, plot_w, seg_h);
     if (aligned) ImPlot::EndAlignedPlots();
     if (minimap == Minimap::Below) draw_minimap(tr, plot_w, mini_h);
 
@@ -604,11 +605,11 @@ void draw_left_panel(App& app) {
     ImGui::TextUnformatted("操作");
     ImGui::Separator();
 
-    draw_track_controls(app, app.base, "Base");
+    draw_track_controls(app, Side::Base, "Base");
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
-    draw_track_controls(app, app.target, "Target");
+    draw_track_controls(app, Side::Target, "Target");
 
     ImGui::Spacing();
     ImGui::Separator();
@@ -695,9 +696,9 @@ void draw_right_panel(App& app) {
                            || app.base.align_busy || app.target.align_busy);
 
     static std::vector<EdgePoint> base_edges, target_edges;
-    draw_spectrogram(app, app.base, /*is_base=*/true, each_h, base_edges, base_mm, show_seg);
+    draw_spectrogram(app, Side::Base, each_h, base_edges, base_mm, show_seg);
     ImGui::Spacing();
-    draw_spectrogram(app, app.target, /*is_base=*/false, each_h, target_edges, target_mm, show_seg);
+    draw_spectrogram(app, Side::Target, each_h, target_edges, target_mm, show_seg);
 
     draw_anchor_connectors(base_edges, target_edges, app.active_anchor);
 }
@@ -797,17 +798,17 @@ void ensure_morph_channels(App& app) {
     const auto stale = [](const Track& tr, const std::string& ch_path) {
         return tr.loaded() && ch_path != tr.path;
     };
-    bool is_base;
-    if (stale(app.base, app.morph_base_path)) is_base = true;
-    else if (stale(app.target, app.morph_target_path)) is_base = false;
+    Side side;
+    if (stale(app.base, app.morph_ch_path[side_index(Side::Base)])) side = Side::Base;
+    else if (stale(app.target, app.morph_ch_path[side_index(Side::Target)])) side = Side::Target;
     else return;
 
-    const std::string name = is_base ? app.base.name : app.target.name;
-    const std::string path = is_base ? app.base.path : app.target.path;
+    const std::string name = app.track(side).name;
+    const std::string path = app.track(side).path;
     // 先に試行済みパスを記録して、失敗時に毎フレーム再解析されるのを防ぐ。
-    (is_base ? app.morph_base_path : app.morph_target_path) = path;
+    app.morph_ch_path[side_index(side)] = path;
 
-    launch_ui_job(app, [name, path, is_base]() -> std::function<void(App&)> {
+    launch_ui_job(app, [name, path, side]() -> std::function<void(App&)> {
         applog::add(name + " をモーフィング用に解析中...");
         const auto  t0 = std::chrono::steady_clock::now();
         std::string err;
@@ -824,8 +825,8 @@ void ensure_morph_channels(App& app) {
             std::snprintf(buf, sizeof buf, "%s 解析完了 (%.2f ms)", name.c_str(), ms);
             applog::add(buf);
         }
-        return [is_base, ch](App& a) {
-            (is_base ? a.morph_base : a.morph_target) = ch;
+        return [side, ch](App& a) {
+            a.morph_ch[side_index(side)] = ch;
             ++a.morph_epoch;     // 実行中モーフの結果は古い base/target のものなので破棄対象に
             a.morph_out = {};    // 元が変わったので以前の morphed は無効
             rebuild_morph_bt_textures(a);
@@ -836,7 +837,7 @@ void ensure_morph_channels(App& app) {
 // 非同期でモーフィングを開始する（実行中なら「最新条件で1回だけ再実行」を予約）。
 // ワーカーは shared_ptr 経由の immutable なチャンネルと、コピーしたアンカー/率だけを使う。
 void request_morph(App& app) {
-    if (!app.morph_base || !app.morph_target) return;
+    if (!app.morph_channel(Side::Base) || !app.morph_channel(Side::Target)) return;
     if (app.morph_job_running) {
         // 実行中なら畳む。再生予約は morph_play_request に残したままにして、
         // この再要求から始まるジョブ（最新の率）の方で再生されるようにする。
@@ -850,8 +851,8 @@ void request_morph(App& app) {
     app.morph_job_epoch    = app.morph_epoch;
     app.morph_job_t0      = std::chrono::steady_clock::now();
 
-    const auto base    = app.morph_base;
-    const auto target  = app.morph_target;
+    const auto base    = app.morph_ch[side_index(Side::Base)];
+    const auto target  = app.morph_ch[side_index(Side::Target)];
     const auto anchors = app.anchors;    // コピー（ジョブ中の編集と分離）
     const auto rates   = app.morph_rates;
     app.morph_job      = std::async(std::launch::async, [base, target, anchors, rates] {
@@ -867,7 +868,8 @@ void draw_morph_plots(App& app) {
     // （読み込まれている側から算出。morphed は必ずこの範囲に収まる）。
     double              x_max = 0.0, f0_max = 0.0;
     const MorphChannel* ref = nullptr;
-    for (const MorphChannel* ch : { app.morph_base.get(), app.morph_target.get() }) {
+    for (Side s : kSides) {
+        const MorphChannel* ch = app.morph_channel(s);
         if (ch == nullptr || ch->empty()) continue;
         ref   = ch;
         x_max = std::max(x_max, ch->duration);
@@ -882,9 +884,9 @@ void draw_morph_plots(App& app) {
     const double erb_max = freqscale::hz_to_erb(nyq);
 
     static const MorphChannel kEmptyCh;    // 未解析の列は空データとして描く（軸のみ）
-    const MorphChannel* chs[3]        = { app.morph_base ? app.morph_base.get() : &kEmptyCh,
-                                          &app.morph_out.morphed,
-                                          app.morph_target ? app.morph_target.get() : &kEmptyCh };
+    const auto          or_empty      = [](const MorphChannel* c) { return c ? c : &kEmptyCh; };
+    const MorphChannel* chs[3]        = { or_empty(app.morph_channel(Side::Base)), &app.morph_out.morphed,
+                                          or_empty(app.morph_channel(Side::Target)) };
     const char*         col_titles[3] = { "Base", "Morphed", "Target" };
     const char*         row_ylabel[3] = { "F0 [Hz]", "SP [Hz]", "AP [Hz]" };
 
@@ -925,9 +927,9 @@ void draw_morph_plots(App& app) {
                     if (ch.n_frames > 0) ImPlot::PlotLine("F0", xs.data(), ys.data(), ch.n_frames);
                 } else {
                     // sp / ap のヒートマップ（ERB 等間隔テクスチャ、色スケールは3枚共通）。
-                    const unsigned int tex = row == 1 ? app.morph_tex_sp[col] : app.morph_tex_ap[col];
+                    const GlTexture& tex = row == 1 ? app.morph_tex_sp[col] : app.morph_tex_ap[col];
                     if (tex)
-                        ImPlot::PlotImage("##hm", static_cast<ImTextureID>(tex), ImPlotPoint(0, 0),
+                        ImPlot::PlotImage("##hm", tex.imgui_id(), ImPlotPoint(0, 0),
                                           ImPlotPoint(ch.duration, erb_max));
                 }
                 ImPlot::EndPlot();
@@ -989,7 +991,7 @@ void poll_morph_job(App& app) {
 
 // 下段: 出力設定（生成/再生/WAV保存）。
 void draw_morph_output(App& app) {
-    const bool ready = app.morph_base && app.morph_target;
+    const bool ready = app.morph_channel(Side::Base) && app.morph_channel(Side::Target);
     ImGui::BeginDisabled(!ready);
     if (ImGui::Button("生成して再生")) {
         app.morph_play_request = true;    // 完了回収時に再生
