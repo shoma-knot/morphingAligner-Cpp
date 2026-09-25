@@ -19,7 +19,7 @@
 #include "world/harvest.h"
 #include "world/synthesis.h"
 
-#include "app.hpp"    // Anchor / FreqAnchor
+#include "anchor.hpp"
 
 namespace {
 
@@ -42,19 +42,11 @@ std::vector<double> to_mono(const ma::decoder& dec) {
     return x;
 }
 
-// ── アンカーの整形 ───────────────────────────────────────────
-// tcmorph が要求する形（時間アンカーは狭義単調増加、周波数アンカーは (本数, 時間
-// アンカー数) の 0 詰め行列）へ変換する。両端の境界アンカーはエンジン側が付けるので
-// ここでは入れない。
-struct AnchorMatrices {
-    VectorXd t_ref, t_tgt;      // [n_anch]
-    MatrixXd tf_ref, tf_tgt;    // (n_fanchor, n_anch)、余りは 0 詰め
-    int      dropped_time = 0;  // 範囲外/順序が逆で読み飛ばした時間アンカー数
-    int      dropped_freq = 0;  // 同・周波数アンカー数
-};
+}    // namespace
 
-AnchorMatrices build_anchors(const std::vector<Anchor>& anchors, double end_ref, double end_tgt,
-                             double nyquist) {
+// ── アンカーの整形 ───────────────────────────────────────────
+AnchorMatrices build_anchor_matrices(const std::vector<Anchor>& anchors, double end_ref, double end_tgt,
+                                     double nyquist) {
     constexpr double kEps   = 1e-6;    // 区間長 0 を避けるための最小間隔 [s]
     constexpr double kMinHz = 1.0;     // log を取るため 0Hz 付近は使えない
 
@@ -137,8 +129,6 @@ AnchorMatrices build_anchors(const std::vector<Anchor>& anchors, double end_ref,
     }
     return m;
 }
-
-}    // namespace
 
 MorphChannel analyze_channel(const std::string& path, std::string& err) {
     err.clear();
@@ -236,7 +226,7 @@ MorphOutput morphing_channels(const MorphChannel& B, const MorphChannel& T,
         const VectorXd& tb = B.world.source_parameter.temporal_positions;
         const VectorXd& tt = T.world.source_parameter.temporal_positions;
         const AnchorMatrices am =
-          build_anchors(anchors, tb[tb.size() - 1], tt[tt.size() - 1], nyquist);
+          build_anchor_matrices(anchors, tb[tb.size() - 1], tt[tt.size() - 1], nyquist);
 
         tcmorph::aligner::MorphRate rate;
         rate.tx = std::clamp(rates.tx, 0.0, 1.0);

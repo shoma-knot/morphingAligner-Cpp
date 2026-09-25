@@ -4,18 +4,18 @@
 #include <cmath>
 #include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
 
-#include "app.hpp"    // Anchor / FreqAnchor / Track
 
 namespace {
 
 constexpr double kEps = 1e-4;    // 同じ時刻とみなす差 [s]（アンカーの重複・ポーズの有無の判定）
 
 // 無音を除いた音素の区間。
-std::vector<const SegInterval*> spoken_phones(const Track& tr) {
+std::vector<const SegInterval*> spoken_phones(const Segmentation& seg) {
     std::vector<const SegInterval*> out;
-    if (const SegTier* tier = tr.segmentation.phones())
+    if (const SegTier* tier = seg.phones())
         for (const SegInterval& iv : tier->intervals)
             if (!is_silence_label(iv.label)) out.push_back(&iv);
     return out;
@@ -47,12 +47,12 @@ double value_at(const FormantTrack& tr, double t) {
 
 }    // namespace
 
-AutoAnchorResult generate_auto_anchors(const Track& base, const Track& target, int divisions) {
+AutoAnchorResult generate_auto_anchors(const AutoAnchorInput& base, const AutoAnchorInput& target, int divisions) {
     AutoAnchorResult r;
     divisions = std::max(1, divisions);
 
-    const auto pb = spoken_phones(base);
-    const auto pt = spoken_phones(target);
+    const auto pb = spoken_phones(base.segmentation);
+    const auto pt = spoken_phones(target.segmentation);
     if (pb.empty() || pt.empty()) {
         r.error = "音素アライメントの結果がありません";
         return r;
@@ -75,7 +75,7 @@ AutoAnchorResult generate_auto_anchors(const Track& base, const Track& target, i
     // 同じ時刻に重ねて打たないよう、直前に打った時刻より（両側とも）先のときだけ追加する。
     std::vector<std::pair<double, double>> times;    // (base_t, target_t)
     const auto push = [&](double tb, double tt) {
-        if (tb <= kEps || tt <= kEps || tb >= base.spec.duration - kEps || tt >= target.spec.duration - kEps)
+        if (tb <= kEps || tt <= kEps || tb >= base.duration - kEps || tt >= target.duration - kEps)
             return;    // 音声の範囲外（両端）は打たない
         if (!times.empty() && (tb <= times.back().first + kEps || tt <= times.back().second + kEps)) return;
         times.emplace_back(tb, tt);

@@ -15,6 +15,7 @@
 #include <miniaudio_cpp/audio.hpp>
 
 #include "analysis.hpp"
+#include "anchor.hpp"
 #include "morphing.hpp"    // MorphRates / MorphOutput
 #include "speech_tools.hpp"    // Formants / Segmentation
 
@@ -50,24 +51,6 @@ struct Track {
     Track& operator=(const Track&) = delete;
 
     bool loaded() const { return !path.empty(); }
-};
-
-// 時間アンカー上に打つ周波数の対応。作成時は base/target 同じ周波数で、
-// あとから各パネルの線上でドラッグして周波数対応を編集する。
-// 表示番号は所属する時間アンカー内の並び順（インデックス+1）で、base/target 両方の
-// 点に同じ番号を出して対応を示す。
-struct FreqAnchor {
-    double base_f;
-    double target_f;
-};
-
-// 時間軸の対応。base/target のスペクトログラムに縦線を1本ずつ立てる。
-// 作成時は両者同じ時刻で、あとから各線をドラッグして対応を定義する。
-// freqs はこの時間アンカー線上に乗る周波数アンカー（Ctrl+左クリックで追加）。
-struct Anchor {
-    double                  base_t;
-    double                  target_t;
-    std::vector<FreqAnchor> freqs;
 };
 
 // Application state shared across the frame.

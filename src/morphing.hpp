@@ -69,5 +69,22 @@ MorphChannel analyze_channel(const std::string& path, std::string& err);
 MorphOutput morphing_channels(const MorphChannel& base, const MorphChannel& target,
                               const std::vector<Anchor>& anchors, const MorphRates& rates);
 
+// tcmorph が要求する形に整えたアンカー（時間アンカーは両側とも狭義単調増加、周波数
+// アンカーは (本数, 時間アンカー数) の 0 詰め行列）。両端の境界アンカーはエンジン側が
+// 付けるので含まない。
+struct AnchorMatrices {
+    Eigen::VectorXd t_ref, t_tgt;      // [n_anch]
+    Eigen::MatrixXd tf_ref, tf_tgt;    // (n_fanchor, n_anch)、余りは 0 詰め
+    int             dropped_time = 0;  // 範囲外/順序が逆で読み飛ばした時間アンカー数
+    int             dropped_freq = 0;  // 同・周波数アンカー数
+};
+
+// UI のアンカー列を AnchorMatrices に変換する（morphing_channels が内部で使う。単体テスト用に公開）。
+//   - 解析範囲 (0, end_ref) / (0, end_tgt) の外と、base_t が直前と重なるものは落とす。
+//   - target_t も狭義単調増加になるよう、残せる本数が最大の部分列を選ぶ（交差した線を落とす）。
+//   - 周波数アンカーは (1 Hz, nyquist) の外を落とし、base_f の昇順に並べる。
+AnchorMatrices build_anchor_matrices(const std::vector<Anchor>& anchors, double end_ref, double end_tgt,
+                                     double nyquist);
+
 // wave を WAV（32bit float モノラル）として path に書き出す。成功で true。
 bool write_wav(const std::string& path, const std::vector<double>& wave, int fs, std::string& err);

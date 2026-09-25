@@ -19,6 +19,7 @@
 #include "anchors.hpp"
 #include "app.hpp"
 #include "auto_anchors.hpp"
+#include "formant_smoothing.hpp"
 #include "freqscale.hpp"
 #include "log.hpp"
 #include "morphing.hpp"
@@ -256,7 +257,10 @@ bool right_aligned_button(const char* label) {
 // 置き換える（生成の中身は auto_anchors.cpp）。
 
 void run_auto_anchors(App& app) {
-    AutoAnchorResult r = generate_auto_anchors(app.base, app.target, app.auto_anchor_divisions);
+    const auto input = [](const Track& t) {
+        return AutoAnchorInput { t.segmentation, t.formants_ma, t.spec.duration };
+    };
+    AutoAnchorResult r = generate_auto_anchors(input(app.base), input(app.target), app.auto_anchor_divisions);
     for (const std::string& w : r.warnings) applog::add("警告: " + w);
     if (!r.ok()) {
         applog::add("アンカー自動生成失敗: " + r.error);

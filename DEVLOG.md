@@ -1,6 +1,6 @@
 # morphingAligner 開発ログ
 
-最終更新: 2026-09-25（現行版 v26.09.25.a）
+最終更新: 2026-09-25（現行版 v26.09.25.a、ブランチ `refactor/structure` でリファクタリング中）
 
 ## 最終目標
 
@@ -17,7 +17,8 @@
   スペクトログラムに重ね、音素セグメンテーション（MFA）を時間軸を共有した独立プロットに出す。
 - 配布: `v*` タグの push で GitHub Actions が Ubuntu / Windows 版をビルドしリリースに添付する。
   音声解析の Python 環境は同梱せず、利用者が配布物の `install-win.bat` / `install.sh` で作る（README）。
-- CI: push ごとにビルド確認と、各 OS での環境構築＋C++ → Python の結合テスト（`ci.yml`）。
+- CI: push ごとにビルド確認とコアの単体テスト、各 OS での環境構築＋C++ → Python の結合テスト（`ci.yml`）。
+- リファクタリング（issue #1）: GUI に依存しない処理を静的ライブラリ `morphaligner_core` に分けた（第1段階）。
 - 以下の「実装済み機能」は時系列で追記しているため、前半の節には後で置き換わった記述がある
   （置き換わった箇所には注記を入れてある）。
 
@@ -47,19 +48,22 @@
 ## ファイル構成（自作分）
 
 - `src/analysis.hpp` / `src/analysis.cpp` — 音声ファイル → 表示用スペクトル包絡スペクトログラムの解析（GL非依存）
-- `src/app.hpp` / `src/app.cpp` — 状態モデル（`Anchor`/`FreqAnchor`/`Track`/`App`）、`apply_track`、
+- `src/anchor.hpp` — アンカーの型（`Anchor`/`FreqAnchor`。GUI 非依存）
+- `src/app.hpp` / `src/app.cpp` — 状態モデル（`Track`/`App`）、`apply_track`、
   テクスチャ生成（ERB 等間隔）、共有 `kColormap`
 - `src/ui.hpp` / `src/ui.cpp` — 画面全体（`draw_root`）。タブ、左パネル、スペクトログラム、ミニマップ、
   モーフィングタブ、ライセンス表示、ログ、非同期ジョブ（`launch_ui_job` / `request_morph`）
 - `src/anchors.hpp` / `src/anchors.cpp` — 時間/周波数アンカーの描画・操作、パネル間の対応線
 - `src/morphing.hpp` / `src/morphing.cpp` — WORLD 解析（`analyze_channel`）と tcmorph によるモーフィング
-  （`morphing_channels`）、WAV 書き出し
-- `src/session.hpp` / `src/session.cpp` — セッション JSON の保存/読み込み（tcmorph のアンカー形式も読む）
+  （`morphing_channels`）、アンカーの整形（`build_anchor_matrices`）、WAV 書き出し
+- `src/session_io.hpp` / `src/session_io.cpp` — セッション JSON と文字列の相互変換（tcmorph のアンカー形式も読む。GUI 非依存）
+- `src/session.hpp` / `src/session.cpp` — セッションのファイル保存/読み込み（音声の解析を含む）と App への適用
 - `src/log.hpp` / `src/log.cpp` — スレッドセーフな動作ログ `applog`
 - `src/freqscale.hpp` — Hz ↔ ERB レート変換
 - `src/speech_tools.hpp` / `src/speech_tools.cpp` — Python ツールの呼び出し（子プロセス起動・JSON の
   要求/応答・終了時の停止）と結果の型（`Formants` / `Segmentation`）
-- `src/speech_view.hpp` / `src/speech_view.cpp` — フォルマントの重ね描き・移動平均、音素セグメンテーションのプロット
+- `src/speech_view.hpp` / `src/speech_view.cpp` — フォルマントの重ね描き、音素セグメンテーションのプロット
+- `src/formant_smoothing.hpp` / `src/formant_smoothing.cpp` — フォルマントの移動平均（GUI 非依存）
 - `src/auto_anchors.hpp` / `src/auto_anchors.cpp` — 音素アライメントとフォルマントからのアンカー自動生成（GUI 非依存）
 - `python/speech_tools.py` — フォルマント推定（parselmouth）と音素セグメンテーション（MFA）の本体
 - `src/app_icon.*` / `src/app_icon_data.inc` / `src/app_icon.rc.in` — ウィンドウアイコン（埋め込み RGBA）と
@@ -69,14 +73,16 @@
 - `tools/install-desktop-entry.sh` / `uninstall-desktop-entry.sh` — Linux のデスクトップエントリ登録/解除
 - `python/environment.yml` — 音声解析の Python 環境の定義（conda-forge のみ、版を固定）
 - `install-win.bat` + `python/install-env.ps1` / `install.sh` — 音声解析の Python 環境（`./.env`）を作る
-- `tests/speech_tools_test.cpp` — C++ → Python の結合テスト（`-DMORPHALIGNER_BUILD_TESTS=ON` で作る）
+- `tests/core_test.cpp` — コアの単体テスト（`-DMORPHALIGNER_BUILD_TESTS=ON` で作る。build.yml が実行）
+- `tests/speech_tools_test.cpp` — C++ → Python の結合テスト（同上。ci.yml が実行）
 - `README.md` — 利用者向けの説明（インストール・音声解析のセットアップ・ライセンス）
 - `.github/workflows/build.yml` — ビルド・配布物の作成と検査（再利用ワークフロー）
 - `.github/workflows/release.yml` — タグ push で build.yml を呼び、リリースを作る
 - `.github/workflows/ci.yml` — push ごとのビルド確認と、音声解析の環境構築＋結合テスト（週1回も）
 - `CMakeLists.txt` / `vcpkg.json` / `CMakePresets.json` / `vcpkg-configuration.json` — ビルド構成
-  - `src/*.cpp` を**直下のみ** glob（`CONFIGURE_DEPENDS`）。ファイル追加時の CMake 変更は不要。
-    再帰 glob にすると tcmorph の examples（`main()` を持つ）を巻き込むので不可。
+  - ソースは明示的に列挙する（2026-09-25 から。以前は `src/*.cpp` の glob）。GUI に依存しないものは
+    静的ライブラリ `morphaligner_core`、GUI（ImGui / ImPlot / GL / App）に触れるものは本体に入れる。
+    ファイルを足したら `CMakeLists.txt` のどちらかに追記すること。
 
 ## 実装済み機能
 
@@ -508,6 +514,25 @@ Montreal Forced Aligner（MFA）で単語/音素の区間を求めて画面に�
 - `ubuntu-latest` は 2026-10-19 から Ubuntu 26 に切り替わる（CI の注記）。apt のパッケージ名が変われば Linux の
   ビルドが落ちるので、切り替わり後の CI を見ること。
 
+### リファクタリング第1段階: コアのライブラリ化と単体テスト（2026-09-25、issue #1）
+設計上の問題点を洗い出して issue #1 にまとめ、ブランチ `refactor/structure` で段階的に直す。第1段階は
+「依存の向きの整理」で、振る舞いは変えていない。
+- `Anchor` / `FreqAnchor` を `app.hpp` から `anchor.hpp` に移した。モーフィング・セッション・自動生成が
+  アンカーの型のためだけに `app.hpp`（ImPlot・miniaudio を含む）を読み込んでいたのを解消。
+- `smooth_formants` を描画コードの `speech_view.cpp` から `formant_smoothing.cpp` に移した。
+- `generate_auto_anchors` は `Track` ではなく `AutoAnchorInput`（音素アライメント・移動平均・長さ）を受ける。
+- `morphing.cpp` の `build_anchors` を `build_anchor_matrices` として `morphing.hpp` に公開（テスト用）。
+- セッションの JSON 変換を `session_io.cpp`（`SessionFile` ⇔ 文字列）に分け、`session.cpp` はファイル操作・
+  音声の解析・App への適用だけにした。tcmorph 形式の警告などは `SessionFile::notes` で返し、呼び出し側が
+  ログに出す。読み込み失敗のログは「セッション読み込み失敗: <項目> が不正: ...」の形に揃えた
+  （tcmorph 形式の失敗も「tcmorph 形式のアンカーが不正: ...」としてこの形に入る）。保存はバイナリモードで
+  書くので、Windows でも改行が LF になる。
+- CMake: 上記の GUI 非依存の処理を静的ライブラリ `morphaligner_core` にまとめ、本体と両テストがリンクする。
+  ソースは glob をやめて明示的に列挙。
+- `tests/core_test.cpp`（22 項目）: 周波数尺度、移動平均（窓・途切れ）、アンカー整形（範囲外・交差・周波数の
+  並べ替え）、自動生成（境界・分割・音素数の不一致・ラベル違い）、セッション JSON（往復・旧形式・不正・
+  tcmorph 形式）。build.yml が `with_tests` のときビルド直後に実行する。
+
 ## MATLAB版との差分
 
 ※ **旧・自前実装についての比較**。現在は tcmorph（MATLAB 版の移植、丸め誤差レベルで一致を
@@ -564,8 +589,8 @@ install-win.bat          # Windows（-Yes で非対話）
 ./.env/python python/speech_tools.py --check    # 確認だけ（Linux は ./.env/bin/python）
 ```
 - 定義は `python/environment.yml`。版を変えたら `--check` と CI（ci.yml）で確かめる。
-- 結合テスト: `cmake -DMORPHALIGNER_BUILD_TESTS=ON ...` でビルドし、ルートで `bin/speech_tools_test`
-  （または `ctest`）。
+- テスト: `cmake -DMORPHALIGNER_BUILD_TESTS=ON ...` でビルドし、ルートで `bin/core_test`（単体）と
+  `bin/speech_tools_test`（結合。`.env` が要る）、または `ctest`。
 - **sudachi の版は固定**: sudachipy 0.7 は MFA 付属の char.def（`NOOOVBOW2`）を読めず、
   sudachipy 0.6.11 は sudachidict-core 20260723 以降の辞書（ヘッダ版が新しい）を読めない。
   0.6.11 ＋ 20260428 で動作確認済み（MFA 3.4.2）。
@@ -614,6 +639,9 @@ install-win.bat          # Windows（-Yes で非対話）
   大量に描く機能を足すときは、塗りのみのマーカーにする・間引く等で頂点数を意識すること。
 
 ## 次にやること
+
+- リファクタリング（issue #1）の続き: 第2段階（`Side` の導入・GL テクスチャの RAII）、第3段階（ジョブの統一・
+  `ui.cpp` の分割・`App` の分割）、第4段階（解析の一本化）。
 
 - 再生の停止/一時停止・再生位置バー（現状は `play_oneshot` / `play_pcm` で頭から再生のみ）。
 - アンカーの整列/ソートや、アンカー編集の Undo。
