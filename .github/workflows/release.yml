@@ -22,7 +22,7 @@ jobs:
       contents: write
     steps:
       - name: 両環境の配布物を集める
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: morphingAligner-*

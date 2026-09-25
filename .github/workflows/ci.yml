@@ -43,7 +43,7 @@ jobs:
 
     steps:
       - name: チェックアウト
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: micromamba を入れる
         # 利用者向けの自動インストールスクリプトは対話式なので、公式手順のうち
@@ -66,7 +66,7 @@ jobs:
       - name: MFA のモデルのキャッシュを復元する
         # 日本語モデル（約 100 MB）を毎回ダウンロードしないようにする。取得先は MFA の既定
         # （~/Documents/MFA/pretrained_models）。
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/Documents/MFA/pretrained_models
           key: mfa-models-japanese_mfa-v1
@@ -83,7 +83,7 @@ jobs:
         run: install-win.bat -Yes
 
       - name: 結合テストの実行ファイルを取得する
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: speech-tools-test-${{ matrix.name }}
           path: bin

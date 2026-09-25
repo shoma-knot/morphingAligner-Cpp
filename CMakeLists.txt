@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 4.0)
 project(morphingAlignerCpp VERSION 26.09.25)
+# 同じ日付の版を出し直すときの接尾辞（例: ".a"。無ければ空）。project() の VERSION は
+# 数字しか書けないので別に持つ。タイトルバーの版は「VERSION + 接尾辞」になり、リリースの
+# タグ（v<VERSION><接尾辞>）との一致も build.yml がこの2つを合わせて検査する。
+set(APP_VERSION_SUFFIX ".a")
 set(CMAKE_CXX_STANDARD 17)
 
 # MSVC の CMAKE_CXX_FLAGS には /EHsc などの既定値が入っており、丸ごと上書きすると
@@ -39,9 +43,9 @@ file(GLOB SOURCES CONFIGURE_DEPENDS src/*.cpp)
 add_executable(morphingAlignerCpp ${SOURCES})
 # tcmorph はヘッダオンリーの外部ライブラリ。
 target_include_directories(morphingAlignerCpp PRIVATE ${CMAKE_SOURCE_DIR}/tcmorph/include)
-# タイトルバーに出す版。上の project() の VERSION をそのまま使うので、リリース時は
-# そちらを更新すること。
-target_compile_definitions(morphingAlignerCpp PRIVATE APP_VERSION="${PROJECT_VERSION}")
+# タイトルバーに出す版。上の project() の VERSION と APP_VERSION_SUFFIX を合わせたもの
+# なので、リリース時はそちらを更新すること。
+target_compile_definitions(morphingAlignerCpp PRIVATE APP_VERSION="${PROJECT_VERSION}${APP_VERSION_SUFFIX}")
 
 # Windows では実行ファイル自体にもアイコンを埋め込む。glfwSetWindowIcon が設定する
 # ウィンドウのアイコンとは別物で、こちらはエクスプローラーの表示やピン留めが参照する。

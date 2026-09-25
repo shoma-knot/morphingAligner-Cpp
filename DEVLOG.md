@@ -1,6 +1,6 @@
 # morphingAligner 開発ログ
 
-最終更新: 2026-09-25（現行版 v26.09.25）
+最終更新: 2026-09-25（現行版 v26.09.25.a）
 
 ## 最終目標
 
@@ -39,8 +39,10 @@
 
 - C++17、CMake 4.0 以上。ビルドは vcpkg マニフェストモード＋CMakePresets（Ninja）。
 - WORLD の example ビルドは `WORLD_BUILD_EXAMPLES=OFF` で無効化（ビルド時間短縮）。
-- 版は `CMakeLists.txt` の `project(... VERSION 26.09.25)`。`APP_VERSION` としてコンパイル定義で渡し、
-  タイトルバーに `morphingAligner v<版>` と出す（CMake は先頭ゼロを正規化しないので `26.09.25` のまま）。
+- 版は `CMakeLists.txt` の `project(... VERSION 26.09.25)` と `APP_VERSION_SUFFIX`（同日の出し直し用の
+  接尾辞。例 `".a"`、無ければ空）。合わせたものを `APP_VERSION` としてコンパイル定義で渡し、タイトルバーに
+  `morphingAligner v<版>` と出す（CMake は先頭ゼロを正規化しないので `26.09.25` のまま。VERSION には数字しか
+  書けないので接尾辞は別の変数にしている）。
 
 ## ファイル構成（自作分）
 
@@ -490,7 +492,21 @@ Montreal Forced Aligner（MFA）で単語/音素の区間を求めて画面に�
   環境作成・モデル確認・チェックまで成功、2回目は作り直さない、conda 系ツールが無いと案内して終了コード 1、
   作った環境で実際の音素アライメント（hai1.wav「はい」）が成功することを確認。アプリは環境あり/なしで起動し、
   「使えます」のログ/「未セットアップ」の表示を確認。結合テストはこの機で成功（F1 = 767 Hz、合成音の
-  700 Hz 付近）。**CI（特に Linux）での実行はまだ**（push 後に確認する）。
+  700 Hz 付近）。
+- CI の初回（run 36074379562）: build（linux 3分31秒 / windows 8分18秒）と speech-tools（linux 1分42秒 /
+  windows 2分3秒）がすべて成功。ログで、micromamba による環境構築（linux 282 / windows 205 パッケージ）、
+  MFA のモデル取得、環境チェック「使えます」、結合テスト（F1 = 767 Hz）まで通ったことを確認。Linux の
+  `posix_spawn` 経路もこれで動作確認できた。
+
+### アクションの版上げと v26.09.25.a（2026-09-25）
+- Node.js 20 の廃止予告の警告に対応し、`actions/checkout@v7`・`actions/cache@v6`・`actions/upload-artifact@v7`・
+  `actions/download-artifact@v8` に上げた（各メジャー版の互換性のない変更は、ID 指定のダウンロードの展開先と
+  ハッシュ不一致の扱いなどで、名前指定・GitHub ホストのランナーの本プロジェクトには影響しない）。
+  `ilammy/msvc-dev-cmd` は最新（v1.13.0）でも Node 20 のままなので、その警告は残る。
+- 音声解析の導入動線を入れた版を `v26.09.25.a` としてリリース。CMake の `project(VERSION)` に文字を書けない
+  ため `APP_VERSION_SUFFIX` を追加し、build.yml のタグ判定も「VERSION + 接尾辞」と比べるようにした。
+- `ubuntu-latest` は 2026-10-19 から Ubuntu 26 に切り替わる（CI の注記）。apt のパッケージ名が変われば Linux の
+  ビルドが落ちるので、切り替わり後の CI を見ること。
 
 ## MATLAB版との差分
 
@@ -558,8 +574,9 @@ install-win.bat          # Windows（-Yes で非対話）
 - 別の場所の環境を使うときは環境変数 `MORPHALIGNER_PYTHON` に python のパスを入れる。
 
 ### リリース手順
-1. `CMakeLists.txt` の `project(... VERSION x.y.z)` を更新してコミット。
-2. `git tag vx.y.z && git push origin vx.y.z`（タグと VERSION が食い違うと CI が止まる）。
+1. `CMakeLists.txt` の `project(... VERSION x.y.z)` と `APP_VERSION_SUFFIX` を更新してコミット
+   （新しい日付の版では接尾辞を `""` に戻す。同日の出し直しは `".a"`, `".b"`, ...）。
+2. `git tag vx.y.z<接尾辞> && git push origin vx.y.z<接尾辞>`（タグとアプリの版が食い違うとリリースが止まる）。
 3. `release.yml` が両環境をビルドし、GitHub リリースを作成（同じタグの再実行は差し替え）。
 
 ## 既知の制約・メモ
@@ -603,7 +620,7 @@ install-win.bat          # Windows（-Yes で非対話）
 - base/target の fs 不一致への対応（リサンプリング）。
 - 拡大時の見た目調整（`GL_LINEAR` ↔ `GL_NEAREST`）。
 - Windows 版の実機確認（CI ビルド・.ico 埋め込み・フォント/ライセンスの表示）。
-- CI（ci.yml）の初回実行の確認（特に Linux の環境構築と posix_spawn 経路、Windows の micromamba 取得）。
+- Ubuntu 26 への切り替わり（2026-10-19〜）後の CI の確認。
 - ASCII 以外を含むパスで音素アライメントが実際に失敗するかの確認（今は警告を出すだけ）。
 - 音素セグメンテーションの活用: 境界をスペクトログラムにも薄く重ねる、ホバー中の区間を
   スペクトログラム側で強調する、など。

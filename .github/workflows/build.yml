@@ -48,25 +48,27 @@ jobs:
 
     steps:
       - name: チェックアウト（WORLD はサブモジュール）
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
-      - name: タグと project() の版が一致しているか見る
-        # タイトルバーに出る版は project() の VERSION から来る。食い違ったまま
-        # 公開すると、v0.2.0 のリリースなのにアプリが v0.1.0 と名乗ることになる。
-        # タグから起動されたときだけ見る。接尾辞（-rc1 など）は許す。
+      - name: タグとアプリの版が一致しているか見る
+        # タイトルバーに出る版は project() の VERSION と APP_VERSION_SUFFIX（".a" など）
+        # から来る。食い違ったまま公開すると、v0.2.0 のリリースなのにアプリが v0.1.0 と
+        # 名乗ることになる。タグから起動されたときだけ見る。"-rc1" などの接尾辞は許す。
         if: github.ref_type == 'tag'
         shell: bash
         run: |
           set -eu
           PROJ_VER=$(sed -n 's/^project(.*VERSION \([0-9][0-9.]*\).*/\1/p' CMakeLists.txt)
-          echo "CMakeLists.txt: $PROJ_VER / タグ: $GITHUB_REF_NAME"
+          SUFFIX=$(sed -n 's/^set(APP_VERSION_SUFFIX "\([^"]*\)").*/\1/p' CMakeLists.txt)
+          APP_VER="$PROJ_VER$SUFFIX"
+          echo "CMakeLists.txt: $APP_VER / タグ: $GITHUB_REF_NAME"
           case "$GITHUB_REF_NAME" in
-            "v$PROJ_VER" | "v$PROJ_VER-"*) ;;
+            "v$APP_VER" | "v$APP_VER-"*) ;;
             *)
-              echo "タグと project() の VERSION が食い違っています。" >&2
-              echo "CMakeLists.txt の project(... VERSION ...) を更新してからタグを打ち直してください。" >&2
+              echo "タグとアプリの版（project() の VERSION + APP_VERSION_SUFFIX）が食い違っています。" >&2
+              echo "CMakeLists.txt を更新してからタグを打ち直してください。" >&2
               exit 1
               ;;
           esac
@@ -92,7 +94,7 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: vcpkg のバイナリキャッシュを復元する
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: vcpkg-${{ matrix.name }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
@@ -190,7 +192,7 @@ jobs:
           find "$DIR" -type f | sort
 
       - name: アーティファクトとして上げる
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: morphingAligner-${{ matrix.name }}
           path: ${{ steps.package.outputs.archive }}
@@ -198,7 +200,7 @@ jobs:
 
       - name: 結合テストの実行ファイルを上げる
         if: inputs.with_tests
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: speech-tools-test-${{ matrix.name }}
           path: bin/speech_tools_test*
