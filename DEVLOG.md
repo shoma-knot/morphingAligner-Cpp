@@ -655,9 +655,27 @@ Montreal Forced Aligner（MFA）で単語/音素の区間を求めて画面に�
   `LoadIcon(NULL, IDI_APPLICATION)` と同じハンドル、修正後は別のもの（埋め込みのアイコン）になった。
   実行ファイルの代表アイコン（`ExtractAssociatedIcon`）も本アプリの意匠のまま。タスクバーの見た目は
   ユーザーが確認。
-- 版を `v26.09.25b` とした（`APP_VERSION_SUFFIX "b"`）。リファクタリング（PR #2）とこの修正を含む。
+- 版を `v26.09.25b` とした（`APP_VERSION_SUFFIX "b"`）。リファクタリング（PR #2）とこの修正、下の節を含む。
 - 版の書式を `v{yy.mm.dd}.{a-z}`（例 `v26.09.25.a`）から `v{yy.mm.dd}{a-z}`（例 `v26.09.25b`）に変えた
   （接尾辞のピリオドをなくした）。build.yml のタグ判定は「VERSION + 接尾辞」の連結なので変更不要。
+
+### Windows で日本語を含むパスの音声・セッションが開けない不具合の修正（2026-09-25）
+- 原因: アプリはパスを UTF-8 で持つ（tinyfd のダイアログは Windows でも UTF-8 を返す。`tinyfd_winUtf8 = 1`）。
+  ところが miniaudio は Windows で `char*` のパスを `fopen_s`（ANSI のコードページ。日本語の Windows なら
+  Shift_JIS）で開くため、ASCII 以外を含むパスは別の名前として扱われていた。読み込みは失敗し、WAV の
+  書き出しは化けた名前（例 `繝・せ繝...wav`）のファイルを作っていた。セッションの `std::ifstream` /
+  `std::ofstream` も `std::string` のパスで開いていたので同じ。
+- 修正:
+  - `third-party/miniaudio_cpp/src/audio.cpp`（自前のラッパー）: Windows では UTF-8 を
+    `std::filesystem::u8path(...).wstring()` で UTF-16 にし、`ma_decoder_init_file_w` /
+    `ma_encoder_init_file_w` / `ma_sound_init_from_file_w` で開く。`play_oneshot` が使っていた
+    `ma_engine_play_sound` にはワイド文字版が無いので、`ma_sound` を自前で持って鳴らし、鳴り終わった
+    ものは次の `play_oneshot` で解放する（エンジンの破棄時にも解放）。
+  - `session.cpp`: ファイルを `std::filesystem::u8path(path)` で開く。
+- 単体テスト: 日本語を含む名前で WAV を書き出したときにその名前のファイルができること、その名前で
+  置いたファイルを読めることを別々に確かめる（同じ関数で書いて読むだけだと、化けた名前どうしで往復が
+  通ってしまい、不具合を見逃す。最初はそれで通ってしまった）。
+- Python ツールへ渡すパスは以前から JSON（UTF-8）経由なので影響はなかった。
 
 ## MATLAB版との差分
 

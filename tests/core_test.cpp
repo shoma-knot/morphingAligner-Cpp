@@ -223,6 +223,29 @@ void test_analysis() {
     expect(o.ok() && o.fs == fs && !o.wave.empty() && std::fabs(static_cast<double>(o.wave.size()) - c.duration * fs) < fs * 0.02,
            "analysis: 解析結果をそのままモーフィングに使える");
 
+    // ASCII 以外を含むパス（UTF-8）。アプリ内のパスは UTF-8 で持つ（ファイルダイアログもコマンドライン
+    // 引数も UTF-8）。書いたファイルが正しい名前でできていること、正しい名前で置いたファイルを読めることを
+    // 別々に確かめる（同じ関数で書いて読むだけだと、名前が化けていても往復では通ってしまう）。
+    {
+        const std::filesystem::path dir   = std::filesystem::temp_directory_path();
+        const std::filesystem::path named = dir / std::filesystem::u8path(u8"morphaligner_テスト音声.wav");
+        std::filesystem::remove(named, ec);
+
+        const Status ws = write_wav(named.u8string(), x, fs);
+        expect(ws.ok() && std::filesystem::exists(named), "analysis: 日本語を含むパス（UTF-8）に WAV を書ける"
+                                                            + (ws.ok() ? "" : "（" + ws.error + "）"));
+        std::filesystem::remove(named, ec);
+
+        const std::filesystem::path ascii = dir / "morphaligner_ascii_copy.wav";
+        const Status                ws2   = write_wav(ascii.string(), x, fs);
+        std::filesystem::copy_file(ascii, named, std::filesystem::copy_options::overwrite_existing, ec);
+        std::filesystem::remove(ascii, ec);
+        const Result<AnalyzedAudio> ur = analyze_file(named.u8string());
+        std::filesystem::remove(named, ec);
+        expect(ws2.ok() && ur.ok() && ur.value.channel && ur.value.channel->n_frames == c.n_frames,
+               "analysis: 日本語を含むパス（UTF-8）の WAV を読める" + (ur.ok() ? "" : "（" + ur.error + "）"));
+    }
+
     const Result<AnalyzedAudio> bad =
       analyze_file((std::filesystem::temp_directory_path() / "morphaligner_no_such_file.wav").string());
     expect(!bad.ok() && !bad.error.empty() && !bad.value.channel, "analysis: 開けないファイルは失敗（理由つき）");

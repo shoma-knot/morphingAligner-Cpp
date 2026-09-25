@@ -4,6 +4,8 @@
 // The public header (audio.hpp) never touches it.
 #include "miniaudio.h"
 
+#include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -20,6 +22,47 @@ void check(ma_result result, const char* context) {
     }
 }
 
+// ── ファイルのパス ──────────────────────────────────────────
+// このラッパーはパスを UTF-8 で受け取る（アプリはファイルダイアログもコマンドライン引数も
+// UTF-8 で扱う）。Windows の miniaudio は char* のパスを fopen_s（ANSI のコードページ。日本語の
+// Windows なら Shift_JIS）で開くため、ASCII 以外を含むと別の名前のファイルとして扱われて
+// 開けない（書き出しでは化けた名前のファイルができる）。Windows ではワイド文字版の API を使う。
+
+#ifdef _WIN32
+std::wstring to_wide(std::string_view utf8) {
+    return std::filesystem::u8path(std::string{utf8}).wstring();
+}
+#endif
+
+ma_result decoder_init_file(std::string_view path, const ma_decoder_config* cfg,
+                            ma_decoder* dec) {
+#ifdef _WIN32
+    return ma_decoder_init_file_w(to_wide(path).c_str(), cfg, dec);
+#else
+    return ma_decoder_init_file(std::string{path}.c_str(), cfg, dec);
+#endif
+}
+
+ma_result encoder_init_file(std::string_view path, const ma_encoder_config* cfg,
+                            ma_encoder* enc) {
+#ifdef _WIN32
+    return ma_encoder_init_file_w(to_wide(path).c_str(), cfg, enc);
+#else
+    return ma_encoder_init_file(std::string{path}.c_str(), cfg, enc);
+#endif
+}
+
+ma_result sound_init_from_file(ma_engine* eng, std::string_view path,
+                               ma_uint32 flags, ma_sound* snd) {
+#ifdef _WIN32
+    return ma_sound_init_from_file_w(eng, to_wide(path).c_str(), flags,
+                                     nullptr, nullptr, snd);
+#else
+    return ma_sound_init_from_file(eng, std::string{path}.c_str(), flags,
+                                   nullptr, nullptr, snd);
+#endif
+}
+
 } // anonymous namespace
 
 // ── Engine impl ─────────────────────────────────────────────
@@ -32,12 +75,30 @@ struct engine_impl {
     ma_audio_buffer* pcm_buffer{nullptr};
     bool             pcm_active{false};
 
+    // play_oneshot で鳴らしているファイルの音。ma_engine_play_sound にはワイド文字版が
+    // 無いので自前で持ち、鳴り終わったものは次の play_oneshot で片付ける。ma_sound は
+    // 中を指すポインタを miniaudio が持つので、動かさないよう unique_ptr で持つ。
+    std::vector<std::unique_ptr<ma_sound>> oneshots;
+
     engine_impl() {
         check(ma_engine_init(nullptr, &handle), "engine init");
     }
     ~engine_impl() {
         stop_pcm();
+        for (auto& s : oneshots) ma_sound_uninit(s.get());
         ma_engine_uninit(&handle);
+    }
+
+    // 鳴り終わった play_oneshot の音を解放する。
+    void reap_oneshots() {
+        for (auto it = oneshots.begin(); it != oneshots.end();) {
+            if (ma_sound_at_end(it->get())) {
+                ma_sound_uninit(it->get());
+                it = oneshots.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
 
     void stop_pcm() {
@@ -58,9 +119,16 @@ engine::engine(engine&&) noexcept = default;
 engine& engine::operator=(engine&&) noexcept = default;
 
 void engine::play_oneshot(std::string_view path) {
-    check(ma_engine_play_sound(&impl_->handle,
-                               std::string{path}.c_str(), nullptr),
+    impl_->reap_oneshots();
+    auto snd = std::make_unique<ma_sound>();
+    check(sound_init_from_file(&impl_->handle, path, 0, snd.get()),
           "play_oneshot");
+    const ma_result r = ma_sound_start(snd.get());
+    if (r != MA_SUCCESS) {
+        ma_sound_uninit(snd.get());
+        check(r, "play_oneshot");
+    }
+    impl_->oneshots.push_back(std::move(snd));
 }
 
 void engine::play_pcm(const float* frames, std::uint64_t frame_count,
@@ -107,10 +175,8 @@ sound::sound(engine& eng, std::string_view path, type t)
     if (t == type::stream) {
         flags |= MA_SOUND_FLAG_STREAM;
     }
-    check(ma_sound_init_from_file(&eng.impl_->handle,
-                                  std::string{path}.c_str(),
-                                  flags, nullptr, nullptr,
-                                  &impl_->handle),
+    check(sound_init_from_file(&eng.impl_->handle, path, flags,
+                               &impl_->handle),
           "sound init");
     impl_->owns = true;
 }
@@ -204,9 +270,7 @@ decoder::decoder(std::string_view path)
     ma_decoder dec;
     ma_decoder_config cfg =
         ma_decoder_config_init(ma_format_f32, 0, 0);
-    check(ma_decoder_init_file(std::string{path}.c_str(),
-                               &cfg, &dec),
-          "decoder init");
+    check(decoder_init_file(path, &cfg, &dec), "decoder init");
 
     ma_uint64 total = 0;
     ma_decoder_get_length_in_pcm_frames(&dec, &total);
@@ -242,8 +306,7 @@ void write_wav(std::string_view path, const float* frames,
     ma_encoder_config cfg = ma_encoder_config_init(
         ma_encoding_format_wav, ma_format_f32, channels, sample_rate);
     ma_encoder enc;
-    check(ma_encoder_init_file(std::string{path}.c_str(), &cfg, &enc),
-          "encoder init");
+    check(encoder_init_file(path, &cfg, &enc), "encoder init");
     ma_uint64 written = 0;
     ma_result r =
         ma_encoder_write_pcm_frames(&enc, frames, frame_count, &written);

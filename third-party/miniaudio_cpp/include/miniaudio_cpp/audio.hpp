@@ -44,6 +44,7 @@ class engine {
     engine& operator=(const engine&) = delete;
 
     /// Fire-and-forget playback of a file.
+    /// ファイルのパスは UTF-8（このヘッダの path 引数はすべて同じ。Windows でも日本語のパスを開ける）。
     void play_oneshot(std::string_view path);
 
     /// Fire-and-forget playback of an in-memory interleaved float PCM buffer.

@@ -1,6 +1,7 @@
 #include "session.hpp"
 
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -11,10 +12,12 @@
 #include "log.hpp"
 #include "session_io.hpp"
 
+// パスはすべて UTF-8（ファイルダイアログ・コマンドライン引数・セッションの中身）。Windows で
+// std::string のまま開くと ANSI（Shift_JIS）として解釈されるので u8path を通す。
 namespace {
 
 bool file_readable(const std::string& path) {
-    std::ifstream f(path);
+    std::ifstream f(std::filesystem::u8path(path));
     return f.good();
 }
 
@@ -27,7 +30,7 @@ bool save_session(const App& app, const std::string& path) {
     s.transcript  = app.speech.transcript;
     s.anchors     = app.anchors;
 
-    std::ofstream os(path, std::ios::binary);
+    std::ofstream os(std::filesystem::u8path(path), std::ios::binary);
     if (!os) {
         applog::add("セッション保存失敗: ファイルを開けません: " + path);
         return false;
@@ -42,7 +45,7 @@ SessionLoadData load_session_data(const std::string& path) {
 
     std::string text;
     {
-        std::ifstream is(path, std::ios::binary);
+        std::ifstream is(std::filesystem::u8path(path), std::ios::binary);
         if (!is) {
             applog::add("セッション読み込み失敗: ファイルを開けません: " + path);
             return d;
