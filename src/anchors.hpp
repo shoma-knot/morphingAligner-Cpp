@@ -7,6 +7,8 @@
 
 #include <imgui.h>    // ImVec2
 
+#include "anchor.hpp"    // Side
+
 struct App;
 struct Spectrogram;
 
@@ -18,7 +20,7 @@ struct EdgePoint {
 
 // アクティブな ImPlot プロット内で、時間アンカー（縦線）と周波数アンカー（点）を
 // 描画・操作する。out_edges に相手パネルへ結ぶ端点を返す。
-void draw_anchors(App& app, bool is_base, const Spectrogram& sp, std::vector<EdgePoint>& out_edges);
+void draw_anchors(App& app, Side side, const Spectrogram& sp, std::vector<EdgePoint>& out_edges);
 
 // base/target の対応する時間アンカーを結ぶ線を前面に描く（本数が多いと帯になるので薄く、
 // active（カーソルが近いアンカー）の1本だけ不透明にする）。

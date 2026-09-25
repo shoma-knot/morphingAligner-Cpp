@@ -1,6 +1,6 @@
 # morphingAligner 開発ログ
 
-最終更新: 2026-09-25（現行版 v26.09.25.a）
+最終更新: 2026-09-25（現行版 v26.09.25.a、ブランチ `refactor/structure` でリファクタリング中）
 
 ## 最終目標
 
@@ -17,7 +17,12 @@
   スペクトログラムに重ね、音素セグメンテーション（MFA）を時間軸を共有した独立プロットに出す。
 - 配布: `v*` タグの push で GitHub Actions が Ubuntu / Windows 版をビルドしリリースに添付する。
   音声解析の Python 環境は同梱せず、利用者が配布物の `install-win.bat` / `install.sh` で作る（README）。
-- CI: push ごとにビルド確認と、各 OS での環境構築＋C++ → Python の結合テスト（`ci.yml`）。
+- CI: push ごとにビルド確認とコアの単体テスト、各 OS での環境構築＋C++ → Python の結合テスト（`ci.yml`）。
+- リファクタリング（issue #1）: GUI に依存しない処理を静的ライブラリ `morphaligner_core` に分けた（第1段階）。
+  base/target の分岐を `Side` に、GL テクスチャを RAII の `GlTexture` にした（第2段階）。
+  `App` を部分構造体に分け、ジョブを `JobQueue` に統一し、`ui.cpp` を画面ごと・役割ごとに分けた（第3段階）。
+  音声の WORLD 解析を読み込み時の1回にまとめ、表示とモーフィングで共有した（第4段階）。
+  残りの小さな項目（重複・定数・エラーの返し方・ログ・セッションの版・CMake）も片付けた。
 - 以下の「実装済み機能」は時系列で追記しているため、前半の節には後で置き換わった記述がある
   （置き換わった箇所には注記を入れてある）。
 
@@ -46,20 +51,37 @@
 
 ## ファイル構成（自作分）
 
-- `src/analysis.hpp` / `src/analysis.cpp` — 音声ファイル → 表示用スペクトル包絡スペクトログラムの解析（GL非依存）
-- `src/app.hpp` / `src/app.cpp` — 状態モデル（`Anchor`/`FreqAnchor`/`Track`/`App`）、`apply_track`、
-  テクスチャ生成（ERB 等間隔）、共有 `kColormap`
-- `src/ui.hpp` / `src/ui.cpp` — 画面全体（`draw_root`）。タブ、左パネル、スペクトログラム、ミニマップ、
-  モーフィングタブ、ライセンス表示、ログ、非同期ジョブ（`launch_ui_job` / `request_morph`）
+- `src/analysis.hpp` / `src/analysis.cpp` — 音声ファイルの WORLD 解析（`analyze_channel` → `MorphChannel`）と
+  表示用の要約（`Spectrogram`）。読み込み時に1回だけ行い、表示とモーフィングで共有する（GL非依存）
+- `src/anchor.hpp` — アンカーの型（`Anchor`/`FreqAnchor`）と `Side`（base/target の別）。GUI 非依存
+- `src/gl_texture.hpp` / `src/gl_texture.cpp` — GL テクスチャの所有者 `GlTexture`（RAII、ムーブのみ）
+- `src/app.hpp` / `src/app.cpp` — 状態モデル（`Track`、`App` = `SpeechState` / `MorphState` / `ViewState` /
+  `Jobs`）、`apply_track`、テクスチャ生成（ERB 等間隔）、共有 `kColormap`
+- `src/jobs.hpp` / `src/jobs.cpp` — ワーカーで実行し完了時にメインスレッドで反映する `JobQueue`
+- 画面（描画だけ。状態の操作は下のコントローラを呼ぶ）:
+  - `src/ui.hpp` / `src/ui.cpp` — 画面全体（`draw_root`）。ジョブの回収、タブ、ログ
+  - `src/ui_align.cpp` — アライメントタブ（左パネル、スペクトログラム、ミニマップ、周波数軸の入力）
+  - `src/ui_morph.cpp` — モーフィングタブ（スライダー、3×3 プロット、出力）
+  - `src/ui_license.cpp` — ライセンス表示タブ
+  - `src/ui_tabs.hpp`（各タブの宣言）、`src/ui_common.hpp` / `.cpp`（ERB の目盛り、`help_marker` など）
+- 状態を操作するコード（コントローラ）:
+  - `src/speech_controller.hpp` / `.cpp` — 環境チェック、フォルマント推定・音素アライメントのジョブ、
+    移動平均の更新、アンカー自動生成の実行
+  - `src/morph_controller.hpp` / `.cpp` — モーフィング用の解析、非同期のモーフィング、再生
+  - `src/file_jobs.hpp` / `.cpp` — ファイルダイアログを伴う操作（音声・セッションの読み込み/保存、WAV 保存）
 - `src/anchors.hpp` / `src/anchors.cpp` — 時間/周波数アンカーの描画・操作、パネル間の対応線
-- `src/morphing.hpp` / `src/morphing.cpp` — WORLD 解析（`analyze_channel`）と tcmorph によるモーフィング
-  （`morphing_channels`）、WAV 書き出し
-- `src/session.hpp` / `src/session.cpp` — セッション JSON の保存/読み込み（tcmorph のアンカー形式も読む）
-- `src/log.hpp` / `src/log.cpp` — スレッドセーフな動作ログ `applog`
+- `src/morphing.hpp` / `src/morphing.cpp` — tcmorph によるモーフィング
+  （`morphing_channels`）、アンカーの整形（`build_anchor_matrices`）、WAV 書き出し
+- `src/session_io.hpp` / `src/session_io.cpp` — セッション JSON と文字列の相互変換（tcmorph のアンカー形式も読む。GUI 非依存）
+- `src/session.hpp` / `src/session.cpp` — セッションのファイル保存/読み込み（音声の解析を含む）と App への適用
+- `src/log.hpp` / `src/log.cpp` — スレッドセーフな動作ログ `applog`（新しい方から 5,000 行まで保持）
 - `src/freqscale.hpp` — Hz ↔ ERB レート変換
+- `src/result.hpp` — 失敗しうる処理の戻り値 `Result<T>` / `Status`（コアの関数の失敗の返し方の約束も書いてある）
+- `src/resource_path.hpp` / `.cpp` — 同梱の資材（font/・licenses/・python/・.env/）を `x` → `../x` の順に探す
 - `src/speech_tools.hpp` / `src/speech_tools.cpp` — Python ツールの呼び出し（子プロセス起動・JSON の
   要求/応答・終了時の停止）と結果の型（`Formants` / `Segmentation`）
-- `src/speech_view.hpp` / `src/speech_view.cpp` — フォルマントの重ね描き・移動平均、音素セグメンテーションのプロット
+- `src/speech_view.hpp` / `src/speech_view.cpp` — フォルマントの重ね描き、音素セグメンテーションのプロット
+- `src/formant_smoothing.hpp` / `src/formant_smoothing.cpp` — フォルマントの移動平均（GUI 非依存）
 - `src/auto_anchors.hpp` / `src/auto_anchors.cpp` — 音素アライメントとフォルマントからのアンカー自動生成（GUI 非依存）
 - `python/speech_tools.py` — フォルマント推定（parselmouth）と音素セグメンテーション（MFA）の本体
 - `src/app_icon.*` / `src/app_icon_data.inc` / `src/app_icon.rc.in` — ウィンドウアイコン（埋め込み RGBA）と
@@ -69,18 +91,22 @@
 - `tools/install-desktop-entry.sh` / `uninstall-desktop-entry.sh` — Linux のデスクトップエントリ登録/解除
 - `python/environment.yml` — 音声解析の Python 環境の定義（conda-forge のみ、版を固定）
 - `install-win.bat` + `python/install-env.ps1` / `install.sh` — 音声解析の Python 環境（`./.env`）を作る
-- `tests/speech_tools_test.cpp` — C++ → Python の結合テスト（`-DMORPHALIGNER_BUILD_TESTS=ON` で作る）
+- `tests/core_test.cpp` — コアの単体テスト（`-DMORPHALIGNER_BUILD_TESTS=ON` で作る。build.yml が実行）
+- `tests/speech_tools_test.cpp` — C++ → Python の結合テスト（同上。ci.yml が実行）
 - `README.md` — 利用者向けの説明（インストール・音声解析のセットアップ・ライセンス）
 - `.github/workflows/build.yml` — ビルド・配布物の作成と検査（再利用ワークフロー）
 - `.github/workflows/release.yml` — タグ push で build.yml を呼び、リリースを作る
 - `.github/workflows/ci.yml` — push ごとのビルド確認と、音声解析の環境構築＋結合テスト（週1回も）
 - `CMakeLists.txt` / `vcpkg.json` / `CMakePresets.json` / `vcpkg-configuration.json` — ビルド構成
-  - `src/*.cpp` を**直下のみ** glob（`CONFIGURE_DEPENDS`）。ファイル追加時の CMake 変更は不要。
-    再帰 glob にすると tcmorph の examples（`main()` を持つ）を巻き込むので不可。
+  - ソースは明示的に列挙する（2026-09-25 から。以前は `src/*.cpp` の glob）。GUI に依存しないものは
+    静的ライブラリ `morphaligner_core`、GUI（ImGui / ImPlot / GL / App）に触れるものは本体に入れる。
+    ファイルを足したら `CMakeLists.txt` のどちらかに追記すること。
 
 ## 実装済み機能
 
 ### 解析パイプライン（`analysis.cpp`）
+※ 初期実装の記録。2026-09-25 から解析は `analyze_channel`（F0・スペクトル包絡・非周期性）の1回にまとめ、
+`Spectrogram` は `values` を持たない要約になった（下の「リファクタリング第4段階」）。
 1. `ma::decoder` でファイルをデコード（interleaved float）
 2. モノラル double へダウンミックス（WORLDの入力形式）
 3. WORLD `Harvest` で F0 推定（`frame_period = 5.0 ms`）
@@ -227,6 +253,7 @@ Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋�
   合成）に API を再構成（旧 `morphing`/`morphing_full` は廃止、MorphOutput は morphed+wave のみ）。
   - base/target はタブ表示時に `ensure_morph_channels` が解析（パス変更時のみ再解析、失敗パスは
     記録して再試行を防ぐ）。**音声を読み込めば生成前でも base/target のプロットが出る**。
+    ※ 2026-09-25 から解析は読み込み時の1回だけで、`ensure_morph_channels` は `Track::channel` を取り込むだけ。
   - 再合成は morphed のみ（`rebuild_morphed_texture`）。**解析が走らなくなり大幅に高速化**。
   - sp 共通 dB レンジは base/target から算出（morphed は log 補間なので必ずレンジ内）。
   - ヘッドレスでリファクタ前後の出力一致を確認（r=0/0.5/1 の長さ・maxabs 同一）。
@@ -360,7 +387,7 @@ Montreal Forced Aligner（MFA）で単語/音素の区間を求めて画面に�
   - 終了時: 子は Job Object（Linux はプロセスグループ）に入れ、`main.cpp` がループ後に
     `terminate_speech_tools()` で孫の MFA ごと止める（止めないと future が子を待ち、閉じた後も
     数十秒固まる）。スクリプトの作業ファイルも C++ 側の一時ディレクトリ内に作らせるので残らない。
-- **ジョブ**（`ui.cpp`）: `App::tool_jobs`（複数同時可、ui_job とは別枠）。完了時の適用処理で
+- **ジョブ**（`ui.cpp`。※ 2026-09-25 から `speech_controller.cpp` の `App::jobs.tools`）: `App::tool_jobs`（複数同時可、ui_job とは別枠）。完了時の適用処理で
   `Track::path` が変わっていたら結果を捨てる。実行中は `Track::formant_busy / align_busy`。
 - **フォルマント**: Burg 法（time_step 5ms, 5 本推定, 最大フォルマント既定 5500Hz, 表示 F1–F4）。
   未定義フレームを除いて ERB に変換して保持し、スペクトログラムに `PlotScatter`（半径 1.5px,
@@ -508,6 +535,112 @@ Montreal Forced Aligner（MFA）で単語/音素の区間を求めて画面に�
 - `ubuntu-latest` は 2026-10-19 から Ubuntu 26 に切り替わる（CI の注記）。apt のパッケージ名が変われば Linux の
   ビルドが落ちるので、切り替わり後の CI を見ること。
 
+### リファクタリング第1段階: コアのライブラリ化と単体テスト（2026-09-25、issue #1）
+設計上の問題点を洗い出して issue #1 にまとめ、ブランチ `refactor/structure` で段階的に直す。第1段階は
+「依存の向きの整理」で、振る舞いは変えていない。
+- `Anchor` / `FreqAnchor` を `app.hpp` から `anchor.hpp` に移した。モーフィング・セッション・自動生成が
+  アンカーの型のためだけに `app.hpp`（ImPlot・miniaudio を含む）を読み込んでいたのを解消。
+- `smooth_formants` を描画コードの `speech_view.cpp` から `formant_smoothing.cpp` に移した。
+- `generate_auto_anchors` は `Track` ではなく `AutoAnchorInput`（音素アライメント・移動平均・長さ）を受ける。
+- `morphing.cpp` の `build_anchors` を `build_anchor_matrices` として `morphing.hpp` に公開（テスト用）。
+- セッションの JSON 変換を `session_io.cpp`（`SessionFile` ⇔ 文字列）に分け、`session.cpp` はファイル操作・
+  音声の解析・App への適用だけにした。tcmorph 形式の警告などは `SessionFile::notes` で返し、呼び出し側が
+  ログに出す。読み込み失敗のログは「セッション読み込み失敗: <項目> が不正: ...」の形に揃えた
+  （tcmorph 形式の失敗も「tcmorph 形式のアンカーが不正: ...」としてこの形に入る）。保存はバイナリモードで
+  書くので、Windows でも改行が LF になる。
+- CMake: 上記の GUI 非依存の処理を静的ライブラリ `morphaligner_core` にまとめ、本体と両テストがリンクする。
+  ソースは glob をやめて明示的に列挙。
+- `tests/core_test.cpp`（22 項目）: 周波数尺度、移動平均（窓・途切れ）、アンカー整形（範囲外・交差・周波数の
+  並べ替え）、自動生成（境界・分割・音素数の不一致・ラベル違い）、セッション JSON（往復・旧形式・不正・
+  tcmorph 形式）。build.yml が `with_tests` のときビルド直後に実行する。
+
+### リファクタリング第2段階: `Side` の導入と GL テクスチャの RAII 化（2026-09-25、issue #1）
+- `enum class Side { Base, Target }`・`kSides`・`side_index` を `anchor.hpp` に追加。`Anchor::time(Side)` /
+  `FreqAnchor::freq(Side)` / `App::track(Side)` / `App::morph_channel(Side)` で参照し、`ui.cpp` と
+  `anchors.cpp` の `bool is_base` と `is_base ? A : B` の分岐（18 か所）をなくした。`base_t` などの
+  名前付きのメンバはそのまま（セッション・モーフィングはこちらで読む方が読みやすいため）。
+- モーフィング用の解析チャンネルは `morph_base` / `morph_target`（と `_path`）から、`side_index` で引く
+  配列 `morph_ch[2]` / `morph_ch_path[2]` にした。
+- `GlTexture`（ムーブのみ、破棄・差し替えで `glDeleteTextures`）を追加し、`Track::tex` と
+  `App::morph_tex_sp/ap` をこれにした。`Track::~Track`・`App::~App`・`delete_tex` と `apply_track` の
+  手動解放はなくなった。`App` は main.cpp でウィンドウを閉じる前に破棄されるので、GL コンテキストが
+  あるうちに解放される（起動→終了で終了コード 0 を確認）。
+- 単体テストに `Side` による参照の2項目を追加（計 24 項目）。
+
+### リファクタリング第3段階: App の分割・ジョブの統一・ui.cpp の分割（2026-09-25、issue #1）
+振る舞いは変えない（例外時の後始末だけ新たに入れた）。
+- **`App` の分割**（`app.hpp`）: 30 以上のメンバが同じ階層に並んでいたのを、`SpeechState`（環境・設定・
+  書き起こし・表示の切替）、`MorphState`（率・解析チャンネル・結果・ジョブ・テクスチャ）、`ViewState`
+  （ミニマップ・アンカーの強調・ログの開閉・フォント・対応線の端点・ライセンス表示の選択）、`Jobs` に分けた。
+  メンバ名は `morph_rates` → `morph.rates` のように接頭辞を外した。`SpeechEnv` は `App` の外の enum に。
+  `rebuild_morph_bt_textures` / `rebuild_morphed_texture` は `MorphState&` だけを受ける。
+  `Jobs` は `App` の最後に置く（破棄は逆順なので、実行中のジョブの終了を待ってから他を破棄する）。
+- **関数内の `static` の廃止**: 対応線の端点（`draw_right_panel`）→ `ViewState::edges[2]`、モーフィングの
+  前回の警告（`poll_morph_job`）→ `MorphState::last_warnings`、ライセンス表示の選択と本文 →
+  `ViewState::license_*`。既定のセッションパスは値の変わらないキャッシュなので `file_jobs.cpp` の関数に残した。
+- **ジョブの統一**（`jobs.hpp`）: `ui_job`（1本）と `tool_jobs`（複数）の別々の実装を `JobQueue` にまとめた
+  （`App::jobs.ui` は `try_launch` で1本に限り、`App::jobs.tools` は `launch`）。
+  - ワーカーが投げた例外は「内部エラー（ワーカー）: ...」としてログに出し、`launch` に渡した `on_error` を
+    メインスレッドで呼ぶ。フォルマント推定・音素アライメントは `on_error` で `formant_busy` / `align_busy` を
+    下ろし、環境チェックは Unavailable にする（以前は例外が `main` まで上がってアプリが終了していた）。
+  - 反映処理の例外も捕まえてログに出す。`poll` は完了したものを先に取り出してから反映する（反映処理が
+    新しいジョブを `launch` しても、走査中のイテレータを壊さない）。
+  - モーフィングは「実行中の再要求を畳む・世代で古い結果を捨てる」があるので `MorphState::job` のまま。
+    `poll_morph_job` で `get()` の例外を捕まえて失敗として扱うようにした。
+- **`ui.cpp` の分割**: 1,194 行を、画面（`ui.cpp` / `ui_align.cpp` / `ui_morph.cpp` / `ui_license.cpp` /
+  `ui_common.cpp`）と、状態を操作するコード（`speech_controller.cpp` / `morph_controller.cpp` /
+  `file_jobs.cpp`）に分けた。関数の本体は行範囲で機械的に移し、呼び出しだけを差し替えている。
+  セッション保存/読み込みと WAV 保存のダイアログ処理は、ボタンの中から `file_jobs.cpp` の関数に移した。
+- 経過秒数の `seconds_since` は `applog::seconds_since`（`log.hpp`）に移した。
+
+### リファクタリング第4段階: 解析の一本化（2026-09-25、issue #1）
+これまでは同じ音声を2回解析していた（アライメントタブの表示用に `analyze_file` が Harvest＋CheapTrick、
+モーフィングタブを開いたときに `analyze_channel` が Harvest＋CheapTrick＋D4C）。読み込み時の1回にまとめた。
+- `MorphChannel` と `analyze_channel`（と `to_mono`）を `morphing.*` から `analysis.*` に移した。フレーム周期は
+  `kFramePeriodMs`（5 ms）として `analysis.hpp` に1つだけ置く。移した関数の本体は定数名以外変えていない
+  （移動前後を突き合わせて確認）ので、モーフィングの結果は以前と同じ。
+- `analyze_file` は `AnalyzedAudio`（`shared_ptr<const MorphChannel>` ＋ 要約の `Spectrogram`）を返す。
+  `Spectrogram` は dB 値の配列（`values`）を持たない要約（fs・長さ・フレーム数・ビン数・dB の範囲）になった。
+  dB の範囲は `sp` の最小/最大の係数から求める（以前と同じ値）。
+- `Track::channel` に解析結果を持ち、表示用テクスチャもモーフィングタブと同じ `make_heatmap_texture`
+  （sp から dB を計算して ERB 等間隔に並べ直す）で作る。`make_spectrogram_texture` は廃止。以前は float に
+  丸めた dB から作っていたので、色の段階が境目でまれに1段ずれることがあるが、見た目は変わらない。
+- モーフィングタブの `ensure_morph_channels` は再解析をやめ、`Track::channel` を取り込んでテクスチャを
+  作り直すだけにした（`MorphState::ch_path` と「モーフィング用に解析中...」のログは無くなった）。
+  タブを開いたときに待たされなくなった代わりに、音声の読み込みに D4C の分の時間が加わる。
+- 単体テストに解析の6項目を追加（計 30 項目）: 合成音の WAV を一時ディレクトリに書いて `analyze_file` し、
+  f0/sp/ap のフレーム数、要約との一致、dB の範囲、そのままモーフィングに使えること、開けないファイルの例外。
+
+### リファクタリングの残り（2026-09-25、issue #1）
+- **資材の探索**: `x` と `../x` の候補がフォント（`main.cpp`）・ライセンス（`ui_license.cpp`）・Python と
+  スクリプト（`speech_tools.cpp`）で別々に書かれていたのを、`find_resource`（`resource_path.cpp`、コア）に
+  まとめた。ライセンス表示のファイルも UTF-8 のパスとして開く（`u8path`）。
+- **音素列の重複**: 無音を除いた音素の取り出し（`spoken_phones`）とログ用の連結（`join_labels`）を
+  `speech_tools` に1つだけ置き、アンカー自動生成と音素アライメントのログの両方で使う。ログの音素列は
+  `is_silence_label` で除くので、以前は残っていた `sp` や `<eps>` も出なくなる。
+- **閾値**: 「同じ時刻」とみなす差は、自動生成（`auto_anchors.cpp`、1e-4 s）とモーフィング（`morphing.cpp`、
+  1e-6 s）で役割が違うので値は変えず、互いの関係（自動生成の方が広いので、打ったアンカーがモーフィングで
+  読み飛ばされない）をコメントに書いた。
+- **入力範囲の定数化**: 移動平均の窓幅（5〜500 ms）・分割数（1〜10）・最大フォルマント（2000〜10000 Hz）を
+  `SpeechState::kMaMsMin` などにした（ツールチップの文言もこの定数から作る）。
+- **エラーの返し方**: コアの公開関数は `Result<T>`（値＋理由）か `Status` で失敗を返し、引数の `err` と
+  例外はやめた（`result.hpp` に約束を書いた）。対象は `analyze_channel` / `analyze_file` /
+  `run_formants` / `run_alignment` / `write_wav` / `parse_session_json`。警告なども返す
+  `MorphOutput` / `AutoAnchorResult` / `SpeechEnvStatus` は、同じく `error` が空なら成功の独自の構造体のまま。
+  GUI 側の `save_session`（bool）と `SessionLoadData::ok` は、自分でログに出すのでそのまま。
+- **ログ**: 保持を新しい方から 5,000 行までにし（`std::deque`）、表示は `ImGuiListClipper` で見えている
+  行だけを取り出す（以前は毎フレーム全行をコピーしていた）。時刻の変換は `localtime_s` / `localtime_r`
+  （スレッド安全。MSVC の C4996 警告も消えた）。
+- **セッションの版**: 読み込み時に `version` を見る。無ければ 1、整数でなければ失敗、このアプリより新しい
+  版なら「新しい版のアプリで保存されたセッションです」として読まない（一部だけ読んで保存し直すと情報が
+  消えるため）。tcmorph 形式は対象外（`ParseAnchorSet` が見る）。
+- **CMake**: `CMAKE_CXX_FLAGS` の丸ごと上書き・`add_definitions(/utf-8)`・`LIBRARY_OUTPUT_PATH` /
+  `EXECUTABLE_OUTPUT_PATH` をやめ、`CMAKE_POSITION_INDEPENDENT_CODE`・`add_compile_options`（C/C++ に限る。
+  rc.exe には渡さない）・`CMAKE_*_OUTPUT_DIRECTORY` にした。出力先（`bin/`・`lib/`、VS は `Release/` 付き）は
+  変わらない。ビルド種別を指定しない構成（CMakePresets の vcpkg プリセット）では従来どおり `-O2` を付ける。
+- 英語のまま残っていたコメント（`app.cpp`・`main.cpp`）を日本語にした。
+- 単体テストを4項目追加（計 34 項目）: セッションの版の検査3項目、解析の失敗が理由つきで返ること。
+
 ## MATLAB版との差分
 
 ※ **旧・自前実装についての比較**。現在は tcmorph（MATLAB 版の移植、丸め誤差レベルで一致を
@@ -564,8 +697,8 @@ install-win.bat          # Windows（-Yes で非対話）
 ./.env/python python/speech_tools.py --check    # 確認だけ（Linux は ./.env/bin/python）
 ```
 - 定義は `python/environment.yml`。版を変えたら `--check` と CI（ci.yml）で確かめる。
-- 結合テスト: `cmake -DMORPHALIGNER_BUILD_TESTS=ON ...` でビルドし、ルートで `bin/speech_tools_test`
-  （または `ctest`）。
+- テスト: `cmake -DMORPHALIGNER_BUILD_TESTS=ON ...` でビルドし、ルートで `bin/core_test`（単体）と
+  `bin/speech_tools_test`（結合。`.env` が要る）、または `ctest`。
 - **sudachi の版は固定**: sudachipy 0.7 は MFA 付属の char.def（`NOOOVBOW2`）を読めず、
   sudachipy 0.6.11 は sudachidict-core 20260723 以降の辞書（ヘッダ版が新しい）を読めない。
   0.6.11 ＋ 20260428 で動作確認済み（MFA 3.4.2）。
@@ -588,7 +721,8 @@ install-win.bat          # Windows（-Yes で非対話）
   マシン間では手で同期する（リポジトリには入らない）。
 - base/target の fs 不一致は未対応（エラーで止める。リサンプリングなし）。
 - macOS / Wayland ネイティブでは `glfwSetWindowIcon` が効かない（XWayland 上では効く）。
-- `app.cpp` で `GL_CLAMP_TO_EDGE` を自前定義している（Windows の GL ヘッダに無いための応急処置、FIXME）。
+- `app.cpp` で `GL_CLAMP_TO_EDGE` を自前定義している（Windows の GL ヘッダは OpenGL 1.1 までで、1.2 の
+  この定数が無いため。無いときだけ定義する）。
 - 書き起こしは base/target 共通なので、別の文を読んだ2音声には音素アライメントを使えない。
 - 環境を手で作った場合（定義のハッシュの印が無い）、インストールスクリプトは「今の定義で作られたもの
   ではない」として作り直しを確認してくる（開発用の .env も同様）。
@@ -601,7 +735,7 @@ install-win.bat          # Windows（-Yes で非対話）
 
 ## 注意点（fragile）
 
-- **周波数軸の手組み入力処理**（`ui.cpp` の `FIXME(freq-axis-input)` ブロック）:
+- **周波数軸の手組み入力処理**（`ui_align.cpp` の `FIXME(freq-axis-input)` ブロック）:
   ホイールは X 専用ズームにするため Y 軸を `Lock` し、Y の表示範囲は `tr.y_min/y_max` に
   自前で保持して毎フレーム `SetupAxisLimits(Always)` で再適用している。ImPlot の軸状態を
   複製しているため壊れやすい（`IsPlotHovered` ゲートが2段プロット間のドラッグ跨ぎで誤作動、
@@ -614,6 +748,7 @@ install-win.bat          # Windows（-Yes で非対話）
   大量に描く機能を足すときは、塗りのみのマーカーにする・間引く等で頂点数を意識すること。
 
 ## 次にやること
+
 
 - 再生の停止/一時停止・再生位置バー（現状は `play_oneshot` / `play_pcm` で頭から再生のみ）。
 - アンカーの整列/ソートや、アンカー編集の Undo。

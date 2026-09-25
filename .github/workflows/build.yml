@@ -17,7 +17,7 @@ on:
   workflow_call:
     inputs:
       with_tests:
-        description: speech_tools の結合テストも作り、アーティファクトとして上げる
+        description: コアの単体テストを作って実行し、speech_tools の結合テストも作ってアーティファクトとして上げる
         type: boolean
         default: false
 
@@ -116,6 +116,13 @@ jobs:
       - name: ビルド
         shell: bash
         run: cmake --build build
+
+      - name: 単体テスト（コア）
+        # GUI に依存しない部分（アンカー整形・自動生成・移動平均・セッション JSON）。
+        # Python 環境は要らないので、ビルドしたその場で実行する。
+        if: inputs.with_tests
+        shell: bash
+        run: ./bin/core_test
 
       - name: 配布物をまとめる
         id: package

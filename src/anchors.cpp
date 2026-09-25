@@ -51,11 +51,11 @@ constexpr float kLabelOffsetY = 8.0f;    // 点からラベル中心までの距
 constexpr float kLabelGap     = 2.0f;    // ラベル同士の最小すき間 [px]
 
 // カーソルに最も近い時間アンカー線を返す（max_px 以内。無ければ -1）。
-int nearest_anchor(const App& app, bool is_base, const ImGuiIO& io, float max_px) {
+int nearest_anchor(const App& app, Side side, const ImGuiIO& io, float max_px) {
     int   nearest = -1;
     float best    = max_px;
     for (std::size_t i = 0; i < app.anchors.size(); ++i) {
-        const double at = is_base ? app.anchors[i].base_t : app.anchors[i].target_t;
+        const double at = app.anchors[i].time(side);
         const float  d  = std::fabs(ImPlot::PlotToPixels(at, 0.0).x - io.MousePos.x);
         if (d < best) {
             best    = d;
@@ -67,10 +67,10 @@ int nearest_anchor(const App& app, bool is_base, const ImGuiIO& io, float max_px
 
 // ── 時間アンカー（縦線） ─────────────────────────────────────
 // 各時間アンカーを DragLineX で描く。ホバー/ドラッグ中のものを any_active/hovered に返す。
-void draw_time_lines(App& app, bool is_base, ImPlotDragToolFlags flags, int active, bool& any_active,
+void draw_time_lines(App& app, Side side, ImPlotDragToolFlags flags, int active, bool& any_active,
                      int& hovered) {
     for (std::size_t i = 0; i < app.anchors.size(); ++i) {
-        double* xp = is_base ? &app.anchors[i].base_t : &app.anchors[i].target_t;
+        double* xp = &app.anchors[i].time(side);
         bool    h = false, held = false;
         ImPlot::DragLineX(static_cast<int>(i), xp, kAnchorCol, anchor_width(i, active), flags, nullptr,
                           &h, &held);
@@ -88,20 +88,20 @@ void draw_time_lines(App& app, bool is_base, ImPlotDragToolFlags flags, int acti
 // 重なる。ここでは画面 Y でソートしてから最小すき間だけ押し広げ、点から離れたものには
 // 引き出し線を引く。ImPlot::Annotation はオフセットの符号で箱の向きが変わり位置を厳密に
 // 決められないので、同じ見た目（下地＋反転色の数字）を自前で描いている。
-void draw_freq_labels(const Anchor& a, bool is_base, const ImPlotRect& lim) {
+void draw_freq_labels(const Anchor& a, Side side, const ImPlotRect& lim) {
     struct Label {
         int    j;
         ImVec2 point;    // 点の画面座標
         float  y;        // ラベル中心の画面 Y（重なり解消後）
     };
 
-    const double lx = is_base ? a.base_t : a.target_t;
+    const double lx = a.time(side);
     if (lx < lim.X.Min || lx > lim.X.Max) return;    // 線ごと表示範囲外
 
     std::vector<Label> labels;
     labels.reserve(a.freqs.size());
     for (std::size_t j = 0; j < a.freqs.size(); ++j) {
-        const double eyl = freqscale::hz_to_erb(is_base ? a.freqs[j].base_f : a.freqs[j].target_f);
+        const double eyl = freqscale::hz_to_erb(a.freqs[j].freq(side));
         if (eyl < lim.Y.Min || eyl > lim.Y.Max) continue;
         const ImVec2 p = ImPlot::PlotToPixels(lx, eyl);
         labels.push_back(Label { static_cast<int>(j), p, p.y - kLabelOffsetY });
@@ -156,15 +156,15 @@ void draw_freq_labels(const Anchor& a, bool is_base, const ImPlotRect& lim) {
 // ── 周波数アンカー（点＋番号） ───────────────────────────────
 // 各時間アンカー線上の周波数アンカーを DragPoint で描く。X は線に固定し Y のみ移動。
 // ホバー/ドラッグ中の点 (anchor, freq) index を hover_fi/hover_fj に返す。
-void draw_freq_points(App& app, bool is_base, const Spectrogram& sp, const ImPlotRect& lim,
+void draw_freq_points(App& app, Side side, const Spectrogram& sp, const ImPlotRect& lim,
                       ImPlotDragToolFlags flags, int active, bool& any_active, int& hover_fi,
                       int& hover_fj) {
     for (std::size_t i = 0; i < app.anchors.size(); ++i) {
         Anchor&    a  = app.anchors[i];
         const bool on = static_cast<int>(i) == active;
         for (std::size_t j = 0; j < a.freqs.size(); ++j) {
-            double    fx  = is_base ? a.base_t : a.target_t;    // 線に固定（毎フレーム再設定）
-            double*   fy  = is_base ? &a.freqs[j].base_f : &a.freqs[j].target_f;
+            double    fx  = a.time(side);    // 線に固定（毎フレーム再設定）
+            double*   fy  = &a.freqs[j].freq(side);
             const int fid = (static_cast<int>(i) + 1) * 4096 + static_cast<int>(j);
             // Y軸は ERB レートなので、保持している Hz を ERB にして DragPoint に渡し、
             // ドラッグ結果（ERB）を Hz に戻す。
@@ -180,7 +180,7 @@ void draw_freq_points(App& app, bool is_base, const Spectrogram& sp, const ImPlo
 
         }
         // 番号ラベルは点をすべて動かしたあとに、まとめて重なりを解いてから描く。
-        if (on) draw_freq_labels(a, is_base, lim);
+        if (on) draw_freq_labels(a, side, lim);
     }
 }
 
@@ -199,7 +199,7 @@ void handle_time_input(App& app, const Spectrogram& sp, ImGuiIO& io, bool any_ac
 }
 
 // ── 周波数アンカーの追加/削除（Ctrl あり） ───────────────────
-void handle_freq_input(App& app, bool is_base, const Spectrogram& sp, ImGuiIO& io,
+void handle_freq_input(App& app, Side side, const Spectrogram& sp, ImGuiIO& io,
                        bool any_active, int hover_fi, int hover_fj) {
     if (!io.KeyCtrl) return;
     // Ctrl+右クリック: ホバー中の周波数アンカーを削除。
@@ -210,7 +210,7 @@ void handle_freq_input(App& app, bool is_base, const Spectrogram& sp, ImGuiIO& i
     // Ctrl+左クリック（点以外の線上）: カーソルに最も近い時間アンカー線上に、クリックした
     // 周波数で周波数アンカー（ペア）を追加。点の上（any_active）はドラッグ移動なので追加しない。
     else if (!any_active && ImPlot::IsPlotHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        const int nearest = nearest_anchor(app, is_base, io, kAddPx);
+        const int nearest = nearest_anchor(app, side, io, kAddPx);
         if (nearest >= 0) {
             // クリック位置(Y=ERB)を Hz に変換して追加。
             const double f = std::clamp(freqscale::erb_to_hz(ImPlot::GetPlotMousePos().y), 0.0, sp.fs / 2.0);
@@ -222,13 +222,13 @@ void handle_freq_input(App& app, bool is_base, const Spectrogram& sp, ImGuiIO& i
 // ── 対応線用の端点取得 ───────────────────────────────────────
 // 縦位置はプロット矩形のピクセル端に固定（base=下端 / target=上端）。周波数ズームで
 // 動かないよう、横位置のみ時間軸に追従させる。
-void capture_edges(App& app, bool is_base, const ImPlotRect& lim, std::vector<EdgePoint>& out) {
+void capture_edges(App& app, Side side, const ImPlotRect& lim, std::vector<EdgePoint>& out) {
     const ImVec2 plot_pos  = ImPlot::GetPlotPos();
     const ImVec2 plot_size = ImPlot::GetPlotSize();
-    const float  edge_py   = is_base ? plot_pos.y + plot_size.y : plot_pos.y;
+    const float  edge_py   = side == Side::Base ? plot_pos.y + plot_size.y : plot_pos.y;
     out.resize(app.anchors.size());
     for (std::size_t i = 0; i < app.anchors.size(); ++i) {
-        const double x = is_base ? app.anchors[i].base_t : app.anchors[i].target_t;
+        const double x = app.anchors[i].time(side);
         out[i].pos     = ImVec2(ImPlot::PlotToPixels(x, 0.0).x, edge_py);
         out[i].visible = x >= lim.X.Min && x <= lim.X.Max;
     }
@@ -236,7 +236,7 @@ void capture_edges(App& app, bool is_base, const ImPlotRect& lim, std::vector<Ed
 
 }    // namespace
 
-void draw_anchors(App& app, bool is_base, const Spectrogram& sp, std::vector<EdgePoint>& out_edges) {
+void draw_anchors(App& app, Side side, const Spectrogram& sp, std::vector<EdgePoint>& out_edges) {
     ImGuiIO&         io  = ImGui::GetIO();
     const ImPlotRect lim = ImPlot::GetPlotLimits();
 
@@ -247,34 +247,34 @@ void draw_anchors(App& app, bool is_base, const Spectrogram& sp, std::vector<Edg
     const ImPlotDragToolFlags line_flags  = io.KeyCtrl ? ImPlotDragToolFlags_NoInputs : ImPlotDragToolFlags_None;
     const ImPlotDragToolFlags point_flags = io.KeyCtrl ? ImPlotDragToolFlags_Delayed : ImPlotDragToolFlags_NoInputs;
 
-    // 番号を出す対象は前フレームに決めたもの（App のコメント参照）。アンカーが削除されて
+    // 番号を出す対象は前フレームに決めたもの（ViewState のコメント参照）。アンカーが削除されて
     // 範囲外になっていることがあるので検査する。
-    int active = app.active_anchor;
+    int active = app.view.active_anchor;
     if (active >= static_cast<int>(app.anchors.size())) active = -1;
 
     bool any_active = false;
     int  hovered    = -1;            // ホバー中の時間アンカー（線）
     int  hover_fi = -1, hover_fj = -1;    // ホバー中の周波数アンカー (anchor, freq)
-    draw_time_lines(app, is_base, line_flags, active, any_active, hovered);
-    draw_freq_points(app, is_base, sp, lim, point_flags, active, any_active, hover_fi, hover_fj);
+    draw_time_lines(app, side, line_flags, active, any_active, hovered);
+    draw_freq_points(app, side, sp, lim, point_flags, active, any_active, hover_fi, hover_fj);
 
     // 入力処理は Ctrl の有無で排他（どちらか一方だけが作用する）。
-    handle_freq_input(app, is_base, sp, io, any_active, hover_fi, hover_fj);
+    handle_freq_input(app, side, sp, io, any_active, hover_fi, hover_fj);
     handle_time_input(app, sp, io, any_active, hovered);
 
     // 次フレームの対象を集める。ドラッグ中の線を最優先（カーソルが線から離れても番号を
     // 出したままにするため）、次に周波数点、最後にカーソルに最も近い線。距離判定を併用
     // するのは Ctrl の有無で線か点の一方が NoInputs になりホバーを返さなくなるため。
     if (hovered >= 0) {
-        app.hover_anchor = hovered;
+        app.view.hover_anchor = hovered;
     } else if (hover_fi >= 0) {
-        app.hover_anchor = hover_fi;
+        app.view.hover_anchor = hover_fi;
     } else if (ImPlot::IsPlotHovered()) {
-        const int pick = nearest_anchor(app, is_base, io, kPickPx);
-        if (pick >= 0) app.hover_anchor = pick;
+        const int pick = nearest_anchor(app, side, io, kPickPx);
+        if (pick >= 0) app.view.hover_anchor = pick;
     }
 
-    capture_edges(app, is_base, lim, out_edges);
+    capture_edges(app, side, lim, out_edges);
 }
 
 void draw_anchor_connectors(const std::vector<EdgePoint>& base_edges,

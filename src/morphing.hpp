@@ -3,7 +3,7 @@
 /// @file morphing.hpp
 /// @brief tcmorph（Kawahara の wordTV2WmorphingEngineRev.m の移植）による音声モーフィング。
 ///
-/// base/target を WORLD で解析し（Harvest=F0, CheapTrick=スペクトル包絡, D4C=非周期性）、
+/// WORLD で解析済みの base/target（analysis.hpp の MorphChannel）と、
 /// アンカーと率を tcmorph::aligner::WordTV2WMorphing に渡してモーフィングし、WORLD で
 /// 合成する。エンジンのオプションは既定値＝MATLAB 版の挙動を再現する側のまま使う。
 ///
@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-#include <tcmorph/generalized_tc_morphing.hpp>    // WorldParameter などの共通データ構造
+#include "analysis.hpp"    // MorphChannel
 
 struct Anchor;
 
@@ -29,24 +29,6 @@ struct MorphRates {
     static MorphRates uniform(double r) { return { r, r, r, r, r }; }
 };
 
-// 1音源（base/target/morphed）の WORLD パラメータと表示用メタ情報。
-// 実データ（f0/sp/ap）は world の中にある。sp/ap は tcmorph の向き＝(nbin, n_frames)
-// の列優先で、1フレーム分が連続メモリに並ぶ。
-struct MorphChannel {
-    int    fs = 0, fft_size = 0, nbin = 0, n_frames = 0;
-    double frame_period = 0;    // ms
-    double duration     = 0;    // s
-
-    tcmorph::WorldParameter world;
-
-    bool empty() const { return n_frames == 0; }
-
-    // 表示用アクセサ（world の中身への参照）。
-    const Eigen::VectorXd& f0() const { return world.source_parameter.f0; }
-    const Eigen::MatrixXd& sp() const { return world.spectrum_parameter.spectrogram; }
-    const Eigen::MatrixXd& ap() const { return world.source_parameter.aperiodicity; }
-};
-
 // モーフィング結果（morphed の中間データ＋合成音声）。error が空なら成功。
 struct MorphOutput {
     MorphChannel        morphed;    // モーフ後の f0/sp/ap（表示用）
@@ -60,14 +42,27 @@ struct MorphOutput {
     bool ok() const { return error.empty(); }
 };
 
-// 1音源を WORLD で解析して f0/sp/ap のチャンネルを作る（base/target 用）。
-// 失敗時は err に理由を入れ、empty() なチャンネルを返す。
-MorphChannel analyze_channel(const std::string& path, std::string& err);
-
 // 解析済みの base/target チャンネルから、anchors と軸ごとの率で morphed を合成する
 // （base/target の再解析は行わない）。失敗時は結果の error にメッセージを入れる。
 MorphOutput morphing_channels(const MorphChannel& base, const MorphChannel& target,
                               const std::vector<Anchor>& anchors, const MorphRates& rates);
 
-// wave を WAV（32bit float モノラル）として path に書き出す。成功で true。
-bool write_wav(const std::string& path, const std::vector<double>& wave, int fs, std::string& err);
+// tcmorph が要求する形に整えたアンカー（時間アンカーは両側とも狭義単調増加、周波数
+// アンカーは (本数, 時間アンカー数) の 0 詰め行列）。両端の境界アンカーはエンジン側が
+// 付けるので含まない。
+struct AnchorMatrices {
+    Eigen::VectorXd t_ref, t_tgt;      // [n_anch]
+    Eigen::MatrixXd tf_ref, tf_tgt;    // (n_fanchor, n_anch)、余りは 0 詰め
+    int             dropped_time = 0;  // 範囲外/順序が逆で読み飛ばした時間アンカー数
+    int             dropped_freq = 0;  // 同・周波数アンカー数
+};
+
+// UI のアンカー列を AnchorMatrices に変換する（morphing_channels が内部で使う。単体テスト用に公開）。
+//   - 解析範囲 (0, end_ref) / (0, end_tgt) の外と、base_t が直前と重なるものは落とす。
+//   - target_t も狭義単調増加になるよう、残せる本数が最大の部分列を選ぶ（交差した線を落とす）。
+//   - 周波数アンカーは (1 Hz, nyquist) の外を落とし、base_f の昇順に並べる。
+AnchorMatrices build_anchor_matrices(const std::vector<Anchor>& anchors, double end_ref, double end_tgt,
+                                     double nyquist);
+
+// wave を WAV（32bit float モノラル）として path に書き出す。
+Status write_wav(const std::string& path, const std::vector<double>& wave, int fs);

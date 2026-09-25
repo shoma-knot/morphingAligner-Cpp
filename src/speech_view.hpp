@@ -12,11 +12,6 @@ struct Track;
 // フォルマント k 本目（0 = F1）の表示色。左パネルの凡例と共有する。
 ImVec4 formant_color(int k);
 
-// フォルマントの移動平均（時刻を中心とする幅 window_s [s] の窓で Hz を平均）。
-// 推定できなかったフレームで区切れた区間どうしはまたがず、境目には NaN の点を1つ挟む
-// （PlotLine で線が途切れる）。描画のたびではなく、結果や窓幅が変わったときに作る。
-Formants smooth_formants(const Formants& f, double window_s);
-
 // アクティブな ImPlot プロット（Y軸 = ERB レート）にフォルマントを点で重ねる。
 // ma を渡すと移動平均を同じ色の線で重ね、元の点は薄くする。
 void draw_formants(const Formants& f, const Formants* ma);

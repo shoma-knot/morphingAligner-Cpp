@@ -16,6 +16,7 @@
 #include <nlohmann/json.hpp>
 
 #include "freqscale.hpp"
+#include "resource_path.hpp"
 
 #ifdef _WIN32
     #ifndef NOMINMAX
@@ -44,14 +45,12 @@ fs::path u8path(const std::string& s) {
     return fs::u8path(s);
 }
 
-// 候補のうち最初に存在するものの絶対パス（UTF-8）。無ければ空。
-std::string first_existing(std::initializer_list<const char*> candidates) {
+// 同梱の資材（find_resource で探す）の絶対パス（UTF-8）。無ければ空。子プロセスに渡すので絶対パスにする。
+std::string find_resource_abs(const std::string& rel) {
+    const std::string found = find_resource(rel);
+    if (found.empty()) return {};
     std::error_code ec;
-    for (const char* c : candidates) {
-        const fs::path p = u8path(c);
-        if (fs::is_regular_file(p, ec)) return fs::absolute(p, ec).u8string();
-    }
-    return {};
+    return fs::absolute(u8path(found), ec).u8string();
 }
 
 // 呼び出しごとの作業ディレクトリ（一時ディレクトリ直下に一意な名前で作る）。
@@ -340,6 +339,23 @@ json call_tool(const json& request, std::string& err) {
 
 }    // namespace
 
+std::vector<const SegInterval*> spoken_phones(const Segmentation& seg) {
+    std::vector<const SegInterval*> out;
+    if (const SegTier* tier = seg.phones())
+        for (const SegInterval& iv : tier->intervals)
+            if (!is_silence_label(iv.label)) out.push_back(&iv);
+    return out;
+}
+
+std::string join_labels(const std::vector<const SegInterval*>& ivs) {
+    std::string s;
+    for (const SegInterval* iv : ivs) {
+        if (!s.empty()) s += ' ';
+        s += iv->label;
+    }
+    return s;
+}
+
 void terminate_speech_tools() {
     std::lock_guard<std::mutex> lock(g_proc_mutex);
     g_shutdown = true;
@@ -356,14 +372,14 @@ std::string find_python() {
         if (fs::is_regular_file(u8path(env), ec)) return env;
     }
 #ifdef _WIN32
-    return first_existing({ ".env/python.exe", "../.env/python.exe" });
+    return find_resource_abs(".env/python.exe");
 #else
-    return first_existing({ ".env/bin/python", "../.env/bin/python" });
+    return find_resource_abs(".env/bin/python");
 #endif
 }
 
 std::string find_speech_script() {
-    return first_existing({ "python/speech_tools.py", "../python/speech_tools.py" });
+    return find_resource_abs("python/speech_tools.py");
 }
 
 SpeechEnvStatus run_check(const AlignParams& params) {
@@ -395,15 +411,16 @@ SpeechEnvStatus run_check(const AlignParams& params) {
     return st;
 }
 
-Formants run_formants(const std::string& wav, const FormantParams& params, std::string& err) {
-    const json res = call_tool({ { "command", "formants" },
+Result<Formants> run_formants(const std::string& wav, const FormantParams& params) {
+    std::string err;
+    const json  res = call_tool({ { "command", "formants" },
                                  { "wav", wav },
                                  { "max_formant_hz", params.max_formant_hz },
                                  { "num_formants", params.num_formants },
                                  { "num_tracks", params.num_tracks } },
-                               err);
+                                err);
+    if (res.is_null()) return Result<Formants>::failure(err);
     Formants out;
-    if (res.is_null()) return out;
     try {
         const auto& times  = res.at("times");
         const auto& tracks = res.at("tracks");
@@ -420,22 +437,21 @@ Formants run_formants(const std::string& wav, const FormantParams& params, std::
             out.tracks.push_back(std::move(tr));
         }
     } catch (const std::exception& e) {
-        err = std::string { "応答の形式が不正です: " } + e.what();
-        return {};
+        return Result<Formants>::failure(std::string { "応答の形式が不正です: " } + e.what());
     }
-    return out;
+    return Result<Formants>::success(std::move(out));
 }
 
-Segmentation run_alignment(const std::string& wav, const std::string& text, const AlignParams& params,
-                           std::string& err) {
-    const json res = call_tool({ { "command", "align" },
+Result<Segmentation> run_alignment(const std::string& wav, const std::string& text, const AlignParams& params) {
+    std::string err;
+    const json  res = call_tool({ { "command", "align" },
                                  { "wav", wav },
                                  { "text", text },
                                  { "acoustic_model", params.acoustic_model },
                                  { "dictionary", params.dictionary } },
-                               err);
+                                err);
+    if (res.is_null()) return Result<Segmentation>::failure(err);
     Segmentation out;
-    if (res.is_null()) return out;
     try {
         for (const json& jt : res.at("tiers")) {
             SegTier tier;
@@ -446,8 +462,7 @@ Segmentation run_alignment(const std::string& wav, const std::string& text, cons
             out.tiers.push_back(std::move(tier));
         }
     } catch (const std::exception& e) {
-        err = std::string { "応答の形式が不正です: " } + e.what();
-        return {};
+        return Result<Segmentation>::failure(std::string { "応答の形式が不正です: " } + e.what());
     }
-    return out;
+    return Result<Segmentation>::success(std::move(out));
 }

@@ -89,11 +89,11 @@ int main() {
     // フォルマント推定（ASCII 以外を含むファイル名で、UTF-8 のパスが子プロセスまで届くことも見る）。
     const fs::path wav = fs::temp_directory_path() / fs::u8path(u8"morphaligner_テスト音声.wav");
     write_wav16(wav, synth_vowel(16000, 0.5), 16000);
-    std::string    err;
-    const Formants f = run_formants(wav.u8string(), FormantParams {}, err);
-    std::error_code ec;
+    const Result<Formants> r = run_formants(wav.u8string(), FormantParams {});
+    const Formants&        f = r.value;
+    std::error_code        ec;
     fs::remove(wav, ec);
-    expect(err.empty(), "フォルマント推定がエラーを返さない" + (err.empty() ? "" : "（" + err + "）"));
+    expect(r.ok(), "フォルマント推定がエラーを返さない" + (r.ok() ? "" : "（" + r.error + "）"));
     expect(!f.tracks.empty() && !f.tracks[0].t.empty(), "F1 の推定値が得られる");
     if (!f.tracks.empty() && !f.tracks[0].hz.empty())
         std::printf("  F1 の最初の値: %.0f Hz（%zu 点）\n", f.tracks[0].hz.front(), f.tracks[0].hz.size());
