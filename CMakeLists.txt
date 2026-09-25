@@ -54,6 +54,7 @@ add_library(morphaligner_core STATIC
     src/analysis.cpp
     src/auto_anchors.cpp
     src/formant_smoothing.cpp
+    src/launch_options.cpp
     src/morphing.cpp
     src/resource_path.cpp
     src/session_io.cpp

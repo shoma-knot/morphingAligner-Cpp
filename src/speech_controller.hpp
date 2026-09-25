@@ -27,6 +27,10 @@ void update_formant_ma(App& app);
 // 読み込まれている音声すべてで、共通の書き起こしによる音素アライメント（MFA）を始める。
 void launch_alignment(App& app);
 
+// 毎フレーム: 音素アライメントが予約されていれば（--align）、起動時の読み込み（App::jobs.ui）と
+// 音声解析の環境の確認が済むのを待って実行する。実行できない理由があればログに出して予約を消す。
+void ensure_pending_alignment(App& app);
+
 // アンカー自動生成を実行できるか（両トラックで音素アライメントとフォルマント推定が済んでいる）。
 bool auto_anchors_ready(const App& app);
 

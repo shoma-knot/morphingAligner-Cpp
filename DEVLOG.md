@@ -78,6 +78,7 @@
 - `src/freqscale.hpp` — Hz ↔ ERB レート変換
 - `src/result.hpp` — 失敗しうる処理の戻り値 `Result<T>` / `Status`（コアの関数の失敗の返し方の約束も書いてある）
 - `src/resource_path.hpp` / `.cpp` — 同梱の資材（font/・licenses/・python/・.env/）を `x` → `../x` の順に探す
+- `src/launch_options.hpp` / `.cpp` — コマンドライン引数の解釈（`--base` など）と UTF-8 での取り出し（コア）
 - `src/speech_tools.hpp` / `src/speech_tools.cpp` — Python ツールの呼び出し（子プロセス起動・JSON の
   要求/応答・終了時の停止）と結果の型（`Formants` / `Segmentation`）
 - `src/speech_view.hpp` / `src/speech_view.cpp` — フォルマントの重ね描き、音素セグメンテーションのプロット
@@ -655,7 +656,7 @@ Montreal Forced Aligner（MFA）で単語/音素の区間を求めて画面に�
   `LoadIcon(NULL, IDI_APPLICATION)` と同じハンドル、修正後は別のもの（埋め込みのアイコン）になった。
   実行ファイルの代表アイコン（`ExtractAssociatedIcon`）も本アプリの意匠のまま。タスクバーの見た目は
   ユーザーが確認。
-- 版を `v26.09.25b` とした（`APP_VERSION_SUFFIX "b"`）。リファクタリング（PR #2）とこの修正、下の節を含む。
+- 版を `v26.09.25b` とした（`APP_VERSION_SUFFIX "b"`）。リファクタリング（PR #2）とこの修正、下の2節を含む。
 - 版の書式を `v{yy.mm.dd}.{a-z}`（例 `v26.09.25.a`）から `v{yy.mm.dd}{a-z}`（例 `v26.09.25b`）に変えた
   （接尾辞のピリオドをなくした）。build.yml のタグ判定は「VERSION + 接尾辞」の連結なので変更不要。
 
@@ -676,6 +677,34 @@ Montreal Forced Aligner（MFA）で単語/音素の区間を求めて画面に�
   置いたファイルを読めることを別々に確かめる（同じ関数で書いて読むだけだと、化けた名前どうしで往復が
   通ってしまい、不具合を見逃す。最初はそれで通ってしまった）。
 - Python ツールへ渡すパスは以前から JSON（UTF-8）経由なので影響はなかった。
+
+### コマンドライン引数（2026-09-25）
+開発を楽にするため、起動時に音声・セッションを読み込めるようにした（使い方は README の「コマンドライン引数」）。
+- オプション: `--base <音声>` `--target <音声>` `--session <JSON>` `--transcript <文>` `--align`
+  `--version` `-h` / `--help`。値は `--base a.wav` と `--base=a.wav` の両方。オプション名の無い引数
+  （ファイルを exe にドラッグしたとき）は受け付けない（ユーザーの判断で見送り）。
+- `launch_options.cpp`（コア）: `parse_launch_options` が `Result<LaunchOptions>` を返す。知らない引数・
+  値の無いオプション・空のパス・重複・音声の無い `--align`・書き起こしの無い `--align`（`--session` が
+  あれば中の書き起こしを使うので通す）は誤り。`--help` / `--version` はほかの誤りより優先。
+  `make_paths_absolute` で相対パスを起動時のカレントディレクトリ基準の絶対パスにする（セッションに
+  保存するパスのため）。Windows の `argv` は ANSI なので、`utf8_arguments` が `GetCommandLineW` ＋
+  `CommandLineToArgvW` から UTF-8 で取り直す。
+- `main.cpp`: 引数の誤りと `--help` / `--version` は、GLFW を初期化する前に表示して終わる（誤りは
+  終了コード 2）。Windows ではコンソールを UTF-8 にしてから出す（`SetConsoleOutputCP`）。
+- `file_jobs.cpp` の `apply_launch_options`: 読み込みを `App::jobs.ui` のジョブ1本で行う（セッション →
+  音声の順に解析し、反映は音声 → セッションの順。tcmorph 形式のアンカーは読み込んだ音声に乗せるため）。
+  音声のパスを含むセッションと `--base` / `--target` を同時に指定したら、どちらを使うか決められないので
+  何も読み込まずにログに出す。`--transcript` はセッションの書き起こしの後に上書きする。
+- `--align`: `SpeechState::align_on_ready` で予約し、`ensure_pending_alignment`（毎フレーム）が起動時の
+  読み込み（`jobs.ui`）と音声解析の環境の確認が済むのを待って `launch_alignment` を呼ぶ。環境が使えない・
+  音声が無い・書き起こしが無いときは理由をログに出して予約を消す。
+- CI（build.yml）: 配布物の実行ファイルを `--version` で起動し、`morphingAligner v...` が出ること、タグから
+  起動されたときは表示される版がタグと一致することを見る（画面の無いランナーでも動く。起動に要る
+  ライブラリの取りこぼしも分かる）。
+- 実機で確認: 相対パス＋日本語の書き起こし＋`--align` で、両音声の読み込み → 環境の確認 → フォルマント
+  推定 → 音素アライメント（h a ɾʲ i g a n e）まで自動で進む。セッション＋`--transcript` で書き起こしが
+  上書きされる。セッション（音声のパス入り）＋`--base` は中止のログが出る。
+- 単体テストに 16 項目を追加（計 50 項目）: 引数の解釈 14 項目、日本語のパスの読み書き 2 項目。
 
 ## MATLAB版との差分
 
@@ -762,6 +791,8 @@ install-win.bat          # Windows（-Yes で非対話）
 - 書き起こしは base/target 共通なので、別の文を読んだ2音声には音素アライメントを使えない。
 - 環境を手で作った場合（定義のハッシュの印が無い）、インストールスクリプトは「今の定義で作られたもの
   ではない」として作り直しを確認してくる（開発用の .env も同様）。
+- 音声解析の環境の確認（起動時）は、PC を起動して最初の1回は MFA の読み込みで 50 秒ほどかかることが
+  ある（2回目以降は数秒）。`--align` はこれが済むまで待つ。
 - MFA は1発話でも約 20 秒かかる（大半は MFA の起動とモデル展開）。書き起こしが音声と合わない、
   または辞書に無い語（`spn` になる）があると区間がずれる。フォルマント・音素セグメンテーションの
   結果は音声を読み直すと消え、セッションにも保存しない（書き起こしだけ保存する）。
@@ -785,7 +816,6 @@ install-win.bat          # Windows（-Yes で非対話）
 
 ## 次にやること
 
-- 音声・セッションをコマンドライン引数で読み込めるようにする（開発を楽にするため。構成を検討中）。
 - 再生の停止/一時停止・再生位置バー（現状は `play_oneshot` / `play_pcm` で頭から再生のみ）。
 - アンカーの整列/ソートや、アンカー編集の Undo。
 - base/target の fs 不一致への対応（リサンプリング）。

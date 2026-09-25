@@ -195,6 +195,24 @@ jobs:
             # 動的リンクの取りこぼしがないか（未解決があれば "not found" が出る）。
             ldd "$DIR/morphingAlignerCpp" | (! grep "not found")
           fi
+          # 実行ファイルが起動できるか（--version はウィンドウを開かずに版を出して終わるので、
+          # 画面の無いランナーでも動く）。タグから起動されたときは、実行ファイル自身が名乗る版が
+          # タグと一致するかも見る。
+          EXE="$DIR/morphingAlignerCpp"
+          if [ "$RUNNER_OS" = "Windows" ]; then EXE="$EXE.exe"; fi
+          OUT=$("$EXE" --version | tr -d '\r')
+          echo "--version: $OUT"
+          case "$OUT" in
+            "morphingAligner v"*) ;;
+            *) echo "--version の出力が想定と違います" >&2; exit 1 ;;
+          esac
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            APP_VER="${OUT#morphingAligner }"
+            case "$GITHUB_REF_NAME" in
+              "$APP_VER" | "$APP_VER-"*) ;;
+              *) echo "実行ファイルの版（$APP_VER）がタグ（$GITHUB_REF_NAME）と違います" >&2; exit 1 ;;
+            esac
+          fi
           echo "--- 構成 ---"
           find "$DIR" -type f | sort
 

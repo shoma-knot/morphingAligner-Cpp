@@ -12,6 +12,8 @@
 
 #include "app.hpp"
 #include "app_icon.hpp"
+#include "file_jobs.hpp"
+#include "launch_options.hpp"
 #include "log.hpp"
 #include "resource_path.hpp"
 #include "speech_tools.hpp"
@@ -84,7 +86,23 @@ void glfw_error_callback(int error, const char* description) {
 
 }    // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    // コマンドライン引数。--help / --version と引数の誤りは、ウィンドウを開く前に表示して終わる
+    // （GUI の無い環境、たとえば CI でも --version は動く）。
+    const Result<LaunchOptions> parsed = parse_launch_options(utf8_arguments(argc, argv));
+    if (!parsed.ok() || parsed.value.help || parsed.value.version) {
+        use_utf8_console();
+        if (!parsed.ok()) {
+            std::fprintf(stderr, "%s\n\n%s", parsed.error.c_str(), launch_usage().c_str());
+            return 2;
+        }
+        if (parsed.value.help) std::fputs(launch_usage().c_str(), stdout);
+        else std::printf("morphingAligner v%s\n", APP_VERSION);
+        return 0;
+    }
+    LaunchOptions launch = parsed.value;
+    make_paths_absolute(launch);
+
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit()) {
         std::fprintf(stderr, "Failed to initialize GLFW\n");
@@ -161,6 +179,7 @@ int main() {
         App app;
         app.view.mono_font = mono_font;
         applog::add("起動しました");
+        apply_launch_options(app, launch);    // コマンドライン引数で指定された音声・セッションを読み込む
 
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();

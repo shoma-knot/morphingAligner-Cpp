@@ -1,6 +1,6 @@
 // コアのライブラリ（GUI に依存しない部分）の単体テスト。
 //
-// 対象: 周波数尺度の変換、アンカーの Side による参照、音声の解析（合成音の WAV を一時ディレクトリに作る）、フォルマントの移動平均、モーフィング用のアンカー整形、
+// 対象: 周波数尺度の変換、アンカーの Side による参照、音声の解析（合成音の WAV を一時ディレクトリに作る）、コマンドライン引数、フォルマントの移動平均、モーフィング用のアンカー整形、
 // アンカー自動生成、セッション JSON の読み書き。Python は使わないので、
 // どこで実行してもよい（CI の build.yml がビルド直後に各 OS で実行する）。
 //
@@ -18,6 +18,7 @@
 #include "auto_anchors.hpp"
 #include "formant_smoothing.hpp"
 #include "freqscale.hpp"
+#include "launch_options.hpp"
 #include "morphing.hpp"
 #include "session_io.hpp"
 
@@ -251,6 +252,54 @@ void test_analysis() {
     expect(!bad.ok() && !bad.error.empty() && !bad.value.channel, "analysis: 開けないファイルは失敗（理由つき）");
 }
 
+// ── コマンドライン引数 ──────────────────────────────────────
+void test_launch_options() {
+    using V = std::vector<std::string>;
+    {
+        const Result<LaunchOptions> r = parse_launch_options({});
+        expect(r.ok() && !r.value.has_files() && !r.value.align, "launch: 引数なしは何もしない");
+    }
+    {
+        const Result<LaunchOptions> r =
+          parse_launch_options(V { "--base", "a.wav", "--target=b.wav", "--transcript", "あいうえお", "--align" });
+        const LaunchOptions& o = r.value;
+        expect(r.ok() && o.base == "a.wav" && o.target == "b.wav" && o.has_transcript && o.transcript == "あいうえお"
+                 && o.align && o.session.empty(),
+               "launch: 「--name 値」と「--name=値」の両方を読める");
+    }
+    {
+        const Result<LaunchOptions> r = parse_launch_options(V { "--session", "s.json", "--align" });
+        expect(r.ok() && r.value.session == "s.json" && r.value.align && !r.value.has_transcript,
+               "launch: --session があれば --align に --transcript は要らない（書き起こしはセッションから）");
+    }
+    {
+        const Result<LaunchOptions> r = parse_launch_options(V { "--transcript=" });
+        expect(r.ok() && r.value.has_transcript && r.value.transcript.empty(), "launch: 空の書き起こしも指定できる");
+    }
+    expect(parse_launch_options(V { "--help", "--nope" }).value.help, "launch: --help はほかの誤りより優先");
+    expect(parse_launch_options(V { "--version" }).value.version, "launch: --version");
+    expect(fails_with(parse_launch_options(V { "a.wav" }), "知らない引数です: a.wav"),
+           "launch: オプション名の無い引数は受け付けない");
+    expect(fails_with(parse_launch_options(V { "--bass", "a.wav" }), "知らない引数です: --bass"), "launch: 知らないオプション");
+    expect(fails_with(parse_launch_options(V { "--base" }), "--base に値がありません"), "launch: 値の無いオプション");
+    expect(fails_with(parse_launch_options(V { "--base=" }), "--base の値（パス）が空です"), "launch: 空のパス");
+    expect(fails_with(parse_launch_options(V { "--base", "a", "--base", "b" }), "--base が2回指定されています"),
+           "launch: 同じオプションの重複");
+    expect(fails_with(parse_launch_options(V { "--transcript", "x", "--align" }), "--align には --base"),
+           "launch: 音声なしの --align");
+    expect(fails_with(parse_launch_options(V { "--base", "a.wav", "--align" }), "--align には --transcript"),
+           "launch: 書き起こしなしの --align");
+
+    // 相対パスは絶対パスにし、空の項目はそのまま。
+    LaunchOptions o;
+    o.base = u8"sub/../音声.wav";
+    make_paths_absolute(o);
+    const std::filesystem::path expect_path =
+      (std::filesystem::current_path() / std::filesystem::u8path(u8"音声.wav")).lexically_normal();
+    expect(std::filesystem::u8path(o.base) == expect_path && o.target.empty(),
+           "launch: 相対パスを絶対パスにする（日本語を含んでも UTF-8 のまま）");
+}
+
 // ── セッション JSON ─────────────────────────────────────────
 void test_session_json() {
     SessionFile s;
@@ -311,6 +360,7 @@ int main() {
     test_smooth_formants();
     test_build_anchor_matrices();
     test_analysis();
+    test_launch_options();
     test_auto_anchors();
     test_session_json();
 

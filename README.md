@@ -98,3 +98,27 @@ Linux でタスクバーにアイコンを出したい場合は `tools/install-d
 ## 開発者向け
 
 ビルド手順や実装の詳細は [DEVLOG.md](DEVLOG.md) を参照してください。
+
+### コマンドライン引数
+
+起動と同時に音声やセッションを読み込めます（毎回ダイアログで開く手間を省くためのものです）。
+
+```sh
+morphingAlignerCpp --base a.wav --target b.wav                    # 音声を読み込む
+morphingAlignerCpp --session work.json                             # セッションを読み込む
+morphingAlignerCpp --base a.wav --target b.wav --session anchors.json   # tcmorph のアンカーを乗せる
+morphingAlignerCpp --base a.wav --target b.wav --transcript はい --align  # 読み込み後に音素アライメント
+```
+
+| オプション | 内容 |
+|---|---|
+| `--base <音声>` / `--target <音声>` | base / target の音声を読み込む |
+| `--session <JSON>` | セッションを読み込む。tcmorph のアンカー JSON なら、`--base` / `--target` の音声にアンカーだけを乗せる |
+| `--transcript <文>` | 音素アライメント用の書き起こし（セッションの書き起こしより優先） |
+| `--align` | 読み込み後、音声解析の環境が使えたら音素アライメントを実行する（`--transcript` か、書き起こしを含むセッションが必要） |
+| `--version` / `-h`, `--help` | 版 / 使い方を表示して終了する |
+
+- 値は `--base a.wav` と `--base=a.wav` のどちらでも書けます。相対パスは起動したときのカレントディレクトリが基準です。
+- 音声のパスを含むセッションと `--base` / `--target` は同時に指定できません。
+- フォント・ライセンスの条文・音声解析の環境（`.env`）はカレントディレクトリ（とその1つ上）から探すので、
+  配布物のルート（開発時はリポジトリのルート）をカレントディレクトリにして起動してください。

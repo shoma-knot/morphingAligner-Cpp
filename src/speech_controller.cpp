@@ -147,6 +147,25 @@ void launch_alignment(App& app) {
         if (app.track(s).loaded()) launch_align_job(app, s, app.speech.transcript);
 }
 
+void ensure_pending_alignment(App& app) {
+    SpeechState& sp = app.speech;
+    if (!sp.align_on_ready || app.jobs.ui.busy()) return;
+    if (sp.env == SpeechEnv::Unknown || sp.env == SpeechEnv::Checking) return;
+    sp.align_on_ready = false;
+
+    if (sp.env != SpeechEnv::Ready) {
+        applog::add("--align: 音声解析の環境が使えないため、音素アライメントを実行しません");
+    } else if (!app.base.loaded() && !app.target.loaded()) {
+        applog::add("--align: 読み込まれた音声が無いため、音素アライメントを実行しません");
+    } else if (sp.transcript.empty()) {
+        applog::add("--align: 書き起こしが無いため、音素アライメントを実行しません"
+                    "（--transcript か、書き起こしを含むセッションを指定してください）");
+    } else {
+        applog::add("--align: 音素アライメントを実行します");
+        launch_alignment(app);
+    }
+}
+
 bool auto_anchors_ready(const App& app) {
     const auto ready = [](const Track& t) {
         return t.loaded() && !t.segmentation.empty() && !t.formants.empty() && !t.align_busy && !t.formant_busy;

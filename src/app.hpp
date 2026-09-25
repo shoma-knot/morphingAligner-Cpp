@@ -73,6 +73,9 @@ struct SpeechState {
     int  formant_ma_ms     = 50;       // 移動平均の窓幅 [ms]
     bool show_segmentation = true;     // 音素セグメンテーションのプロットを出す
     int  auto_anchor_divisions = 2;    // アンカー自動生成で各音素の区間を何等分するか
+    // 音素アライメントの予約（コマンドライン引数の --align）。起動時の読み込みと環境の確認が
+    // 済んだら実行して下ろす（ensure_pending_alignment）。
+    bool align_on_ready = false;
 
     // UI で受け付ける範囲。
     static constexpr int    kMaMsMin = 5, kMaMsMax = 500;                    // 移動平均の窓幅 [ms]

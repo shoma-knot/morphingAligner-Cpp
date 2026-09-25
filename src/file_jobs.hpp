@@ -10,6 +10,7 @@
 #include "anchor.hpp"    // Side
 
 struct App;
+struct LaunchOptions;
 
 // 音声ファイルを選んで解析し、side のトラックに読み込む。
 void launch_load_track_job(App& app, Side side);
@@ -22,3 +23,8 @@ void launch_load_session_job(App& app);
 
 // モーフィング結果の波形を WAV に保存する。
 void launch_save_wav_job(App& app);
+
+// コマンドライン引数の内容を反映する（起動直後に1回呼ぶ）。音声・セッションの読み込みは
+// App::jobs.ui で行い、書き起こしはセッションの後に上書きする。--align は予約だけして、
+// 読み込みと音声解析の環境の確認が済んでから実行する（speech_controller の ensure_pending_alignment）。
+void apply_launch_options(App& app, const LaunchOptions& opts);

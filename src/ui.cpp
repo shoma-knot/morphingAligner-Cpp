@@ -41,6 +41,7 @@ void draw_root(App& app) {
     poll_morph_job(app);
     ensure_speech_env(app);    // 音声解析の環境を確認（起動時と「再確認」時）
     ensure_formants(app);      // 読み込まれた音声のフォルマントを自動で推定（環境が使えるときだけ）
+    ensure_pending_alignment(app);    // --align の予約があれば、読み込みと環境の確認の後に実行
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
