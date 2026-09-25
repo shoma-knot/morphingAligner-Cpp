@@ -5,19 +5,26 @@ project(morphingAlignerCpp VERSION 26.09.25)
 # タグ（v<VERSION><接尾辞>）との一致も build.yml がこの2つを合わせて検査する。
 set(APP_VERSION_SUFFIX ".a")
 set(CMAKE_CXX_STANDARD 17)
-
-# MSVC の CMAKE_CXX_FLAGS には /EHsc などの既定値が入っており、丸ごと上書きすると
-# 例外処理が壊れる（本体は try/catch に依存している）。-fPIC/-O2 も cl では無効なので、
-# GCC/Clang のときだけ設定する。最適化レベルは CMAKE_BUILD_TYPE でも指定できる。
-if (NOT MSVC)
-    set(CMAKE_CXX_FLAGS "-fPIC -O2")
-endif()
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(LIBRARY_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/lib)
-set(EXECUTABLE_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/bin)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)    # -fPIC（GCC/Clang）
 
+# 出力先: 実行ファイルは bin/、ライブラリは lib/（Visual Studio など複数構成のジェネレータでは
+# その下に Release/ などが付く）。配布物の作成（build.yml）は bin/ の実行ファイルを拾う。
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/lib)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/lib)
+
+# コンパイラのオプションは CMAKE_CXX_FLAGS を上書きせずに足す（MSVC の既定値には /EHsc などが
+# 入っており、丸ごと上書きすると例外処理が壊れる。本体は try/catch に依存している）。
+# C/C++ に限るのは、Windows のリソースコンパイラ（rc.exe）にこれらを渡さないため。
 if (MSVC)
-    add_definitions(/utf-8)
+    # ソースは UTF-8（日本語のコメント・文字列）。
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/utf-8>)
+elseif (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    # ビルド種別が未指定のとき（CMakePresets の vcpkg プリセットなど）も最適化する。
+    # CMAKE_BUILD_TYPE=Release などを指定したときは、その種別の最適化レベルが使われる。
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-O2>)
 endif()
 
 find_package(imgui CONFIG REQUIRED)
@@ -48,6 +55,7 @@ add_library(morphaligner_core STATIC
     src/auto_anchors.cpp
     src/formant_smoothing.cpp
     src/morphing.cpp
+    src/resource_path.cpp
     src/session_io.cpp
     src/speech_tools.cpp)
 target_include_directories(morphaligner_core PUBLIC

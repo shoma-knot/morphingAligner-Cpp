@@ -73,6 +73,11 @@ struct SpeechState {
     int  formant_ma_ms     = 50;       // 移動平均の窓幅 [ms]
     bool show_segmentation = true;     // 音素セグメンテーションのプロットを出す
     int  auto_anchor_divisions = 2;    // アンカー自動生成で各音素の区間を何等分するか
+
+    // UI で受け付ける範囲。
+    static constexpr int    kMaMsMin = 5, kMaMsMax = 500;                    // 移動平均の窓幅 [ms]
+    static constexpr int    kDivisionsMin = 1, kDivisionsMax = 10;           // 自動生成の分割数
+    static constexpr double kMaxFormantMin = 2000.0, kMaxFormantMax = 10000.0;    // 最大フォルマント [Hz]
 };
 
 // モーフィングタブの設定と状態。

@@ -37,8 +37,7 @@ std::vector<double> to_mono(const ma::decoder& dec) {
 
 }    // namespace
 
-MorphChannel analyze_channel(const std::string& path, std::string& err) {
-    err.clear();
+Result<MorphChannel> analyze_channel(const std::string& path) {
     try {
         ma::decoder dec { path };
 
@@ -100,10 +99,9 @@ MorphChannel analyze_channel(const std::string& path, std::string& err) {
         c.n_frames     = f0_len;
         c.frame_period = kFramePeriodMs;
         c.duration     = static_cast<double>(x_length) / fs;
-        return c;
+        return Result<MorphChannel>::success(std::move(c));
     } catch (const std::exception& e) {
-        err = e.what();
-        return {};
+        return Result<MorphChannel>::failure(e.what());
     }
 }
 
@@ -121,12 +119,11 @@ Spectrogram summarize_spectrogram(const MorphChannel& c) {
     return s;
 }
 
-AnalyzedAudio analyze_file(const std::string& path) {
-    std::string  err;
-    MorphChannel c = analyze_channel(path, err);
-    if (!err.empty()) throw std::runtime_error(err);
+Result<AnalyzedAudio> analyze_file(const std::string& path) {
+    Result<MorphChannel> c = analyze_channel(path);
+    if (!c.ok()) return Result<AnalyzedAudio>::failure(std::move(c.error));
     AnalyzedAudio a;
-    a.spec    = summarize_spectrogram(c);
-    a.channel = std::make_shared<const MorphChannel>(std::move(c));
-    return a;
+    a.spec    = summarize_spectrogram(c.value);
+    a.channel = std::make_shared<const MorphChannel>(std::move(c.value));
+    return Result<AnalyzedAudio>::success(std::move(a));
 }

@@ -13,14 +13,19 @@
 #include "log.hpp"
 
 
+// Windows の GL ヘッダ（gl.h）は OpenGL 1.1 までしか定義しておらず、1.2 で入った
+// GL_CLAMP_TO_EDGE が無い。値は仕様で決まっているので、無いときだけ自前で定義する
+// （拡張の読み込み（glad など）を入れるほどではないため）。
+#ifndef GL_CLAMP_TO_EDGE
+    #define GL_CLAMP_TO_EDGE 0x812F
+#endif
+
 namespace {
 
-// FIXME: Windowsでビルドが通らないので応急処置
-#define GL_CLAMP_TO_EDGE 0x812F
+// スペクトログラムは dB 値を RGBA のテクスチャに一度だけ焼き込み、毎フレームは1枚の四角形として
+// 描く。ImPlot のヒートマップ（ビン×フレームのセルを毎フレーム CPU で組み立てる）だと、長い
+// 音声で描画が極端に遅くなったため。
 
-// Bake the dB spectrogram into an RGBA OpenGL texture once. Drawing it then
-// costs a single textured quad per frame instead of one CPU-rebuilt cell per
-// (bin * frame), which is what made the ImPlot heatmap crawl on large inputs.
 // カラーマップから 256 段の色 LUT を作る。
 void build_lut(unsigned char lut[256][4]) {
     for (int i = 0; i < 256; ++i) {

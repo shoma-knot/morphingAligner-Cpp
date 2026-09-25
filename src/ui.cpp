@@ -20,7 +20,14 @@ void draw_log_panel(App& app) {
     if (!app.view.log_open) return;
 
     ImGui::BeginChild("log_scroll", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
-    for (const std::string& line : applog::lines()) ImGui::TextUnformatted(line.c_str());
+    // 見えている行だけを取り出して描く（行数が多くても1フレームの負荷が増えない）。
+    ImGuiListClipper clipper;
+    clipper.Begin(static_cast<int>(applog::size()));
+    while (clipper.Step()) {
+        const auto first = static_cast<std::size_t>(clipper.DisplayStart);
+        const auto count = static_cast<std::size_t>(clipper.DisplayEnd - clipper.DisplayStart);
+        for (const std::string& line : applog::lines(first, count)) ImGui::TextUnformatted(line.c_str());
+    }
     if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) ImGui::SetScrollHereY(1.0f);
     ImGui::EndChild();
 }

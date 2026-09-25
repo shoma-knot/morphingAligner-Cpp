@@ -11,6 +11,8 @@
 #include <string>
 #include <vector>
 
+#include "result.hpp"
+
 // フォルマント1本分の軌跡。未定義のフレームは除いてあり、erb は表示用（Y軸=ERB レート）。
 struct FormantTrack {
     std::vector<double> t;      // 時刻 [s]
@@ -55,6 +57,12 @@ inline bool is_silence_label(const std::string& l) {
     return l.empty() || l == "<eps>" || l == "sil" || l == "sp";
 }
 
+// 音素ティアのうち、無音を除いた区間（時刻順。音素ティアが無ければ空）。
+std::vector<const SegInterval*> spoken_phones(const Segmentation& seg);
+
+// 区間のラベルを空白区切りでつなぐ（ログ用）。
+std::string join_labels(const std::vector<const SegInterval*>& ivs);
+
 // フォルマント推定のパラメータ（Praat の To Formant (burg) に対応）。
 struct FormantParams {
     double max_formant_hz = 5500.0;    // 最大フォルマント（成人男性 5000 / 女性 5500 が目安）
@@ -88,9 +96,8 @@ void terminate_speech_tools();
 // 音声解析の環境を調べる（Python が見つからない・起動できない場合も ready=false で返す）。
 SpeechEnvStatus run_check(const AlignParams& params);
 
-// wav のフォルマントを推定する。失敗時は err に理由を入れて空を返す。
-Formants run_formants(const std::string& wav, const FormantParams& params, std::string& err);
+// wav のフォルマントを推定する。
+Result<Formants> run_formants(const std::string& wav, const FormantParams& params);
 
-// wav を書き起こし text で強制アラインメントする。失敗時は err に理由を入れて空を返す。
-Segmentation run_alignment(const std::string& wav, const std::string& text, const AlignParams& params,
-                           std::string& err);
+// wav を書き起こし text で強制アラインメントする。
+Result<Segmentation> run_alignment(const std::string& wav, const std::string& text, const AlignParams& params);

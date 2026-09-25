@@ -34,15 +34,10 @@ bool near(double a, double b, double tol = 1e-9) {
     return std::fabs(a - b) <= tol;
 }
 
-// 例外を投げ、その理由が prefix で始まるか。
-template <class F>
-bool throws_with(F&& f, const std::string& prefix) {
-    try {
-        f();
-    } catch (const std::exception& e) {
-        return std::string(e.what()).rfind(prefix, 0) == 0;
-    }
-    return false;
+// 失敗していて、その理由が prefix で始まるか。
+template <class T>
+bool fails_with(const Result<T>& r, const std::string& prefix) {
+    return !r.ok() && r.error.rfind(prefix, 0) == 0;
 }
 
 // ── 周波数尺度 ──────────────────────────────────────────────
@@ -205,18 +200,14 @@ void test_analysis() {
         for (int h = 1; h <= 10; ++h) x[i] += 0.3 / h * std::sin(2.0 * 3.14159265358979 * 150.0 * h * t);
     }
     const std::filesystem::path wav = std::filesystem::temp_directory_path() / "morphaligner_core_test.wav";
-    std::string                 err;
-    expect(write_wav(wav.string(), x, fs, err), "analysis: テスト用の WAV を書ける");
+    expect(write_wav(wav.string(), x, fs).ok(), "analysis: テスト用の WAV を書ける");
 
-    AnalyzedAudio a;
-    try {
-        a = analyze_file(wav.string());
-    } catch (const std::exception& e) {
-        expect(false, std::string { "analysis: analyze_file が例外: " } + e.what());
-    }
-    std::error_code ec;
+    const Result<AnalyzedAudio> r = analyze_file(wav.string());
+    std::error_code             ec;
     std::filesystem::remove(wav, ec);
-    if (!a.channel) return;
+    expect(r.ok() && r.value.channel, "analysis: analyze_file が成功する" + (r.ok() ? "" : "（" + r.error + "）"));
+    if (!r.ok() || !r.value.channel) return;
+    const AnalyzedAudio& a = r.value;
 
     const MorphChannel& c = *a.channel;
     expect(c.fs == fs && near(c.duration, 0.5, 1e-3) && c.n_frames > 0 && c.sp().cols() == c.n_frames
@@ -232,13 +223,9 @@ void test_analysis() {
     expect(o.ok() && o.fs == fs && !o.wave.empty() && std::fabs(static_cast<double>(o.wave.size()) - c.duration * fs) < fs * 0.02,
            "analysis: 解析結果をそのままモーフィングに使える");
 
-    bool threw = false;
-    try {
-        analyze_file((std::filesystem::temp_directory_path() / "morphaligner_no_such_file.wav").string());
-    } catch (const std::exception&) {
-        threw = true;
-    }
-    expect(threw, "analysis: 開けないファイルは例外");
+    const Result<AnalyzedAudio> bad =
+      analyze_file((std::filesystem::temp_directory_path() / "morphaligner_no_such_file.wav").string());
+    expect(!bad.ok() && !bad.error.empty() && !bad.value.channel, "analysis: 開けないファイルは失敗（理由つき）");
 }
 
 // ── セッション JSON ─────────────────────────────────────────
@@ -249,41 +236,48 @@ void test_session_json() {
     s.transcript  = "あかさたな";
     s.anchors     = { { 0.1, 0.2, { { 500, 600 }, { 1500, 1400 } } }, { 0.3, 0.35, {} } };
 
-    const SessionFile r = parse_session_json(session_to_json(s));
-    bool ok = !r.anchors_only && r.base_path == s.base_path && r.target_path == s.target_path
+    const Result<SessionFile> rr = parse_session_json(session_to_json(s));
+    const SessionFile&        r  = rr.value;
+    bool ok = rr.ok() && !r.anchors_only && r.base_path == s.base_path && r.target_path == s.target_path
            && r.transcript == s.transcript && r.anchors.size() == 2 && r.anchors[0].freqs.size() == 2
            && near(r.anchors[0].freqs[1].target_f, 1400) && near(r.anchors[1].target_t, 0.35);
     expect(ok, "session: 保存した JSON を読むと元に戻る");
 
-    const SessionFile old = parse_session_json(
-      R"({"version":1,"waves":{"base":"a.wav","target":"b.wav"},"anchors":[]})");
-    expect(old.transcript.empty() && old.anchors.empty(), "session: transcript の無い古い形式も読める");
+    const Result<SessionFile> old =
+      parse_session_json(R"({"version":1,"waves":{"base":"a.wav","target":"b.wav"},"anchors":[]})");
+    expect(old.ok() && old.value.transcript.empty() && old.value.anchors.empty(),
+           "session: transcript の無い古い形式も読める");
 
-    expect(throws_with([] { parse_session_json("{"); }, "JSON 解析エラー: "), "session: 壊れた JSON は例外");
-    expect(throws_with([] { parse_session_json(R"({"anchors":[]})"); }, "waves が不正: "),
-           "session: waves が無ければ例外");
-    expect(throws_with(
-             [] {
-                 parse_session_json(
-                   R"({"waves":{"base":"a","target":"b"},"anchors":[{"time":{"base":0.1},"freqs":[]}]})");
-             },
-             "anchors が不正: "),
-           "session: アンカーの項目が欠けていれば例外");
+    expect(fails_with(parse_session_json("{"), "JSON 解析エラー: "), "session: 壊れた JSON は失敗");
+    expect(fails_with(parse_session_json(R"({"anchors":[]})"), "waves が不正: "), "session: waves が無ければ失敗");
+    expect(fails_with(parse_session_json(
+                        R"({"waves":{"base":"a","target":"b"},"anchors":[{"time":{"base":0.1},"freqs":[]}]})"),
+                      "anchors が不正: "),
+           "session: アンカーの項目が欠けていれば失敗");
+    expect(fails_with(parse_session_json(R"({"version":2,"waves":{"base":"a","target":"b"},"anchors":[]})"),
+                      "新しい版のアプリで保存された"),
+           "session: 新しい version のセッションは断る");
+    expect(fails_with(parse_session_json(R"({"version":"1","waves":{"base":"a","target":"b"},"anchors":[]})"),
+                      "version が不正"),
+           "session: version が整数でなければ失敗");
+    expect(parse_session_json(R"({"waves":{"base":"a","target":"b"},"anchors":[]})").ok(),
+           "session: version が無ければ 1 とみなして読む");
 
     // tcmorph のアンカー形式（objects 配列。0 は「アンカーなし」として落とす）。
-    const SessionFile t = parse_session_json(R"({
+    const Result<SessionFile> rt = parse_session_json(R"({
         "version": 1,
         "objects": [
           { "name": "A", "time_anchor": [0.2, 0.5], "time_freq_anchor": [[700, 1200], [720]] },
           { "name": "B", "time_anchor": [0.3, 0.6], "time_freq_anchor": [[750, 1300], [760]] }
         ]})");
-    ok = t.anchors_only && t.base_path.empty() && t.anchors.size() == 2 && near(t.anchors[0].base_t, 0.2)
+    const SessionFile& t = rt.value;
+    ok = rt.ok() && t.anchors_only && t.base_path.empty() && t.anchors.size() == 2 && near(t.anchors[0].base_t, 0.2)
       && near(t.anchors[0].target_t, 0.3) && t.anchors[0].freqs.size() == 2 && t.anchors[1].freqs.size() == 1
       && near(t.anchors[1].freqs[0].target_f, 760) && !t.notes.empty();
     expect(ok, "session: tcmorph 形式のアンカーを読める");
-    expect(throws_with([] { parse_session_json(R"({"objects":[{"name":"A","time_anchor":[0.2]}]})"); },
-                       "tcmorph 形式のアンカーが不正: "),
-           "session: tcmorph 形式で素材が2つでなければ例外");
+    expect(fails_with(parse_session_json(R"({"objects":[{"name":"A","time_anchor":[0.2]}]})"),
+                      "tcmorph 形式のアンカーが不正: "),
+           "session: tcmorph 形式で素材が2つでなければ失敗");
 }
 
 }    // namespace

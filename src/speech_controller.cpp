@@ -37,17 +37,17 @@ void launch_formant_job(App& app, Side side) {
     applog::add(name + " フォルマント推定中...");
     app.jobs.tools.launch(
       [side, name, path, params]() -> JobApply {
-          const auto  t0 = std::chrono::steady_clock::now();
-          std::string err;
-          auto        f = std::make_shared<Formants>(run_formants(path, params, err));
-          if (!err.empty()) {
-              applog::add(name + " フォルマント推定失敗: " + err);
+          const auto       t0 = std::chrono::steady_clock::now();
+          Result<Formants> r  = run_formants(path, params);
+          if (!r.ok()) {
+              applog::add(name + " フォルマント推定失敗: " + r.error);
           } else {
               char buf[128];
               std::snprintf(buf, sizeof buf, " フォルマント推定完了 (%.2f s)", applog::seconds_since(t0));
               applog::add(name + buf);
           }
-          return [side, path, f, ok = err.empty()](App& a) {
+          auto f = std::make_shared<Formants>(std::move(r.value));
+          return [side, path, f, ok = r.ok()](App& a) {
               Track& t       = a.track(side);
               t.formant_busy = false;
               if (!ok || t.path != path) return;    // 失敗、または実行中に音声が差し替わった
@@ -67,27 +67,18 @@ void launch_align_job(App& app, Side side, const std::string& text) {
     applog::add(name + " 音素セグメンテーション中（MFA、数十秒かかります）...");
     app.jobs.tools.launch(
       [side, name, path, text, params]() -> JobApply {
-          const auto  t0 = std::chrono::steady_clock::now();
-          std::string err;
-          auto        seg = std::make_shared<Segmentation>(run_alignment(path, text, params, err));
-          if (!err.empty()) {
-              applog::add(name + " 音素セグメンテーション失敗: " + err);
+          const auto           t0 = std::chrono::steady_clock::now();
+          Result<Segmentation> r  = run_alignment(path, text, params);
+          auto                 seg = std::make_shared<Segmentation>(std::move(r.value));
+          if (!r.ok()) {
+              applog::add(name + " 音素セグメンテーション失敗: " + r.error);
           } else {
               // 音素列もログに出す（辞書にない語は spn になるので、ここで気づけるように）。
-              std::string phones;
-              for (const SegTier& t : seg->tiers) {
-                  if (t.name != "phones") continue;
-                  for (const SegInterval& iv : t.intervals) {
-                      if (iv.label.empty() || iv.label == "sil") continue;
-                      if (!phones.empty()) phones += ' ';
-                      phones += iv.label;
-                  }
-              }
               char buf[128];
               std::snprintf(buf, sizeof buf, " 音素セグメンテーション完了 (%.2f s): ", applog::seconds_since(t0));
-              applog::add(name + buf + phones);
+              applog::add(name + buf + join_labels(spoken_phones(*seg)));
           }
-          return [side, path, seg, ok = err.empty()](App& a) {
+          return [side, path, seg, ok = r.ok()](App& a) {
               Track& t     = a.track(side);
               t.align_busy = false;
               if (!ok || t.path != path) return;    // 失敗、または実行中に音声が差し替わった

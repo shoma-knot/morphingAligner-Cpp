@@ -29,7 +29,8 @@ void draw_auto_anchor_controls(App& app) {
     ImGui::SameLine();
     ImGui::SetNextItemWidth(-1);
     if (ImGui::InputInt("##auto_div", &app.speech.auto_anchor_divisions, 1, 1))
-        app.speech.auto_anchor_divisions = std::clamp(app.speech.auto_anchor_divisions, 1, 10);
+        app.speech.auto_anchor_divisions = std::clamp(app.speech.auto_anchor_divisions, SpeechState::kDivisionsMin,
+                                                      SpeechState::kDivisionsMax);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("各音素の区間を何等分してアンカーを追加するか（1 なら音素境界のみ）。");
 
@@ -94,11 +95,12 @@ void draw_speech_tools_panel(App& app) {
     ImGui::SetNextItemWidth(std::max(60.0f, ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize("ms").x
                                               - ImGui::GetStyle().ItemInnerSpacing.x));
     if (ImGui::InputInt("ms##ma_window", &app.speech.formant_ma_ms, 5, 25)) {
-        app.speech.formant_ma_ms = std::clamp(app.speech.formant_ma_ms, 5, 500);
+        app.speech.formant_ma_ms = std::clamp(app.speech.formant_ma_ms, SpeechState::kMaMsMin, SpeechState::kMaMsMax);
         update_formant_ma(app);
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("移動平均の窓幅（各時刻を中心とする幅）。5〜500 ms。");
+        ImGui::SetTooltip("移動平均の窓幅（各時刻を中心とする幅）。%d〜%d ms。", SpeechState::kMaMsMin,
+                          SpeechState::kMaMsMax);
     ImGui::EndDisabled();
     ImGui::Unindent();
     ImGui::Checkbox("音素セグメンテーション", &app.speech.show_segmentation);
@@ -121,7 +123,8 @@ void draw_speech_tools_panel(App& app) {
     if (ImGui::TreeNode("設定##speech")) {
         ImGui::SetNextItemWidth(-1);
         ImGui::InputDouble("##maxf", &app.speech.formant_params.max_formant_hz, 250.0, 500.0, "最大フォルマント %.0f Hz");
-        app.speech.formant_params.max_formant_hz = std::clamp(app.speech.formant_params.max_formant_hz, 2000.0, 10000.0);
+        app.speech.formant_params.max_formant_hz = std::clamp(app.speech.formant_params.max_formant_hz,
+                                                              SpeechState::kMaxFormantMin, SpeechState::kMaxFormantMax);
         // 値を確定したら推定し直す（入力中の1文字ごとには走らせない）。
         if (ImGui::IsItemDeactivatedAfterEdit()) invalidate_formants(app);
         if (ImGui::IsItemHovered())

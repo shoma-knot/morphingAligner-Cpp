@@ -53,13 +53,12 @@ SessionLoadData load_session_data(const std::string& path) {
     }
 
     // JSON の解釈（形式の検証を含む）。音声を差し替える前に済ませる。
-    SessionFile s;
-    try {
-        s = parse_session_json(text);
-    } catch (const std::exception& e) {
-        applog::add(std::string { "セッション読み込み失敗: " } + e.what());
+    Result<SessionFile> parsed = parse_session_json(text);
+    if (!parsed.ok()) {
+        applog::add("セッション読み込み失敗: " + parsed.error);
         return d;
     }
+    SessionFile& s = parsed.value;
     for (const std::string& n : s.notes) applog::add(n);
     d.anchors = std::move(s.anchors);
 
@@ -85,18 +84,18 @@ SessionLoadData load_session_data(const std::string& path) {
     }
 
     // 音声を解析（デコード失敗などはここで検出）。GL は使わないのでワーカーで実行できる。
-    try {
-        d.base_audio = analyze_file(d.base_path);
-    } catch (const std::exception& e) {
-        applog::add(std::string { "セッション読み込み失敗: base 解析エラー: " } + e.what());
+    Result<AnalyzedAudio> base = analyze_file(d.base_path);
+    if (!base.ok()) {
+        applog::add("セッション読み込み失敗: base 解析エラー: " + base.error);
         return d;
     }
-    try {
-        d.target_audio = analyze_file(d.target_path);
-    } catch (const std::exception& e) {
-        applog::add(std::string { "セッション読み込み失敗: target 解析エラー: " } + e.what());
+    Result<AnalyzedAudio> target = analyze_file(d.target_path);
+    if (!target.ok()) {
+        applog::add("セッション読み込み失敗: target 解析エラー: " + target.error);
         return d;
     }
+    d.base_audio   = std::move(base.value);
+    d.target_audio = std::move(target.value);
 
     applog::add("セッション読み込みました: " + path);
     d.ok = true;

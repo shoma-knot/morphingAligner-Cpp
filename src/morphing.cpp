@@ -24,7 +24,9 @@ using Eigen::VectorXd;
 // ── アンカーの整形 ───────────────────────────────────────────
 AnchorMatrices build_anchor_matrices(const std::vector<Anchor>& anchors, double end_ref, double end_tgt,
                                      double nyquist) {
-    constexpr double kEps   = 1e-6;    // 区間長 0 を避けるための最小間隔 [s]
+    // 区間長 0 を避けるための最小間隔 [s]。手で打つアンカーの重なり防止用なので小さく取る
+    // （自動生成は auto_anchors.cpp の kEps = 1e-4 s でこれより広く空けている）。
+    constexpr double kEps   = 1e-6;
     constexpr double kMinHz = 1.0;     // log を取るため 0Hz 付近は使えない
 
     AnchorMatrices m;
@@ -198,16 +200,15 @@ MorphOutput morphing_channels(const MorphChannel& B, const MorphChannel& T,
     return R;
 }
 
-bool write_wav(const std::string& path, const std::vector<double>& wave, int fs, std::string& err) {
+Status write_wav(const std::string& path, const std::vector<double>& wave, int fs) {
     try {
         std::vector<float> f(wave.size());
         for (std::size_t i = 0; i < wave.size(); ++i)
             f[i] = static_cast<float>(std::clamp(wave[i], -1.0, 1.0));
         ma::write_wav(path, f.data(), static_cast<std::uint64_t>(f.size()), /*channels=*/1,
                       static_cast<std::uint32_t>(fs));
-        return true;
+        return {};
     } catch (const std::exception& e) {
-        err = e.what();
-        return false;
+        return Status::failure(e.what());
     }
 }

@@ -1,5 +1,6 @@
 #include "ui_tabs.hpp"
 
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -7,28 +8,27 @@
 #include <imgui.h>
 
 #include "app.hpp"
+#include "resource_path.hpp"
 
 // 「ライセンス表示」タブ: 左=同梱物のリスト(1) / 右=選択した条文の表示(4)。
-// 同梱物が増えたら kLicenseEntries に1行追加する（パスはカレント起動と bin/ 起動の2候補）。
+// 同梱物が増えたら kLicenseEntries に1行追加する（パスは配布物のルートからの相対。find_resource で探す）。
 void draw_license_tab(App& app) {
     struct Entry {
-        const char* name;     // リスト表示名
-        const char* path;     // 条文ファイル（カレントディレクトリ起動）
-        const char* alt;      // 同（bin/ 起動）
+        const char* name;    // リスト表示名
+        const char* path;    // 条文ファイル
     };
     // バイナリ配布時に条文の同梱が必要なもの（MIT/BSD/OFL/Apache-2.0/MPL-2.0）。zlib 系（GLFW,
     // tinyfiledialogs）と public domain/MIT-0 の miniaudio は明記義務がないため省略。
     // Python 環境（parselmouth・MFA など）は配布物に含めず、ユーザーが install-win.bat /
     // install.sh で入れるので、ここには載せない（README で案内する）。
     static const Entry kLicenseEntries[] = {
-        { "Gen Interface JP（フォント / OFL v1.1）", "font/Gen Interface JP/OFL.txt",
-          "../font/Gen Interface JP/OFL.txt" },
-        { "Dear ImGui（MIT）", "licenses/imgui.txt", "../licenses/imgui.txt" },
-        { "ImPlot（MIT）", "licenses/implot.txt", "../licenses/implot.txt" },
-        { "nlohmann JSON（MIT）", "licenses/nlohmann-json.txt", "../licenses/nlohmann-json.txt" },
-        { "WORLD（修正BSD）", "licenses/world.txt", "../licenses/world.txt" },
-        { "tcmorph（Apache-2.0）", "licenses/tcmorph.txt", "../licenses/tcmorph.txt" },
-        { "Eigen（MPL-2.0）", "licenses/eigen.txt", "../licenses/eigen.txt" },
+        { "Gen Interface JP（フォント / OFL v1.1）", "font/Gen Interface JP/OFL.txt" },
+        { "Dear ImGui（MIT）", "licenses/imgui.txt" },
+        { "ImPlot（MIT）", "licenses/implot.txt" },
+        { "nlohmann JSON（MIT）", "licenses/nlohmann-json.txt" },
+        { "WORLD（修正BSD）", "licenses/world.txt" },
+        { "tcmorph（Apache-2.0）", "licenses/tcmorph.txt" },
+        { "Eigen（MPL-2.0）", "licenses/eigen.txt" },
     };
     int&         selected = app.view.license_selected;
     int&         loaded   = app.view.license_loaded;
@@ -48,13 +48,11 @@ void draw_license_tab(App& app) {
     if (loaded != selected) {
         loaded = selected;
         text   = "(ライセンスファイルが見つかりません)";
-        for (const char* p : { kLicenseEntries[selected].path, kLicenseEntries[selected].alt }) {
-            std::ifstream is { p };
-            if (!is) continue;
+        const std::string path = find_resource(kLicenseEntries[selected].path);
+        if (std::ifstream is { std::filesystem::u8path(path) }; !path.empty() && is) {
             std::ostringstream ss;
             ss << is.rdbuf();
             text = ss.str();
-            break;
         }
     }
     ImGui::TextUnformatted(kLicenseEntries[selected].name);

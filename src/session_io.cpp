@@ -88,7 +88,10 @@ std::string session_to_json(const SessionFile& s) {
     return j.dump(2) + '\n';
 }
 
-SessionFile parse_session_json(const std::string& text) {
+namespace {
+
+// parse_session_json の本体。不正な形式は例外で知らせる（項目ごとの前置きを付けて投げ直す）。
+SessionFile parse_session_json_or_throw(const std::string& text) {
     json j;
     try {
         j = json::parse(text);
@@ -103,6 +106,16 @@ SessionFile parse_session_json(const std::string& text) {
         } catch (const std::exception& e) {
             rethrow_with("tcmorph 形式のアンカーが不正: ", e);
         }
+    }
+
+    // 版（無ければ 1 とみなす）。新しい版のアプリで保存されたものは、知らない項目や意味の変わった
+    // 項目があるかもしれないので読まない（黙って一部だけ読むと、保存し直したときに情報が消える）。
+    if (const auto it = j.find("version"); it != j.end()) {
+        if (!it->is_number_integer()) throw std::runtime_error("version が不正: 整数ではありません");
+        const int v = it->get<int>();
+        if (v > kSchemaVersion)
+            throw std::runtime_error("新しい版のアプリで保存されたセッションです（version " + std::to_string(v)
+                                     + "。このアプリが読めるのは " + std::to_string(kSchemaVersion) + " まで）");
     }
 
     SessionFile s;
@@ -129,4 +142,14 @@ SessionFile parse_session_json(const std::string& text) {
         rethrow_with("anchors が不正: ", e);
     }
     return s;
+}
+
+}    // namespace
+
+Result<SessionFile> parse_session_json(const std::string& text) {
+    try {
+        return Result<SessionFile>::success(parse_session_json_or_throw(text));
+    } catch (const std::exception& e) {
+        return Result<SessionFile>::failure(e.what());
+    }
 }

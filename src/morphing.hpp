@@ -64,5 +64,5 @@ struct AnchorMatrices {
 AnchorMatrices build_anchor_matrices(const std::vector<Anchor>& anchors, double end_ref, double end_tgt,
                                      double nyquist);
 
-// wave を WAV（32bit float モノラル）として path に書き出す。成功で true。
-bool write_wav(const std::string& path, const std::vector<double>& wave, int fs, std::string& err);
+// wave を WAV（32bit float モノラル）として path に書き出す。
+Status write_wav(const std::string& path, const std::vector<double>& wave, int fs);

@@ -13,6 +13,7 @@
 #include "app.hpp"
 #include "app_icon.hpp"
 #include "log.hpp"
+#include "resource_path.hpp"
 #include "speech_tools.hpp"
 #include "ui.hpp"
 
@@ -34,11 +35,8 @@ constexpr const char* kWindowClass = "morphingAligner";
 
 // 日本語 UI 用フォント。同梱の Gen Interface JP（OFL v1.1、font/ 以下）を読み、
 // 見つからなければ ImGui 既定フォントにフォールバック（文字化けする旨をログに出す）。
-// 相対パスはカレントディレクトリ起動（プロジェクト/配布ルート）と bin/ 起動の両方を試す。
-constexpr const char* kJpFontCandidates[] = {
-    "font/Gen Interface JP/GenInterfaceJP-Regular.ttf",
-    "../font/Gen Interface JP/GenInterfaceJP-Regular.ttf",
-};
+// 配布物のルートからの相対パス（find_resource がルート起動と bin/ 起動の両方を試す）。
+constexpr const char* kJpFont = "font/Gen Interface JP/GenInterfaceJP-Regular.ttf";
 
 // 音素記号（IPA）の補助フォント。MFA の日本語モデルは ɕ ʑ や無声化の ̥ を出すが、
 // Gen Interface JP にはこれらの字形が無い。OS 標準のフォントを見つかった場合だけ
@@ -67,13 +65,12 @@ void merge_ipa_font(float size) {
 // フォントを読み込む。UI 全体は日本語フォント、戻り値はライセンス表示用の
 // 等幅フォント（ImGui 埋め込みの ProggyClean。ASCII のみだがライセンス英文には十分）。
 ImFont* load_fonts() {
-    ImGuiIO& io = ImGui::GetIO();
-    for (const char* path: kJpFontCandidates) {
-        std::ifstream probe { path };
-        if (!probe.good()) continue;
+    ImGuiIO&          io   = ImGui::GetIO();
+    const std::string path = find_resource(kJpFont);
+    if (!path.empty()) {
         // 最初に追加したフォントが既定になるため、日本語フォントを先に読む。
-        io.Fonts->AddFontFromFileTTF(path, 18.0f, nullptr, io.Fonts->GetGlyphRangesJapanese());
-        applog::add(std::string { "フォント読み込み: " } + path);
+        io.Fonts->AddFontFromFileTTF(path.c_str(), 18.0f, nullptr, io.Fonts->GetGlyphRangesJapanese());
+        applog::add("フォント読み込み: " + path);
         merge_ipa_font(18.0f);
         return io.Fonts->AddFontDefault();    // 2番目: 等幅（ProggyClean）
     }
@@ -142,8 +139,7 @@ int main() {
     ImGui::StyleColorsDark();
     ImFont* mono_font = load_fonts();
 
-    // Free the left mouse button for anchor placement / dragging by moving the
-    // plot pan gesture onto the middle button.
+    // 左ボタンをアンカーの追加・ドラッグに使うため、プロットのパン（表示範囲の移動）は中ボタンに移す。
     ImPlot::GetInputMap().Pan = ImGuiMouseButton_Middle;
     // 既定では Ctrl は OverrideMod（押下中は入力を無視して DnD ソース化）に割り当た
     // っている。Ctrl+左クリックを周波数アンカー追加に使うため無効化する。

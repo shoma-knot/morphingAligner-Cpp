@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "anchor.hpp"
+#include "result.hpp"
 
 // セッションの中身。
 struct SessionFile {
@@ -26,5 +27,5 @@ struct SessionFile {
 // セッション形式の JSON 文字列にする（整形済み、末尾に改行）。anchors_only と notes は使わない。
 std::string session_to_json(const SessionFile& s);
 
-// JSON 文字列を読む。形式が不正なら std::exception を投げる（what() は理由。例: "anchors が不正: ..."）。
-SessionFile parse_session_json(const std::string& text);
+// JSON 文字列を読む。形式が不正なら error に理由（例: "anchors が不正: ..."）。
+Result<SessionFile> parse_session_json(const std::string& text);

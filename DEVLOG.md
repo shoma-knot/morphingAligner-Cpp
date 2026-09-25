@@ -22,6 +22,7 @@
   base/target の分岐を `Side` に、GL テクスチャを RAII の `GlTexture` にした（第2段階）。
   `App` を部分構造体に分け、ジョブを `JobQueue` に統一し、`ui.cpp` を画面ごと・役割ごとに分けた（第3段階）。
   音声の WORLD 解析を読み込み時の1回にまとめ、表示とモーフィングで共有した（第4段階）。
+  残りの小さな項目（重複・定数・エラーの返し方・ログ・セッションの版・CMake）も片付けた。
 - 以下の「実装済み機能」は時系列で追記しているため、前半の節には後で置き換わった記述がある
   （置き換わった箇所には注記を入れてある）。
 
@@ -73,8 +74,10 @@
   （`morphing_channels`）、アンカーの整形（`build_anchor_matrices`）、WAV 書き出し
 - `src/session_io.hpp` / `src/session_io.cpp` — セッション JSON と文字列の相互変換（tcmorph のアンカー形式も読む。GUI 非依存）
 - `src/session.hpp` / `src/session.cpp` — セッションのファイル保存/読み込み（音声の解析を含む）と App への適用
-- `src/log.hpp` / `src/log.cpp` — スレッドセーフな動作ログ `applog`
+- `src/log.hpp` / `src/log.cpp` — スレッドセーフな動作ログ `applog`（新しい方から 5,000 行まで保持）
 - `src/freqscale.hpp` — Hz ↔ ERB レート変換
+- `src/result.hpp` — 失敗しうる処理の戻り値 `Result<T>` / `Status`（コアの関数の失敗の返し方の約束も書いてある）
+- `src/resource_path.hpp` / `.cpp` — 同梱の資材（font/・licenses/・python/・.env/）を `x` → `../x` の順に探す
 - `src/speech_tools.hpp` / `src/speech_tools.cpp` — Python ツールの呼び出し（子プロセス起動・JSON の
   要求/応答・終了時の停止）と結果の型（`Formants` / `Segmentation`）
 - `src/speech_view.hpp` / `src/speech_view.cpp` — フォルマントの重ね描き、音素セグメンテーションのプロット
@@ -608,6 +611,36 @@ Montreal Forced Aligner（MFA）で単語/音素の区間を求めて画面に�
 - 単体テストに解析の6項目を追加（計 30 項目）: 合成音の WAV を一時ディレクトリに書いて `analyze_file` し、
   f0/sp/ap のフレーム数、要約との一致、dB の範囲、そのままモーフィングに使えること、開けないファイルの例外。
 
+### リファクタリングの残り（2026-09-25、issue #1）
+- **資材の探索**: `x` と `../x` の候補がフォント（`main.cpp`）・ライセンス（`ui_license.cpp`）・Python と
+  スクリプト（`speech_tools.cpp`）で別々に書かれていたのを、`find_resource`（`resource_path.cpp`、コア）に
+  まとめた。ライセンス表示のファイルも UTF-8 のパスとして開く（`u8path`）。
+- **音素列の重複**: 無音を除いた音素の取り出し（`spoken_phones`）とログ用の連結（`join_labels`）を
+  `speech_tools` に1つだけ置き、アンカー自動生成と音素アライメントのログの両方で使う。ログの音素列は
+  `is_silence_label` で除くので、以前は残っていた `sp` や `<eps>` も出なくなる。
+- **閾値**: 「同じ時刻」とみなす差は、自動生成（`auto_anchors.cpp`、1e-4 s）とモーフィング（`morphing.cpp`、
+  1e-6 s）で役割が違うので値は変えず、互いの関係（自動生成の方が広いので、打ったアンカーがモーフィングで
+  読み飛ばされない）をコメントに書いた。
+- **入力範囲の定数化**: 移動平均の窓幅（5〜500 ms）・分割数（1〜10）・最大フォルマント（2000〜10000 Hz）を
+  `SpeechState::kMaMsMin` などにした（ツールチップの文言もこの定数から作る）。
+- **エラーの返し方**: コアの公開関数は `Result<T>`（値＋理由）か `Status` で失敗を返し、引数の `err` と
+  例外はやめた（`result.hpp` に約束を書いた）。対象は `analyze_channel` / `analyze_file` /
+  `run_formants` / `run_alignment` / `write_wav` / `parse_session_json`。警告なども返す
+  `MorphOutput` / `AutoAnchorResult` / `SpeechEnvStatus` は、同じく `error` が空なら成功の独自の構造体のまま。
+  GUI 側の `save_session`（bool）と `SessionLoadData::ok` は、自分でログに出すのでそのまま。
+- **ログ**: 保持を新しい方から 5,000 行までにし（`std::deque`）、表示は `ImGuiListClipper` で見えている
+  行だけを取り出す（以前は毎フレーム全行をコピーしていた）。時刻の変換は `localtime_s` / `localtime_r`
+  （スレッド安全。MSVC の C4996 警告も消えた）。
+- **セッションの版**: 読み込み時に `version` を見る。無ければ 1、整数でなければ失敗、このアプリより新しい
+  版なら「新しい版のアプリで保存されたセッションです」として読まない（一部だけ読んで保存し直すと情報が
+  消えるため）。tcmorph 形式は対象外（`ParseAnchorSet` が見る）。
+- **CMake**: `CMAKE_CXX_FLAGS` の丸ごと上書き・`add_definitions(/utf-8)`・`LIBRARY_OUTPUT_PATH` /
+  `EXECUTABLE_OUTPUT_PATH` をやめ、`CMAKE_POSITION_INDEPENDENT_CODE`・`add_compile_options`（C/C++ に限る。
+  rc.exe には渡さない）・`CMAKE_*_OUTPUT_DIRECTORY` にした。出力先（`bin/`・`lib/`、VS は `Release/` 付き）は
+  変わらない。ビルド種別を指定しない構成（CMakePresets の vcpkg プリセット）では従来どおり `-O2` を付ける。
+- 英語のまま残っていたコメント（`app.cpp`・`main.cpp`）を日本語にした。
+- 単体テストを4項目追加（計 34 項目）: セッションの版の検査3項目、解析の失敗が理由つきで返ること。
+
 ## MATLAB版との差分
 
 ※ **旧・自前実装についての比較**。現在は tcmorph（MATLAB 版の移植、丸め誤差レベルで一致を
@@ -688,7 +721,8 @@ install-win.bat          # Windows（-Yes で非対話）
   マシン間では手で同期する（リポジトリには入らない）。
 - base/target の fs 不一致は未対応（エラーで止める。リサンプリングなし）。
 - macOS / Wayland ネイティブでは `glfwSetWindowIcon` が効かない（XWayland 上では効く）。
-- `app.cpp` で `GL_CLAMP_TO_EDGE` を自前定義している（Windows の GL ヘッダに無いための応急処置、FIXME）。
+- `app.cpp` で `GL_CLAMP_TO_EDGE` を自前定義している（Windows の GL ヘッダは OpenGL 1.1 までで、1.2 の
+  この定数が無いため。無いときだけ定義する）。
 - 書き起こしは base/target 共通なので、別の文を読んだ2音声には音素アライメントを使えない。
 - 環境を手で作った場合（定義のハッシュの印が無い）、インストールスクリプトは「今の定義で作られたもの
   ではない」として作り直しを確認してくる（開発用の .env も同様）。
@@ -715,8 +749,6 @@ install-win.bat          # Windows（-Yes で非対話）
 
 ## 次にやること
 
-- リファクタリング（issue #1）の続き: その他（重複・閾値・入力範囲の定数化、
-  エラーの返し方の統一、ログのリングバッファ化、セッションの version 検査、CMake の古い書き方）。
 
 - 再生の停止/一時停止・再生位置バー（現状は `play_oneshot` / `play_pcm` で頭から再生のみ）。
 - アンカーの整列/ソートや、アンカー編集の Undo。

@@ -39,14 +39,14 @@ void launch_load_track_job(App& app, Side side) {
         if (!picked) return {};    // キャンセル
         const std::string path = picked;
         applog::add(name + " 解析中...: " + path);
-        try {
-            // std::function はコピー可能な呼び出し体を要求するので shared_ptr で持ち回す。
-            auto audio = std::make_shared<AnalyzedAudio>(analyze_file(path));
-            return [side, path, audio](App& a) { apply_track(a.track(side), path, std::move(*audio)); };
-        } catch (const std::exception& e) {
-            applog::add(name + " 読み込み失敗: " + e.what());
+        Result<AnalyzedAudio> r = analyze_file(path);
+        if (!r.ok()) {
+            applog::add(name + " 読み込み失敗: " + r.error);
             return {};
         }
+        // std::function はコピー可能な呼び出し体を要求するので shared_ptr で持ち回す。
+        auto audio = std::make_shared<AnalyzedAudio>(std::move(r.value));
+        return [side, path, audio](App& a) { apply_track(a.track(side), path, std::move(*audio)); };
     });
 }
 
@@ -81,11 +81,11 @@ void launch_save_wav_job(App& app) {
         static const char* kWavFilter[] = { "*.wav" };
         const char* p = tinyfd_saveFileDialog("モーフィング結果を保存", "morph.wav", 1, kWavFilter, "WAV");
         if (!p) return {};    // キャンセル
-        std::string werr;
-        if (write_wav(p, *wave, fs, werr))
+        const Status st = write_wav(p, *wave, fs);
+        if (st.ok())
             applog::add(std::string { "WAV 保存: " } + p);
         else
-            applog::add("WAV 保存失敗: " + werr);
+            applog::add("WAV 保存失敗: " + st.error);
         return {};
     });
 }

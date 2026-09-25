@@ -11,6 +11,8 @@
 
 #include <tcmorph/generalized_tc_morphing.hpp>    // WorldParameter などの共通データ構造
 
+#include "result.hpp"
+
 // 解析のフレーム周期 [ms]（WORLD の既定。tcmorph はフレーム間隔を入力から拾う）。
 constexpr double kFramePeriodMs = 5.0;
 
@@ -50,13 +52,11 @@ struct AnalyzedAudio {
     Spectrogram                         spec;
 };
 
-// 1音源を WORLD で解析して f0/sp/ap のチャンネルを作る。
-// 失敗時は err に理由を入れ、empty() なチャンネルを返す。
-MorphChannel analyze_channel(const std::string& path, std::string& err);
+// 1音源を WORLD で解析して f0/sp/ap のチャンネルを作る。失敗時は error に理由（デコードの失敗など）。
+Result<MorphChannel> analyze_channel(const std::string& path);
 
 // チャンネルから表示用の要約（dB の範囲など）を作る。
 Spectrogram summarize_spectrogram(const MorphChannel& c);
 
 // path をデコードして解析する（analyze_channel ＋ summarize_spectrogram）。
-// @throws std::runtime_error デコード・解析に失敗したとき。
-AnalyzedAudio analyze_file(const std::string& path);
+Result<AnalyzedAudio> analyze_file(const std::string& path);
