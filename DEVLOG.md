@@ -21,6 +21,7 @@
 - リファクタリング（issue #1）: GUI に依存しない処理を静的ライブラリ `morphaligner_core` に分けた（第1段階）。
   base/target の分岐を `Side` に、GL テクスチャを RAII の `GlTexture` にした（第2段階）。
   `App` を部分構造体に分け、ジョブを `JobQueue` に統一し、`ui.cpp` を画面ごと・役割ごとに分けた（第3段階）。
+  音声の WORLD 解析を読み込み時の1回にまとめ、表示とモーフィングで共有した（第4段階）。
 - 以下の「実装済み機能」は時系列で追記しているため、前半の節には後で置き換わった記述がある
   （置き換わった箇所には注記を入れてある）。
 
@@ -49,7 +50,8 @@
 
 ## ファイル構成（自作分）
 
-- `src/analysis.hpp` / `src/analysis.cpp` — 音声ファイル → 表示用スペクトル包絡スペクトログラムの解析（GL非依存）
+- `src/analysis.hpp` / `src/analysis.cpp` — 音声ファイルの WORLD 解析（`analyze_channel` → `MorphChannel`）と
+  表示用の要約（`Spectrogram`）。読み込み時に1回だけ行い、表示とモーフィングで共有する（GL非依存）
 - `src/anchor.hpp` — アンカーの型（`Anchor`/`FreqAnchor`）と `Side`（base/target の別）。GUI 非依存
 - `src/gl_texture.hpp` / `src/gl_texture.cpp` — GL テクスチャの所有者 `GlTexture`（RAII、ムーブのみ）
 - `src/app.hpp` / `src/app.cpp` — 状態モデル（`Track`、`App` = `SpeechState` / `MorphState` / `ViewState` /
@@ -67,7 +69,7 @@
   - `src/morph_controller.hpp` / `.cpp` — モーフィング用の解析、非同期のモーフィング、再生
   - `src/file_jobs.hpp` / `.cpp` — ファイルダイアログを伴う操作（音声・セッションの読み込み/保存、WAV 保存）
 - `src/anchors.hpp` / `src/anchors.cpp` — 時間/周波数アンカーの描画・操作、パネル間の対応線
-- `src/morphing.hpp` / `src/morphing.cpp` — WORLD 解析（`analyze_channel`）と tcmorph によるモーフィング
+- `src/morphing.hpp` / `src/morphing.cpp` — tcmorph によるモーフィング
   （`morphing_channels`）、アンカーの整形（`build_anchor_matrices`）、WAV 書き出し
 - `src/session_io.hpp` / `src/session_io.cpp` — セッション JSON と文字列の相互変換（tcmorph のアンカー形式も読む。GUI 非依存）
 - `src/session.hpp` / `src/session.cpp` — セッションのファイル保存/読み込み（音声の解析を含む）と App への適用
@@ -100,6 +102,8 @@
 ## 実装済み機能
 
 ### 解析パイプライン（`analysis.cpp`）
+※ 初期実装の記録。2026-09-25 から解析は `analyze_channel`（F0・スペクトル包絡・非周期性）の1回にまとめ、
+`Spectrogram` は `values` を持たない要約になった（下の「リファクタリング第4段階」）。
 1. `ma::decoder` でファイルをデコード（interleaved float）
 2. モノラル double へダウンミックス（WORLDの入力形式）
 3. WORLD `Harvest` で F0 推定（`frame_period = 5.0 ms`）
@@ -246,6 +250,7 @@ Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋�
   合成）に API を再構成（旧 `morphing`/`morphing_full` は廃止、MorphOutput は morphed+wave のみ）。
   - base/target はタブ表示時に `ensure_morph_channels` が解析（パス変更時のみ再解析、失敗パスは
     記録して再試行を防ぐ）。**音声を読み込めば生成前でも base/target のプロットが出る**。
+    ※ 2026-09-25 から解析は読み込み時の1回だけで、`ensure_morph_channels` は `Track::channel` を取り込むだけ。
   - 再合成は morphed のみ（`rebuild_morphed_texture`）。**解析が走らなくなり大幅に高速化**。
   - sp 共通 dB レンジは base/target から算出（morphed は log 補間なので必ずレンジ内）。
   - ヘッドレスでリファクタ前後の出力一致を確認（r=0/0.5/1 の長さ・maxabs 同一）。
@@ -585,6 +590,24 @@ Montreal Forced Aligner（MFA）で単語/音素の区間を求めて画面に�
   セッション保存/読み込みと WAV 保存のダイアログ処理は、ボタンの中から `file_jobs.cpp` の関数に移した。
 - 経過秒数の `seconds_since` は `applog::seconds_since`（`log.hpp`）に移した。
 
+### リファクタリング第4段階: 解析の一本化（2026-09-25、issue #1）
+これまでは同じ音声を2回解析していた（アライメントタブの表示用に `analyze_file` が Harvest＋CheapTrick、
+モーフィングタブを開いたときに `analyze_channel` が Harvest＋CheapTrick＋D4C）。読み込み時の1回にまとめた。
+- `MorphChannel` と `analyze_channel`（と `to_mono`）を `morphing.*` から `analysis.*` に移した。フレーム周期は
+  `kFramePeriodMs`（5 ms）として `analysis.hpp` に1つだけ置く。移した関数の本体は定数名以外変えていない
+  （移動前後を突き合わせて確認）ので、モーフィングの結果は以前と同じ。
+- `analyze_file` は `AnalyzedAudio`（`shared_ptr<const MorphChannel>` ＋ 要約の `Spectrogram`）を返す。
+  `Spectrogram` は dB 値の配列（`values`）を持たない要約（fs・長さ・フレーム数・ビン数・dB の範囲）になった。
+  dB の範囲は `sp` の最小/最大の係数から求める（以前と同じ値）。
+- `Track::channel` に解析結果を持ち、表示用テクスチャもモーフィングタブと同じ `make_heatmap_texture`
+  （sp から dB を計算して ERB 等間隔に並べ直す）で作る。`make_spectrogram_texture` は廃止。以前は float に
+  丸めた dB から作っていたので、色の段階が境目でまれに1段ずれることがあるが、見た目は変わらない。
+- モーフィングタブの `ensure_morph_channels` は再解析をやめ、`Track::channel` を取り込んでテクスチャを
+  作り直すだけにした（`MorphState::ch_path` と「モーフィング用に解析中...」のログは無くなった）。
+  タブを開いたときに待たされなくなった代わりに、音声の読み込みに D4C の分の時間が加わる。
+- 単体テストに解析の6項目を追加（計 30 項目）: 合成音の WAV を一時ディレクトリに書いて `analyze_file` し、
+  f0/sp/ap のフレーム数、要約との一致、dB の範囲、そのままモーフィングに使えること、開けないファイルの例外。
+
 ## MATLAB版との差分
 
 ※ **旧・自前実装についての比較**。現在は tcmorph（MATLAB 版の移植、丸め誤差レベルで一致を
@@ -692,7 +715,7 @@ install-win.bat          # Windows（-Yes で非対話）
 
 ## 次にやること
 
-- リファクタリング（issue #1）の続き: 第4段階（解析の一本化）、その他（重複・閾値・入力範囲の定数化、
+- リファクタリング（issue #1）の続き: その他（重複・閾値・入力範囲の定数化、
   エラーの返し方の統一、ログのリングバッファ化、セッションの version 検査、CMake の古い書き方）。
 
 - 再生の停止/一時停止・再生位置バー（現状は `play_oneshot` / `play_pcm` で頭から再生のみ）。

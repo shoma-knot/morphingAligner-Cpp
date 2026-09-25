@@ -13,48 +13,20 @@
 #include "log.hpp"
 #include "morphing.hpp"
 
-// 反映時に共通 dB レンジとテクスチャを作り直して morphed を無効化する。
+// 解析は読み込み時に済んでいる（Track::channel）ので、ここでは取り込んでテクスチャを作るだけ。
 void ensure_morph_channels(App& app) {
-    if (app.jobs.ui.busy()) return;    // 進行中の UI ジョブと直列化
-
-    // 古くなっている方（base 優先）を1つだけ処理する。両方古い場合は次のフレームで続き。
-    MorphState& m     = app.morph;
-    const auto  stale = [&](Side s) {
-        const Track& tr = app.track(s);
-        return tr.loaded() && m.ch_path[side_index(s)] != tr.path;
-    };
-    Side side;
-    if (stale(Side::Base)) side = Side::Base;
-    else if (stale(Side::Target)) side = Side::Target;
-    else return;
-
-    const std::string name = app.track(side).name;
-    const std::string path = app.track(side).path;
-    // 先に試行済みパスを記録して、失敗時に毎フレーム再解析されるのを防ぐ。
-    m.ch_path[side_index(side)] = path;
-
-    app.jobs.ui.try_launch([name, path, side]() -> JobApply {
-        applog::add(name + " をモーフィング用に解析中...");
-        const auto  t0 = std::chrono::steady_clock::now();
-        std::string err;
-        MorphChannel c = analyze_channel(path, err);
-
-        std::shared_ptr<const MorphChannel> ch;    // 失敗時は nullptr のまま反映
-        if (!err.empty()) {
-            applog::add(name + " 解析失敗: " + err);
-        } else {
-            ch = std::make_shared<const MorphChannel>(std::move(c));
-            char buf[128];
-            std::snprintf(buf, sizeof buf, "%s 解析完了 (%.2f ms)", name.c_str(), applog::seconds_since(t0) * 1000.0);
-            applog::add(buf);
-        }
-        return [side, ch](App& a) {
-            a.morph.ch[side_index(side)] = ch;
-            ++a.morph.epoch;     // 実行中モーフの結果は古い base/target のものなので破棄対象に
-            a.morph.out = {};    // 元が変わったので以前の morphed は無効
-            rebuild_morph_bt_textures(a.morph);
-        };
-    });
+    MorphState& m       = app.morph;
+    bool        changed = false;
+    for (Side s : kSides) {
+        const auto& ch = app.track(s).channel;
+        if (m.ch[side_index(s)] == ch) continue;
+        m.ch[side_index(s)] = ch;
+        changed             = true;
+    }
+    if (!changed) return;
+    ++m.epoch;     // 実行中モーフの結果は古い base/target のものなので破棄対象に
+    m.out = {};    // 元が変わったので以前の morphed は無効
+    rebuild_morph_bt_textures(m);
 }
 
 // ワーカーは shared_ptr 経由の immutable なチャンネルと、コピーしたアンカー/率だけを使う。

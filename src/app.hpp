@@ -29,8 +29,10 @@ constexpr ImPlotColormap kColormap = ImPlotColormap_Viridis;
 struct Track {
     std::string  name;       // "base" / "target"（ダイアログとラベルに出す）
     std::string  path;       // 読み込んだファイル（"" = 未読み込み）
-    Spectrogram  spec;       // スペクトル包絡
-    GlTexture    tex;        // spec を焼き込んだテクスチャ
+    // WORLD の解析結果（f0/sp/ap）。表示とモーフィングで共有する（immutable）。
+    std::shared_ptr<const MorphChannel> channel;
+    Spectrogram  spec;       // スペクトル包絡の要約（fs・長さ・dB の範囲）
+    GlTexture    tex;        // channel の sp を焼き込んだテクスチャ
     double       y_min = 0;  // 周波数軸の表示範囲 [ERB レート]。ズームで変わり、
     double       y_max = 0;  // 読み込み時に [0, ERB(fs/2)] に戻す
 
@@ -80,10 +82,10 @@ struct MorphState {
     bool       realtime = true;     // スライダー操作中も逐次再合成するか（OFF=離した時のみ）
     bool       autoplay = false;    // スライダーのつまみを離したら自動で再生するか
 
-    // base/target の解析チャンネル（添字は side_index。タブ表示時に解析、パス変更で再解析）。
-    // 非同期ジョブと安全に共有するため immutable な shared_ptr で保持する（失敗時は nullptr）。
+    // テクスチャを作った base/target の解析チャンネル（添字は side_index）。Track::channel と
+    // 同じものを指す。タブ表示時に Track と食い違っていたら取り直してテクスチャを作り直す。
+    // 非同期のモーフィングと安全に共有するため immutable な shared_ptr で持つ（未読み込みは nullptr）。
     std::shared_ptr<const MorphChannel> ch[2];
-    std::string                         ch_path[2];    // 解析済みチャンネルの元パス
     MorphOutput                         out;           // 再合成の結果（morphed の f0/sp/ap＋wave）
 
     // 非同期モーフィングジョブ（ワーカーで morphing_channels を実行。GL への反映は
@@ -169,6 +171,6 @@ void rebuild_morph_bt_textures(MorphState& m);
 // morphed の sp/ap テクスチャだけを作り直す（レンジは計算済みのものを使用）。
 void rebuild_morphed_texture(MorphState& m);
 
-// 解析済みの Spectrogram を Track に反映する（テクスチャ生成・表示状態リセット・ログ）。
+// 解析済みの音声を Track に反映する（テクスチャ生成・表示状態リセット・ログ）。
 // GL を使うため必ずメインスレッドで呼ぶこと（解析はワーカーで analyze_file を使う）。
-void apply_track(Track& tr, const std::string& path, Spectrogram&& spec);
+void apply_track(Track& tr, const std::string& path, AnalyzedAudio&& audio);

@@ -92,47 +92,6 @@ GlTexture make_heatmap_texture(const Eigen::MatrixXd& data, int fs, bool as_db, 
     return upload_texture(pixels, W, H);
 }
 
-GlTexture make_spectrogram_texture(const Spectrogram& sp) {
-    unsigned char lut[256][4];
-    build_lut(lut);
-
-    // 各行を ERB レートで等間隔にサンプルし直す（表示の周波数軸を ERB 尺度にする）。
-    // 行 0 = 最高周波数（ERB 最大）。線形ビンの dB を Hz→ビンで補間して取得する。
-    const int    H       = sp.num_bins;          // テクスチャ高さ（行数）は据え置き
-    const int    W       = sp.num_frames;
-    const double range   = sp.db_max > sp.db_min ? sp.db_max - sp.db_min : 1.0;
-    const double nyquist = sp.fs / 2.0;
-    const double erb_max = freqscale::hz_to_erb(nyquist);
-
-    // 線形ビン b・フレーム t の dB。values は [行=num_bins-1-b][frame]（行0=最高周波数）。
-    auto db_at = [&](int b, int t) -> double {
-        b = std::clamp(b, 0, sp.num_bins - 1);
-        return sp.values[static_cast<std::size_t>(sp.num_bins - 1 - b) * W + t];
-    };
-
-    std::vector<unsigned char> pixels(static_cast<std::size_t>(H) * W * 4);
-    for (int r = 0; r < H; ++r) {
-        const double erb  = erb_max * (1.0 - static_cast<double>(r) / (H - 1));    // 行0=最大ERB
-        const double hz   = freqscale::erb_to_hz(erb);
-        const double binf = hz / nyquist * (sp.num_bins - 1);
-        const int    b0   = std::clamp(static_cast<int>(std::floor(binf)), 0, sp.num_bins - 1);
-        const int    b1   = std::min(b0 + 1, sp.num_bins - 1);
-        const double fr   = std::clamp(binf - b0, 0.0, 1.0);
-        for (int t = 0; t < W; ++t) {
-            const double db = db_at(b0, t) + (db_at(b1, t) - db_at(b0, t)) * fr;
-            const double u  = std::clamp((db - sp.db_min) / range, 0.0, 1.0);
-            const int    li = static_cast<int>(u * 255.0);
-            unsigned char* px = &pixels[(static_cast<std::size_t>(r) * W + t) * 4];
-            px[0]             = lut[li][0];
-            px[1]             = lut[li][1];
-            px[2]             = lut[li][2];
-            px[3]             = lut[li][3];
-        }
-    }
-
-    return upload_texture(pixels, W, H);
-}
-
 }    // namespace
 
 void rebuild_morphed_texture(MorphState& m) {
@@ -182,9 +141,12 @@ void rebuild_morph_bt_textures(MorphState& m) {
     rebuild_morphed_texture(m);
 }
 
-void apply_track(Track& tr, const std::string& path, Spectrogram&& spec) {
-    tr.spec  = std::move(spec);
-    tr.tex   = make_spectrogram_texture(tr.spec);
+void apply_track(Track& tr, const std::string& path, AnalyzedAudio&& audio) {
+    tr.channel = std::move(audio.channel);
+    tr.spec    = audio.spec;
+    tr.tex     = tr.channel ? make_heatmap_texture(tr.channel->sp(), tr.spec.fs, /*as_db=*/true, tr.spec.db_min,
+                                                   tr.spec.db_max)
+                            : GlTexture {};
     tr.y_min = 0.0;    // 周波数軸の表示範囲をリセット（ERB レート）
     tr.y_max = freqscale::hz_to_erb(tr.spec.fs / 2.0);
     // ミニマップの枠を全体表示で初期化。

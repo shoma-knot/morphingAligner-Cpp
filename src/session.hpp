@@ -27,7 +27,7 @@ struct SessionLoadData {
     bool                anchors_only = false;
     std::string         base_path, target_path;
     std::string         transcript;    // MFA 用の書き起こし（任意、base/target 共通）
-    Spectrogram         base_spec, target_spec;    // 表示用スペクトログラム（解析済み）
+    AnalyzedAudio       base_audio, target_audio;    // 解析済みの音声
     std::vector<Anchor> anchors;
 };
 

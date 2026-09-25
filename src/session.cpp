@@ -86,13 +86,13 @@ SessionLoadData load_session_data(const std::string& path) {
 
     // 音声を解析（デコード失敗などはここで検出）。GL は使わないのでワーカーで実行できる。
     try {
-        d.base_spec = analyze_file(d.base_path);
+        d.base_audio = analyze_file(d.base_path);
     } catch (const std::exception& e) {
         applog::add(std::string { "セッション読み込み失敗: base 解析エラー: " } + e.what());
         return d;
     }
     try {
-        d.target_spec = analyze_file(d.target_path);
+        d.target_audio = analyze_file(d.target_path);
     } catch (const std::exception& e) {
         applog::add(std::string { "セッション読み込み失敗: target 解析エラー: " } + e.what());
         return d;
@@ -126,8 +126,8 @@ void apply_session_data(App& app, SessionLoadData&& d) {
         return;
     }
 
-    apply_track(app.base, d.base_path, std::move(d.base_spec));
-    apply_track(app.target, d.target_path, std::move(d.target_spec));
+    apply_track(app.base, d.base_path, std::move(d.base_audio));
+    apply_track(app.target, d.target_path, std::move(d.target_audio));
     app.anchors    = std::move(d.anchors);
     app.speech.transcript = std::move(d.transcript);
 }

@@ -1,7 +1,7 @@
 // コアのライブラリ（GUI に依存しない部分）の単体テスト。
 //
-// 対象: 周波数尺度の変換、アンカーの Side による参照、フォルマントの移動平均、モーフィング用のアンカー整形、
-// アンカー自動生成、セッション JSON の読み書き。音声ファイルや Python は使わないので、
+// 対象: 周波数尺度の変換、アンカーの Side による参照、音声の解析（合成音の WAV を一時ディレクトリに作る）、フォルマントの移動平均、モーフィング用のアンカー整形、
+// アンカー自動生成、セッション JSON の読み書き。Python は使わないので、
 // どこで実行してもよい（CI の build.yml がビルド直後に各 OS で実行する）。
 //
 // ビルド: cmake -DMORPHALIGNER_BUILD_TESTS=ON ... → bin/core_test
@@ -9,9 +9,11 @@
 #include <cmath>
 #include <cstdio>
 #include <exception>
+#include <filesystem>
 #include <string>
 #include <vector>
 
+#include "analysis.hpp"
 #include "anchor.hpp"
 #include "auto_anchors.hpp"
 #include "formant_smoothing.hpp"
@@ -193,6 +195,52 @@ void test_auto_anchors() {
     }
 }
 
+// ── 音声の解析（表示とモーフィングで共有する1回の解析） ─────────
+void test_analysis() {
+    // 0.5 秒の合成音（150 Hz の鋸歯状波に近い倍音列）を WAV にして解析する。
+    constexpr int       fs = 16000;
+    std::vector<double> x(fs / 2);
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        const double t = static_cast<double>(i) / fs;
+        for (int h = 1; h <= 10; ++h) x[i] += 0.3 / h * std::sin(2.0 * 3.14159265358979 * 150.0 * h * t);
+    }
+    const std::filesystem::path wav = std::filesystem::temp_directory_path() / "morphaligner_core_test.wav";
+    std::string                 err;
+    expect(write_wav(wav.string(), x, fs, err), "analysis: テスト用の WAV を書ける");
+
+    AnalyzedAudio a;
+    try {
+        a = analyze_file(wav.string());
+    } catch (const std::exception& e) {
+        expect(false, std::string { "analysis: analyze_file が例外: " } + e.what());
+    }
+    std::error_code ec;
+    std::filesystem::remove(wav, ec);
+    if (!a.channel) return;
+
+    const MorphChannel& c = *a.channel;
+    expect(c.fs == fs && near(c.duration, 0.5, 1e-3) && c.n_frames > 0 && c.sp().cols() == c.n_frames
+             && c.ap().cols() == c.n_frames && c.f0().size() == c.n_frames,
+           "analysis: f0 / sp / ap がフレーム数ぶん揃う");
+    expect(a.spec.fs == c.fs && a.spec.num_frames == c.n_frames && a.spec.num_bins == c.nbin
+             && near(a.spec.duration, c.duration) && a.spec.db_min < a.spec.db_max,
+           "analysis: 表示用の要約がチャンネルと一致する");
+    expect(near(a.spec.db_max, 10.0 * std::log10(c.sp().maxCoeff())), "analysis: dB の範囲は sp から求める");
+
+    // 同じチャンネルどうしのモーフィング（アンカーなし）が最後まで通る。
+    const MorphOutput o = morphing_channels(c, c, {}, MorphRates::uniform(0.5));
+    expect(o.ok() && o.fs == fs && !o.wave.empty() && std::fabs(static_cast<double>(o.wave.size()) - c.duration * fs) < fs * 0.02,
+           "analysis: 解析結果をそのままモーフィングに使える");
+
+    bool threw = false;
+    try {
+        analyze_file((std::filesystem::temp_directory_path() / "morphaligner_no_such_file.wav").string());
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    expect(threw, "analysis: 開けないファイルは例外");
+}
+
 // ── セッション JSON ─────────────────────────────────────────
 void test_session_json() {
     SessionFile s;
@@ -245,6 +293,7 @@ int main() {
     test_anchor_side();
     test_smooth_formants();
     test_build_anchor_matrices();
+    test_analysis();
     test_auto_anchors();
     test_session_json();
 

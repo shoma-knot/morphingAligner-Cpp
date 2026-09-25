@@ -3,7 +3,7 @@
 /// @file morphing.hpp
 /// @brief tcmorph（Kawahara の wordTV2WmorphingEngineRev.m の移植）による音声モーフィング。
 ///
-/// base/target を WORLD で解析し（Harvest=F0, CheapTrick=スペクトル包絡, D4C=非周期性）、
+/// WORLD で解析済みの base/target（analysis.hpp の MorphChannel）と、
 /// アンカーと率を tcmorph::aligner::WordTV2WMorphing に渡してモーフィングし、WORLD で
 /// 合成する。エンジンのオプションは既定値＝MATLAB 版の挙動を再現する側のまま使う。
 ///
@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-#include <tcmorph/generalized_tc_morphing.hpp>    // WorldParameter などの共通データ構造
+#include "analysis.hpp"    // MorphChannel
 
 struct Anchor;
 
@@ -29,24 +29,6 @@ struct MorphRates {
     static MorphRates uniform(double r) { return { r, r, r, r, r }; }
 };
 
-// 1音源（base/target/morphed）の WORLD パラメータと表示用メタ情報。
-// 実データ（f0/sp/ap）は world の中にある。sp/ap は tcmorph の向き＝(nbin, n_frames)
-// の列優先で、1フレーム分が連続メモリに並ぶ。
-struct MorphChannel {
-    int    fs = 0, fft_size = 0, nbin = 0, n_frames = 0;
-    double frame_period = 0;    // ms
-    double duration     = 0;    // s
-
-    tcmorph::WorldParameter world;
-
-    bool empty() const { return n_frames == 0; }
-
-    // 表示用アクセサ（world の中身への参照）。
-    const Eigen::VectorXd& f0() const { return world.source_parameter.f0; }
-    const Eigen::MatrixXd& sp() const { return world.spectrum_parameter.spectrogram; }
-    const Eigen::MatrixXd& ap() const { return world.source_parameter.aperiodicity; }
-};
-
 // モーフィング結果（morphed の中間データ＋合成音声）。error が空なら成功。
 struct MorphOutput {
     MorphChannel        morphed;    // モーフ後の f0/sp/ap（表示用）
@@ -59,10 +41,6 @@ struct MorphOutput {
 
     bool ok() const { return error.empty(); }
 };
-
-// 1音源を WORLD で解析して f0/sp/ap のチャンネルを作る（base/target 用）。
-// 失敗時は err に理由を入れ、empty() なチャンネルを返す。
-MorphChannel analyze_channel(const std::string& path, std::string& err);
 
 // 解析済みの base/target チャンネルから、anchors と軸ごとの率で morphed を合成する
 // （base/target の再解析は行わない）。失敗時は結果の error にメッセージを入れる。

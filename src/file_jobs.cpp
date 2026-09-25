@@ -41,8 +41,8 @@ void launch_load_track_job(App& app, Side side) {
         applog::add(name + " 解析中...: " + path);
         try {
             // std::function はコピー可能な呼び出し体を要求するので shared_ptr で持ち回す。
-            auto spec = std::make_shared<Spectrogram>(analyze_file(path));
-            return [side, path, spec](App& a) { apply_track(a.track(side), path, std::move(*spec)); };
+            auto audio = std::make_shared<AnalyzedAudio>(analyze_file(path));
+            return [side, path, audio](App& a) { apply_track(a.track(side), path, std::move(*audio)); };
         } catch (const std::exception& e) {
             applog::add(name + " 読み込み失敗: " + e.what());
             return {};
