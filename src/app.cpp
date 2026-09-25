@@ -122,9 +122,9 @@ void rebuild_morph_bt_textures(MorphState& m) {
         if (ch == nullptr || ch->empty()) continue;
         any = true;
         // log は単調なので、最小/最大の係数から dB レンジが決まる。
-        const Eigen::MatrixXd& s = ch->sp();
-        dmin = std::min(dmin, 10.0 * std::log10(std::max(s.minCoeff(), 1e-12)));
-        dmax = std::max(dmax, 10.0 * std::log10(std::max(s.maxCoeff(), 1e-12)));
+        const Eigen::MatrixXd& sp = ch->sp();
+        dmin = std::min(dmin, 10.0 * std::log10(std::max(sp.minCoeff(), 1e-12)));
+        dmax = std::max(dmax, 10.0 * std::log10(std::max(sp.maxCoeff(), 1e-12)));
     }
     if (!any) {
         m.db_min = m.db_max = 0.0;
