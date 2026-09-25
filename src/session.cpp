@@ -24,7 +24,7 @@ bool save_session(const App& app, const std::string& path) {
     SessionFile s;
     s.base_path   = app.base.path;
     s.target_path = app.target.path;
-    s.transcript  = app.transcript;
+    s.transcript  = app.speech.transcript;
     s.anchors     = app.anchors;
 
     std::ofstream os(path, std::ios::binary);
@@ -129,5 +129,5 @@ void apply_session_data(App& app, SessionLoadData&& d) {
     apply_track(app.base, d.base_path, std::move(d.base_spec));
     apply_track(app.target, d.target_path, std::move(d.target_spec));
     app.anchors    = std::move(d.anchors);
-    app.transcript = std::move(d.transcript);
+    app.speech.transcript = std::move(d.transcript);
 }

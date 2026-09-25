@@ -20,6 +20,7 @@
 - CI: push ごとにビルド確認とコアの単体テスト、各 OS での環境構築＋C++ → Python の結合テスト（`ci.yml`）。
 - リファクタリング（issue #1）: GUI に依存しない処理を静的ライブラリ `morphaligner_core` に分けた（第1段階）。
   base/target の分岐を `Side` に、GL テクスチャを RAII の `GlTexture` にした（第2段階）。
+  `App` を部分構造体に分け、ジョブを `JobQueue` に統一し、`ui.cpp` を画面ごと・役割ごとに分けた（第3段階）。
 - 以下の「実装済み機能」は時系列で追記しているため、前半の節には後で置き換わった記述がある
   （置き換わった箇所には注記を入れてある）。
 
@@ -51,10 +52,20 @@
 - `src/analysis.hpp` / `src/analysis.cpp` — 音声ファイル → 表示用スペクトル包絡スペクトログラムの解析（GL非依存）
 - `src/anchor.hpp` — アンカーの型（`Anchor`/`FreqAnchor`）と `Side`（base/target の別）。GUI 非依存
 - `src/gl_texture.hpp` / `src/gl_texture.cpp` — GL テクスチャの所有者 `GlTexture`（RAII、ムーブのみ）
-- `src/app.hpp` / `src/app.cpp` — 状態モデル（`Track`/`App`）、`apply_track`、
-  テクスチャ生成（ERB 等間隔）、共有 `kColormap`
-- `src/ui.hpp` / `src/ui.cpp` — 画面全体（`draw_root`）。タブ、左パネル、スペクトログラム、ミニマップ、
-  モーフィングタブ、ライセンス表示、ログ、非同期ジョブ（`launch_ui_job` / `request_morph`）
+- `src/app.hpp` / `src/app.cpp` — 状態モデル（`Track`、`App` = `SpeechState` / `MorphState` / `ViewState` /
+  `Jobs`）、`apply_track`、テクスチャ生成（ERB 等間隔）、共有 `kColormap`
+- `src/jobs.hpp` / `src/jobs.cpp` — ワーカーで実行し完了時にメインスレッドで反映する `JobQueue`
+- 画面（描画だけ。状態の操作は下のコントローラを呼ぶ）:
+  - `src/ui.hpp` / `src/ui.cpp` — 画面全体（`draw_root`）。ジョブの回収、タブ、ログ
+  - `src/ui_align.cpp` — アライメントタブ（左パネル、スペクトログラム、ミニマップ、周波数軸の入力）
+  - `src/ui_morph.cpp` — モーフィングタブ（スライダー、3×3 プロット、出力）
+  - `src/ui_license.cpp` — ライセンス表示タブ
+  - `src/ui_tabs.hpp`（各タブの宣言）、`src/ui_common.hpp` / `.cpp`（ERB の目盛り、`help_marker` など）
+- 状態を操作するコード（コントローラ）:
+  - `src/speech_controller.hpp` / `.cpp` — 環境チェック、フォルマント推定・音素アライメントのジョブ、
+    移動平均の更新、アンカー自動生成の実行
+  - `src/morph_controller.hpp` / `.cpp` — モーフィング用の解析、非同期のモーフィング、再生
+  - `src/file_jobs.hpp` / `.cpp` — ファイルダイアログを伴う操作（音声・セッションの読み込み/保存、WAV 保存）
 - `src/anchors.hpp` / `src/anchors.cpp` — 時間/周波数アンカーの描画・操作、パネル間の対応線
 - `src/morphing.hpp` / `src/morphing.cpp` — WORLD 解析（`analyze_channel`）と tcmorph によるモーフィング
   （`morphing_channels`）、アンカーの整形（`build_anchor_matrices`）、WAV 書き出し
@@ -368,7 +379,7 @@ Montreal Forced Aligner（MFA）で単語/音素の区間を求めて画面に�
   - 終了時: 子は Job Object（Linux はプロセスグループ）に入れ、`main.cpp` がループ後に
     `terminate_speech_tools()` で孫の MFA ごと止める（止めないと future が子を待ち、閉じた後も
     数十秒固まる）。スクリプトの作業ファイルも C++ 側の一時ディレクトリ内に作らせるので残らない。
-- **ジョブ**（`ui.cpp`）: `App::tool_jobs`（複数同時可、ui_job とは別枠）。完了時の適用処理で
+- **ジョブ**（`ui.cpp`。※ 2026-09-25 から `speech_controller.cpp` の `App::jobs.tools`）: `App::tool_jobs`（複数同時可、ui_job とは別枠）。完了時の適用処理で
   `Track::path` が変わっていたら結果を捨てる。実行中は `Track::formant_busy / align_busy`。
 - **フォルマント**: Burg 法（time_step 5ms, 5 本推定, 最大フォルマント既定 5500Hz, 表示 F1–F4）。
   未定義フレームを除いて ERB に変換して保持し、スペクトログラムに `PlotScatter`（半径 1.5px,
@@ -548,6 +559,32 @@ Montreal Forced Aligner（MFA）で単語/音素の区間を求めて画面に�
   あるうちに解放される（起動→終了で終了コード 0 を確認）。
 - 単体テストに `Side` による参照の2項目を追加（計 24 項目）。
 
+### リファクタリング第3段階: App の分割・ジョブの統一・ui.cpp の分割（2026-09-25、issue #1）
+振る舞いは変えない（例外時の後始末だけ新たに入れた）。
+- **`App` の分割**（`app.hpp`）: 30 以上のメンバが同じ階層に並んでいたのを、`SpeechState`（環境・設定・
+  書き起こし・表示の切替）、`MorphState`（率・解析チャンネル・結果・ジョブ・テクスチャ）、`ViewState`
+  （ミニマップ・アンカーの強調・ログの開閉・フォント・対応線の端点・ライセンス表示の選択）、`Jobs` に分けた。
+  メンバ名は `morph_rates` → `morph.rates` のように接頭辞を外した。`SpeechEnv` は `App` の外の enum に。
+  `rebuild_morph_bt_textures` / `rebuild_morphed_texture` は `MorphState&` だけを受ける。
+  `Jobs` は `App` の最後に置く（破棄は逆順なので、実行中のジョブの終了を待ってから他を破棄する）。
+- **関数内の `static` の廃止**: 対応線の端点（`draw_right_panel`）→ `ViewState::edges[2]`、モーフィングの
+  前回の警告（`poll_morph_job`）→ `MorphState::last_warnings`、ライセンス表示の選択と本文 →
+  `ViewState::license_*`。既定のセッションパスは値の変わらないキャッシュなので `file_jobs.cpp` の関数に残した。
+- **ジョブの統一**（`jobs.hpp`）: `ui_job`（1本）と `tool_jobs`（複数）の別々の実装を `JobQueue` にまとめた
+  （`App::jobs.ui` は `try_launch` で1本に限り、`App::jobs.tools` は `launch`）。
+  - ワーカーが投げた例外は「内部エラー（ワーカー）: ...」としてログに出し、`launch` に渡した `on_error` を
+    メインスレッドで呼ぶ。フォルマント推定・音素アライメントは `on_error` で `formant_busy` / `align_busy` を
+    下ろし、環境チェックは Unavailable にする（以前は例外が `main` まで上がってアプリが終了していた）。
+  - 反映処理の例外も捕まえてログに出す。`poll` は完了したものを先に取り出してから反映する（反映処理が
+    新しいジョブを `launch` しても、走査中のイテレータを壊さない）。
+  - モーフィングは「実行中の再要求を畳む・世代で古い結果を捨てる」があるので `MorphState::job` のまま。
+    `poll_morph_job` で `get()` の例外を捕まえて失敗として扱うようにした。
+- **`ui.cpp` の分割**: 1,194 行を、画面（`ui.cpp` / `ui_align.cpp` / `ui_morph.cpp` / `ui_license.cpp` /
+  `ui_common.cpp`）と、状態を操作するコード（`speech_controller.cpp` / `morph_controller.cpp` /
+  `file_jobs.cpp`）に分けた。関数の本体は行範囲で機械的に移し、呼び出しだけを差し替えている。
+  セッション保存/読み込みと WAV 保存のダイアログ処理は、ボタンの中から `file_jobs.cpp` の関数に移した。
+- 経過秒数の `seconds_since` は `applog::seconds_since`（`log.hpp`）に移した。
+
 ## MATLAB版との差分
 
 ※ **旧・自前実装についての比較**。現在は tcmorph（MATLAB 版の移植、丸め誤差レベルで一致を
@@ -641,7 +678,7 @@ install-win.bat          # Windows（-Yes で非対話）
 
 ## 注意点（fragile）
 
-- **周波数軸の手組み入力処理**（`ui.cpp` の `FIXME(freq-axis-input)` ブロック）:
+- **周波数軸の手組み入力処理**（`ui_align.cpp` の `FIXME(freq-axis-input)` ブロック）:
   ホイールは X 専用ズームにするため Y 軸を `Lock` し、Y の表示範囲は `tr.y_min/y_max` に
   自前で保持して毎フレーム `SetupAxisLimits(Always)` で再適用している。ImPlot の軸状態を
   複製しているため壊れやすい（`IsPlotHovered` ゲートが2段プロット間のドラッグ跨ぎで誤作動、
@@ -655,8 +692,8 @@ install-win.bat          # Windows（-Yes で非対話）
 
 ## 次にやること
 
-- リファクタリング（issue #1）の続き: 第3段階（ジョブの統一・`ui.cpp` の分割・`App` の分割）、
-  第4段階（解析の一本化）。
+- リファクタリング（issue #1）の続き: 第4段階（解析の一本化）、その他（重複・閾値・入力範囲の定数化、
+  エラーの返し方の統一、ログのリングバッファ化、セッションの version 検査、CMake の古い書き方）。
 
 - 再生の停止/一時停止・再生位置バー（現状は `play_oneshot` / `play_pcm` で頭から再生のみ）。
 - アンカーの整列/ソートや、アンカー編集の Undo。

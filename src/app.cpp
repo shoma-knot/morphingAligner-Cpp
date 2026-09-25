@@ -135,26 +135,26 @@ GlTexture make_spectrogram_texture(const Spectrogram& sp) {
 
 }    // namespace
 
-void rebuild_morphed_texture(App& app) {
-    app.morph_tex_sp[1].reset();
-    app.morph_tex_ap[1].reset();
+void rebuild_morphed_texture(MorphState& m) {
+    m.tex_sp[1].reset();
+    m.tex_ap[1].reset();
 
-    const MorphChannel& c = app.morph_out.morphed;
-    if (!app.morph_out.ok() || c.empty()) return;
-    app.morph_tex_sp[1] =
-      make_heatmap_texture(c.sp(), c.fs, /*as_db=*/true, app.morph_db_min, app.morph_db_max);
-    app.morph_tex_ap[1] = make_heatmap_texture(c.ap(), c.fs, /*as_db=*/false, 0.0, 1.0);
+    const MorphChannel& c = m.out.morphed;
+    if (!m.out.ok() || c.empty()) return;
+    m.tex_sp[1] =
+      make_heatmap_texture(c.sp(), c.fs, /*as_db=*/true, m.db_min, m.db_max);
+    m.tex_ap[1] = make_heatmap_texture(c.ap(), c.fs, /*as_db=*/false, 0.0, 1.0);
 }
 
-void rebuild_morph_bt_textures(App& app) {
-    for (GlTexture& t : app.morph_tex_sp) t.reset();
-    for (GlTexture& t : app.morph_tex_ap) t.reset();
+void rebuild_morph_bt_textures(MorphState& m) {
+    for (GlTexture& t : m.tex_sp) t.reset();
+    for (GlTexture& t : m.tex_ap) t.reset();
 
     // sp の共通 dB レンジを base/target から算出（morphed は両者の log 補間なのでレンジ内）。
     double dmin = 1e30, dmax = -1e30;
     bool   any  = false;
     for (Side s : kSides) {
-        const MorphChannel* ch = app.morph_channel(s);
+        const MorphChannel* ch = m.channel(s);
         if (ch == nullptr || ch->empty()) continue;
         any = true;
         // log は単調なので、最小/最大の係数から dB レンジが決まる。
@@ -163,23 +163,23 @@ void rebuild_morph_bt_textures(App& app) {
         dmax = std::max(dmax, 10.0 * std::log10(std::max(s.maxCoeff(), 1e-12)));
     }
     if (!any) {
-        app.morph_db_min = app.morph_db_max = 0.0;
-        rebuild_morphed_texture(app);
+        m.db_min = m.db_max = 0.0;
+        rebuild_morphed_texture(m);
         return;
     }
-    app.morph_db_min = dmin;
-    app.morph_db_max = dmax;
+    m.db_min = dmin;
+    m.db_max = dmax;
 
     for (Side s : kSides) {
-        const MorphChannel* ch = app.morph_channel(s);
+        const MorphChannel* ch = m.channel(s);
         if (ch == nullptr || ch->empty()) continue;
         const int col         = s == Side::Base ? 0 : 2;    // テクスチャの列（1 は morphed）
-        app.morph_tex_sp[col] = make_heatmap_texture(ch->sp(), ch->fs, /*as_db=*/true, dmin, dmax);
-        app.morph_tex_ap[col] = make_heatmap_texture(ch->ap(), ch->fs, /*as_db=*/false, 0.0, 1.0);
+        m.tex_sp[col] = make_heatmap_texture(ch->sp(), ch->fs, /*as_db=*/true, dmin, dmax);
+        m.tex_ap[col] = make_heatmap_texture(ch->ap(), ch->fs, /*as_db=*/false, 0.0, 1.0);
     }
 
     // レンジが変わったので morphed 側も作り直す。
-    rebuild_morphed_texture(app);
+    rebuild_morphed_texture(m);
 }
 
 void apply_track(Track& tr, const std::string& path, Spectrogram&& spec) {
@@ -193,7 +193,7 @@ void apply_track(Track& tr, const std::string& path, Spectrogram&& spec) {
     tr.view_y0 = 0.0;
     tr.view_y1 = tr.y_max;
     // フォルマントと音素セグメンテーションは前の音声のものなので捨てる。フォルマントは
-    // パスが変わったことを ui.cpp の ensure_formants が見て、自動で推定し直す。
+    // パスが変わったことを speech_controller.cpp の ensure_formants が見て、自動で推定し直す。
     tr.formants     = {};
     tr.formants_ma  = {};
     tr.formant_path.clear();    // 同じファイルを読み直した場合も推定し直させる

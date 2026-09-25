@@ -65,12 +65,20 @@ add_executable(morphingAlignerCpp
     src/anchors.cpp
     src/app.cpp
     src/app_icon.cpp
+    src/file_jobs.cpp
     src/gl_texture.cpp
+    src/jobs.cpp
     src/log.cpp
     src/main.cpp
+    src/morph_controller.cpp
     src/session.cpp
+    src/speech_controller.cpp
     src/speech_view.cpp
-    src/ui.cpp)
+    src/ui.cpp
+    src/ui_align.cpp
+    src/ui_common.cpp
+    src/ui_license.cpp
+    src/ui_morph.cpp)
 # タイトルバーに出す版。上の project() の VERSION と APP_VERSION_SUFFIX を合わせたもの
 # なので、リリース時はそちらを更新すること。
 target_compile_definitions(morphingAlignerCpp PRIVATE APP_VERSION="${PROJECT_VERSION}${APP_VERSION_SUFFIX}")

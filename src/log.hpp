@@ -3,6 +3,7 @@
 /// @file log.hpp
 /// @brief 画面下部のログ領域に出す動作ログ（スレッドセーフ。ワーカーからも add 可）。
 
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -16,5 +17,8 @@ std::vector<std::string> lines();
 
 // ログを消去する。
 void clear();
+
+// t0 からの経過秒数（処理時間をログに出す用）。
+double seconds_since(std::chrono::steady_clock::time_point t0);
 
 }    // namespace applog

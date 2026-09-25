@@ -163,7 +163,7 @@ int main() {
 
     try {
         App app;
-        app.mono_font = mono_font;
+        app.view.mono_font = mono_font;
         applog::add("起動しました");
 
         while (!glfwWindowShouldClose(window)) {

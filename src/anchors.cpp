@@ -247,9 +247,9 @@ void draw_anchors(App& app, Side side, const Spectrogram& sp, std::vector<EdgePo
     const ImPlotDragToolFlags line_flags  = io.KeyCtrl ? ImPlotDragToolFlags_NoInputs : ImPlotDragToolFlags_None;
     const ImPlotDragToolFlags point_flags = io.KeyCtrl ? ImPlotDragToolFlags_Delayed : ImPlotDragToolFlags_NoInputs;
 
-    // 番号を出す対象は前フレームに決めたもの（App のコメント参照）。アンカーが削除されて
+    // 番号を出す対象は前フレームに決めたもの（ViewState のコメント参照）。アンカーが削除されて
     // 範囲外になっていることがあるので検査する。
-    int active = app.active_anchor;
+    int active = app.view.active_anchor;
     if (active >= static_cast<int>(app.anchors.size())) active = -1;
 
     bool any_active = false;
@@ -266,12 +266,12 @@ void draw_anchors(App& app, Side side, const Spectrogram& sp, std::vector<EdgePo
     // 出したままにするため）、次に周波数点、最後にカーソルに最も近い線。距離判定を併用
     // するのは Ctrl の有無で線か点の一方が NoInputs になりホバーを返さなくなるため。
     if (hovered >= 0) {
-        app.hover_anchor = hovered;
+        app.view.hover_anchor = hovered;
     } else if (hover_fi >= 0) {
-        app.hover_anchor = hover_fi;
+        app.view.hover_anchor = hover_fi;
     } else if (ImPlot::IsPlotHovered()) {
         const int pick = nearest_anchor(app, side, io, kPickPx);
-        if (pick >= 0) app.hover_anchor = pick;
+        if (pick >= 0) app.view.hover_anchor = pick;
     }
 
     capture_edges(app, side, lim, out_edges);

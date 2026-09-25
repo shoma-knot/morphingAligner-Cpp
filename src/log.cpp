@@ -31,4 +31,8 @@ void clear() {
     g_lines.clear();
 }
 
+double seconds_since(std::chrono::steady_clock::time_point t0) {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+}
+
 }    // namespace applog
