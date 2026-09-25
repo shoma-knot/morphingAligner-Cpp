@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 4.0)
 project(morphingAlignerCpp VERSION 26.09.25)
-# 同じ日付の版を出し直すときの接尾辞（例: ".a"。無ければ空）。project() の VERSION は
+# 同じ日付の版を出し直すときの接尾辞（例: "a"。無ければ空）。project() の VERSION は
 # 数字しか書けないので別に持つ。タイトルバーの版は「VERSION + 接尾辞」になり、リリースの
 # タグ（v<VERSION><接尾辞>）との一致も build.yml がこの2つを合わせて検査する。
-set(APP_VERSION_SUFFIX ".a")
+set(APP_VERSION_SUFFIX "a")
 set(CMAKE_CXX_STANDARD 17)
 
 # MSVC の CMAKE_CXX_FLAGS には /EHsc などの既定値が入っており、丸ごと上書きすると
