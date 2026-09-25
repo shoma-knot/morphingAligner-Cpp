@@ -1,6 +1,6 @@
 # morphingAligner 開発ログ
 
-最終更新: 2026-09-25（現行版 v26.09.25.a、ブランチ `refactor/structure` でリファクタリング中）
+最終更新: 2026-09-25（現行版 v26.09.25b）
 
 ## 最終目標
 
@@ -45,7 +45,7 @@
 - C++17、CMake 4.0 以上。ビルドは vcpkg マニフェストモード＋CMakePresets（Ninja）。
 - WORLD の example ビルドは `WORLD_BUILD_EXAMPLES=OFF` で無効化（ビルド時間短縮）。
 - 版は `CMakeLists.txt` の `project(... VERSION 26.09.25)` と `APP_VERSION_SUFFIX`（同日の出し直し用の
-  接尾辞。例 `".a"`、無ければ空）。合わせたものを `APP_VERSION` としてコンパイル定義で渡し、タイトルバーに
+  接尾辞。英小文字1字で例 `"a"`、無ければ空。2026-09-25 までは `".a"` のようにピリオド付きだった）。合わせたものを `APP_VERSION` としてコンパイル定義で渡し、タイトルバーに
   `morphingAligner v<版>` と出す（CMake は先頭ゼロを正規化しないので `26.09.25` のまま。VERSION には数字しか
   書けないので接尾辞は別の変数にしている）。
 
@@ -353,6 +353,7 @@ Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋�
 - 意匠は `tools/gen_icon.py` が持ち、`icon/*.png`・`icon/morphingaligner.ico`・`src/app_icon_data.inc`
   を生成。ウィンドウアイコン（16/32/48/64px RGBA）は実行ファイルに埋め込み `glfwSetWindowIcon` へ。
 - Windows: `.ico` を `app_icon.rc.in`（configure_file で絶対パス展開）で実行ファイルに埋め込む。
+  ※ 2026-09-25 からリソース名は `GLFW_ICON`（ウィンドウクラスのアイコンにも使われる。下の節）。
   rc.exe には `/c65001` を渡す（UTF-8 コメントが化けるため）。.ico は 128px 未満 BMP / 以上 PNG。
 - Linux(GNOME): タスクバーは WM_CLASS で .desktop に紐づけるため、`tools/install-desktop-entry.sh`
   で登録（外に出るのはシンボリックリンク1個、`Path=` で作業ディレクトリを固定、`NoDisplay=true`）。
@@ -641,6 +642,23 @@ Montreal Forced Aligner（MFA）で単語/音素の区間を求めて画面に�
 - 英語のまま残っていたコメント（`app.cpp`・`main.cpp`）を日本語にした。
 - 単体テストを4項目追加（計 34 項目）: セッションの版の検査3項目、解析の失敗が理由つきで返ること。
 
+### Windows のタスクバーのアイコンと v26.09.25b（2026-09-25）
+- 症状: タイトルバー（ウィンドウの左端）にはアイコンが出るのに、タスクバーは Windows の既定のアイコンだった。
+- 原因: GLFW はウィンドウクラスを登録するとき、実行ファイルから **`GLFW_ICON` という名前**のアイコン
+  リソースを探し、無ければ `IDI_APPLICATION`（既定のアイコン）をクラスのアイコンにする
+  （glfw の `win32_window.c`）。本アプリのリソースは番号 `101` だったので既定のアイコンになっていた。
+  タイトルバーは `glfwSetWindowIcon`（`WM_SETICON`）でウィンドウごとに設定したものが出るが、
+  タスクバーはクラスのアイコンを見る。
+- 修正: `app_icon.rc.in` のリソース名を `GLFW_ICON` にした（番号付きの方は消した。名前付きのリソースは
+  番号付きより前に並ぶので、エクスプローラーの代表アイコンもこれになる）。
+- 確認: 起動したウィンドウのクラスのアイコン（`GetClassLongPtr(GCLP_HICON)`）が、修正前は
+  `LoadIcon(NULL, IDI_APPLICATION)` と同じハンドル、修正後は別のもの（埋め込みのアイコン）になった。
+  実行ファイルの代表アイコン（`ExtractAssociatedIcon`）も本アプリの意匠のまま。タスクバーの見た目は
+  ユーザーが確認。
+- 版を `v26.09.25b` とした（`APP_VERSION_SUFFIX "b"`）。リファクタリング（PR #2）とこの修正を含む。
+- 版の書式を `v{yy.mm.dd}.{a-z}`（例 `v26.09.25.a`）から `v{yy.mm.dd}{a-z}`（例 `v26.09.25b`）に変えた
+  （接尾辞のピリオドをなくした）。build.yml のタグ判定は「VERSION + 接尾辞」の連結なので変更不要。
+
 ## MATLAB版との差分
 
 ※ **旧・自前実装についての比較**。現在は tcmorph（MATLAB 版の移植、丸め誤差レベルで一致を
@@ -708,7 +726,7 @@ install-win.bat          # Windows（-Yes で非対話）
 
 ### リリース手順
 1. `CMakeLists.txt` の `project(... VERSION x.y.z)` と `APP_VERSION_SUFFIX` を更新してコミット
-   （新しい日付の版では接尾辞を `""` に戻す。同日の出し直しは `".a"`, `".b"`, ...）。
+   （新しい日付の版では接尾辞を `""` に戻す。同日の出し直しは `"a"`, `"b"`, ... でタグは `v26.09.25a` の形）。
 2. `git tag vx.y.z<接尾辞> && git push origin vx.y.z<接尾辞>`（タグとアプリの版が食い違うとリリースが止まる）。
 3. `release.yml` が両環境をビルドし、GitHub リリースを作成（同じタグの再実行は差し替え）。
 
@@ -749,7 +767,7 @@ install-win.bat          # Windows（-Yes で非対話）
 
 ## 次にやること
 
-
+- 音声・セッションをコマンドライン引数で読み込めるようにする（開発を楽にするため。構成を検討中）。
 - 再生の停止/一時停止・再生位置バー（現状は `play_oneshot` / `play_pcm` で頭から再生のみ）。
 - アンカーの整列/ソートや、アンカー編集の Undo。
 - base/target の fs 不一致への対応（リサンプリング）。

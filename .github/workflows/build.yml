@@ -53,7 +53,7 @@ jobs:
           submodules: recursive
 
       - name: タグとアプリの版が一致しているか見る
-        # タイトルバーに出る版は project() の VERSION と APP_VERSION_SUFFIX（".a" など）
+        # タイトルバーに出る版は project() の VERSION と APP_VERSION_SUFFIX（"a" など）
         # から来る。食い違ったまま公開すると、v0.2.0 のリリースなのにアプリが v0.1.0 と
         # 名乗ることになる。タグから起動されたときだけ見る。"-rc1" などの接尾辞は許す。
         if: github.ref_type == 'tag'
