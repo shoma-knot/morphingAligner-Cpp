@@ -29,6 +29,18 @@ struct MorphRates {
     static MorphRates uniform(double r) { return { r, r, r, r, r }; }
 };
 
+// 軸の一覧（添字で回すとき用）。key はファイル名や JSON に使う短い名前。
+// 率は rates.*kMorphAxes[i].rate で読み書きする。
+struct MorphAxis {
+    const char* key;
+    double MorphRates::*rate;
+};
+inline constexpr MorphAxis kMorphAxes[] = {
+    { "tx", &MorphRates::tx }, { "fx", &MorphRates::fx }, { "fo", &MorphRates::fo },
+    { "sl", &MorphRates::sl }, { "ap", &MorphRates::ap },
+};
+inline constexpr int kMorphAxisCount = static_cast<int>(sizeof kMorphAxes / sizeof kMorphAxes[0]);
+
 // モーフィング結果（morphed の中間データ＋合成音声）。error が空なら成功。
 struct MorphOutput {
     MorphChannel        morphed;    // モーフ後の f0/sp/ap（表示用）

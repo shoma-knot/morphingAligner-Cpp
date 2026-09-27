@@ -53,6 +53,7 @@ add_subdirectory(third-party/world)
 add_library(morphaligner_core STATIC
     src/analysis.cpp
     src/auto_anchors.cpp
+    src/batch_export.cpp
     src/formant_smoothing.cpp
     src/launch_options.cpp
     src/morphing.cpp

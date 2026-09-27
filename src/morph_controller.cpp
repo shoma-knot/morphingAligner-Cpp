@@ -4,12 +4,15 @@
 #include <chrono>
 #include <cstdio>
 #include <exception>
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
 #include "app.hpp"
+#include "batch_export.hpp"
 #include "log.hpp"
 #include "morphing.hpp"
 
@@ -87,6 +90,7 @@ void poll_morph_job(App& app) {
     } else {
         const double ms = applog::seconds_since(m.job_t0) * 1000.0;
         m.out           = std::move(out);
+        m.last_ms       = ms;    // 連続書き出しの所要時間の見積もりに使う
         // 警告はアンカーが同じなら毎回同じ内容になる。リアルタイム更新でスライダーを
         // 動かすたびに積むとログが埋まるので、内容が変わったときだけ出す。
         if (m.out.warnings != m.last_warnings) {
@@ -106,4 +110,86 @@ void poll_morph_job(App& app) {
     m.job_play = false;
 
     if (m.job_pending) request_morph(app);
+}
+
+// ── 連続書き出し ────────────────────────────────────────────
+std::string batch_default_prefix(const App& app) {
+    std::string s;
+    for (Side side : kSides) {
+        const std::string& p = app.track(side).path;
+        if (p.empty()) continue;
+        if (!s.empty()) s += '-';
+        s += std::filesystem::u8path(p).stem().u8string();
+    }
+    return s.empty() ? std::string { "morph" } : s;
+}
+
+std::string batch_default_dir(const App& app) {
+    // 素材の置き場所を既定にする（書き出したものを素材の隣に置くことが多いため）。
+    if (!app.base.path.empty()) return std::filesystem::u8path(app.base.path).parent_path().u8string();
+    std::error_code ec;
+    const auto      d = std::filesystem::current_path(ec);
+    return ec ? std::string {} : d.u8string();
+}
+
+// ワーカーは App に触れない。解析チャンネルは immutable なので shared_ptr のまま共有し、
+// アンカーと設定はコピーを渡す（書き出し中に UI で編集されても結果が揺れないように）。
+void start_batch_export(App& app) {
+    MorphState& m = app.morph;
+    if (m.batch_running()) return;
+    if (!m.channel(Side::Base) || !m.channel(Side::Target)) return;
+
+    BatchExportRequest req;
+    req.base        = m.ch[side_index(Side::Base)];
+    req.target      = m.ch[side_index(Side::Target)];
+    req.anchors     = app.anchors;
+    req.base_path   = app.base.path;
+    req.target_path = app.target.path;
+    req.transcript  = app.speech.transcript;
+    req.settings    = m.batch;
+
+    auto       progress = std::make_shared<BatchExportProgress>();
+    const bool started  = app.jobs.ui.try_launch(
+      [req, progress]() -> JobApply {
+          // どの軸を掃引し、ほかをどこに固定したかもログに残す。
+          std::string axes;
+          if (batch_sweeps_all_axes(req.settings)) {
+              axes = "全軸";
+          } else {
+              std::string swept, fixed;
+              for (int i = 0; i < kMorphAxisCount; ++i) {
+                  if (req.settings.sweep[i]) {
+                      swept += (swept.empty() ? "" : "+") + std::string { kMorphAxes[i].key };
+                  } else {
+                      char buf[32];
+                      std::snprintf(buf, sizeof buf, "%s%s=%.2f", fixed.empty() ? "" : ", ", kMorphAxes[i].key,
+                                    req.settings.fixed.*kMorphAxes[i].rate);
+                      fixed += buf;
+                  }
+              }
+              axes = swept + "、固定: " + fixed;
+          }
+          applog::add("連続書き出し中: " + std::to_string(req.settings.count) + " 本（" + axes + "）→ "
+                      + req.settings.dir);
+          const auto        t0  = std::chrono::steady_clock::now();
+          BatchExportResult r   = run_batch_export(req, *progress);
+          const double      sec = applog::seconds_since(t0);
+
+          for (const std::string& w : r.warnings) applog::add("警告: " + w);
+          if (!r.ok()) {
+              applog::add("連続書き出し失敗: " + r.error);
+          } else {
+              char buf[160];
+              std::snprintf(buf, sizeof buf, "連続書き出し%s: %d 本 (%.1f 秒)",
+                            r.canceled ? "を中止しました" : "完了", r.written, sec);
+              applog::add(buf);
+              if (!r.manifest.empty()) applog::add("設定を保存しました: " + r.manifest);
+          }
+          return [](App& a) { a.morph.batch_progress.reset(); };
+      },
+      /*on_error=*/[](App& a) { a.morph.batch_progress.reset(); });
+    if (!started) return;    // ほかのジョブが実行中（ボタン側でも無効にしてある）
+
+    m.batch_progress = progress;
+    m.batch_total    = m.batch.count;
 }

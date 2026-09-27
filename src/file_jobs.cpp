@@ -142,3 +142,15 @@ void launch_save_wav_job(App& app) {
         return {};
     });
 }
+
+void launch_select_batch_dir_job(App& app) {
+    app.jobs.ui.try_launch([def = app.morph.batch.dir]() -> JobApply {
+        const char* p = tinyfd_selectFolderDialog("連続書き出しの出力先を選択", def.c_str());
+        if (!p) return {};    // キャンセル
+        const std::string dir = p;
+        return [dir](App& a) {
+            a.morph.batch.dir      = dir;
+            a.morph.batch_existing = -1;    // 出力先が変わったので数え直す
+        };
+    });
+}

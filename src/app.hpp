@@ -16,6 +16,7 @@
 #include "analysis.hpp"
 #include "anchor.hpp"
 #include "anchors.hpp"    // EdgePoint
+#include "batch_export.hpp"    // BatchExportSettings / BatchExportProgress
 #include "gl_texture.hpp"
 #include "jobs.hpp"
 #include "morphing.hpp"    // MorphRates / MorphOutput
@@ -112,6 +113,24 @@ struct MorphState {
     std::chrono::steady_clock::time_point job_t0;                      // 計測用
     // 前回ログに出した警告。アンカーが同じなら毎回同じ内容になるので、変わったときだけ出す。
     std::vector<std::string> last_warnings;
+    // 直前の生成にかかった時間 [ms]（連続書き出しの所要時間の見積もりに使う。未生成なら 0）。
+    double last_ms = 0;
+
+    // 連続書き出し（選んだ軸の率を連動させて 0 → 1 に等分し、WAV を並べて出す）。ジョブは App::jobs.ui で
+    // 走らせるので、実行中はタブの切り替えとファイル操作が自動的に止まる。JobQueue は
+    // 進捗も中止も持たないので、その2つだけを BatchExportProgress でワーカーと共有する。
+    BatchExportSettings                  batch;
+    bool                                 batch_open = false;    // 設定ダイアログを開いているか
+    // 設定の既定値（出力先・接頭辞・固定する率）を入れたか。固定する率は初めて開いたときに
+    // スライダーの率から取り、以後はダイアログで変えた値を保つ（開き直すたびに戻さない）。
+    bool                                 batch_initialized = false;
+    std::shared_ptr<BatchExportProgress> batch_progress;        // 実行中なら非 null
+    int                                  batch_total = 0;       // 実行中の総本数（進捗表示用）
+    // 上書きになる既存ファイルの数（-1 = 未計算）。数えるのにディスクを見るので、毎フレーム
+    // ではなく設定が変わったときだけ数え直す。
+    int batch_existing = -1;
+
+    bool batch_running() const { return batch_progress != nullptr; }
 
     // sp/ap ヒートマップ用テクスチャ（0=base, 1=morphed, 2=target）。
     GlTexture tex_sp[3];

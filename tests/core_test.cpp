@@ -1,26 +1,32 @@
 // コアのライブラリ（GUI に依存しない部分）の単体テスト。
 //
 // 対象: 周波数尺度の変換、アンカーの Side による参照、音声の解析（合成音の WAV を一時ディレクトリに作る）、コマンドライン引数、フォルマントの移動平均、モーフィング用のアンカー整形、
-// アンカー自動生成、セッション JSON の読み書き。Python は使わないので、
+// アンカー自動生成、連続書き出し、セッション JSON の読み書き。Python は使わないので、
 // どこで実行してもよい（CI の build.yml がビルド直後に各 OS で実行する）。
 //
 // ビルド: cmake -DMORPHALIGNER_BUILD_TESTS=ON ... → bin/core_test
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include "analysis.hpp"
 #include "anchor.hpp"
 #include "auto_anchors.hpp"
+#include "batch_export.hpp"
 #include "formant_smoothing.hpp"
 #include "freqscale.hpp"
 #include "launch_options.hpp"
 #include "morphing.hpp"
 #include "session_io.hpp"
+
+#include <nlohmann/json.hpp>
 
 namespace {
 
@@ -301,6 +307,176 @@ void test_launch_options() {
 }
 
 // ── セッション JSON ─────────────────────────────────────────
+// ── 連続書き出し ────────────────────────────────────────────
+void test_batch_export() {
+    // 率は 0 と 1 をちょうど含み、等間隔に並ぶ。
+    const std::vector<double> r11 = batch_rates(11);
+    expect(r11.size() == 11 && near(r11.front(), 0.0) && near(r11.back(), 1.0) && near(r11[5], 0.5),
+           "batch: 本数ぶんの率が 0 → 1 に等分される");
+    const std::vector<double> r2 = batch_rates(2);
+    expect(r2.size() == 2 && near(r2[0], 0.0) && near(r2[1], 1.0), "batch: 2 本なら両端だけ");
+    expect(batch_rates(1).empty(), "batch: 2 本未満は空");
+
+    BatchExportSettings ab;
+    ab.prefix = "ab";
+    expect(batch_wav_name(ab, 0.0) == "ab_r000.wav" && batch_wav_name(ab, 0.5) == "ab_r050.wav"
+             && batch_wav_name(ab, 1.0) == "ab_r100.wav" && batch_manifest_name(ab) == "ab_batch.json",
+           "batch: 全軸ならファイル名は接頭辞＋百分率のゼロ詰め3桁");
+    expect(batch_wav_name(ab, batch_rates(7)[1]) == "ab_r017.wav", "batch: 割り切れない率は四捨五入");
+
+    // 選んだ軸だけを掃引するときは、ファイル名に軸の名前を入れる（別の軸の掃引と上書きし合わない）。
+    BatchExportSettings sub = ab;
+    for (bool& b : sub.sweep) b = false;
+    sub.sweep[2] = sub.sweep[3] = true;    // fo, sl
+    expect(batch_wav_name(sub, 0.5) == "ab_fo+sl_r050.wav" && batch_manifest_name(sub) == "ab_fo+sl_batch.json"
+             && !batch_sweeps_all_axes(sub) && batch_sweeps_all_axes(ab),
+           "batch: 選んだ軸の名前がファイル名に入る");
+
+    // 掃引する軸は同じ値で動き、ほかは固定値のまま。
+    sub.fixed               = MorphRates { 0.1, 0.2, 0.9, 0.9, 0.3 };
+    const MorphRates pr     = batch_point_rates(sub, 0.6);
+    const MorphRates pr_all = batch_point_rates(ab, 0.6);
+    expect(near(pr.fo, 0.6) && near(pr.sl, 0.6) && near(pr.tx, 0.1) && near(pr.fx, 0.2) && near(pr.ap, 0.3),
+           "batch: 掃引する軸は連動し、ほかは固定値");
+    expect(near(pr_all.tx, 0.6) && near(pr_all.fx, 0.6) && near(pr_all.fo, 0.6) && near(pr_all.sl, 0.6)
+             && near(pr_all.ap, 0.6),
+           "batch: 全軸なら全軸一括と同じ");
+
+    // 上限の本数でも名前がぶつからない（3桁に丸めるので、刻みが 1% を割ると重複する）。
+    BatchExportSettings many;
+    many.prefix = "x";
+    std::vector<std::string> names;
+    for (double rate : batch_rates(BatchExportSettings::kCountMax)) names.push_back(batch_wav_name(many, rate));
+    std::sort(names.begin(), names.end());
+    expect(static_cast<int>(names.size()) == BatchExportSettings::kCountMax
+             && std::adjacent_find(names.begin(), names.end()) == names.end(),
+           "batch: 上限の本数でもファイル名が重複しない");
+
+    // 設定の検査。
+    const std::string tmp = std::filesystem::temp_directory_path().u8string();
+    BatchExportSettings s;
+    s.dir    = tmp;
+    s.prefix = "morphaligner_batch_test";
+    expect(validate_batch_settings(s).ok(), "batch: 正しい設定は通る");
+    {
+        BatchExportSettings bad = s;
+        bad.count               = BatchExportSettings::kCountMax + 1;
+        expect(!validate_batch_settings(bad).ok(), "batch: 本数が範囲外なら失敗");
+        bad        = s;
+        bad.prefix = "";
+        expect(!validate_batch_settings(bad).ok(), "batch: 接頭辞が空なら失敗");
+        bad        = s;
+        bad.prefix = "a/b";
+        expect(!validate_batch_settings(bad).ok(), "batch: 接頭辞にパス区切りが入れば失敗");
+        bad     = s;
+        bad.dir = (std::filesystem::temp_directory_path() / "morphaligner_no_such_dir").u8string();
+        expect(!validate_batch_settings(bad).ok(), "batch: 出力先が無ければ失敗");
+        bad = s;
+        for (bool& b : bad.sweep) b = false;
+        expect(!validate_batch_settings(bad).ok(), "batch: 掃引する軸が無ければ失敗");
+        bad.sweep[0] = true;
+        bad.fixed.fo = 1.5;    // 固定する軸（fo）の値が範囲外
+        expect(!validate_batch_settings(bad).ok(), "batch: 固定する率が範囲外なら失敗");
+        bad.sweep[2] = true;    // fo も掃引するなら fixed.fo は使わないので問わない
+        expect(validate_batch_settings(bad).ok(), "batch: 掃引する軸の固定値は問わない");
+    }
+
+    // 実際に書き出す。0.3 秒の合成音を自分自身とモーフィングする（アンカーなし）。
+    constexpr int       fs = 16000;
+    std::vector<double> x(fs * 3 / 10);
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        const double t = static_cast<double>(i) / fs;
+        for (int h = 1; h <= 10; ++h) x[i] += 0.3 / h * std::sin(2.0 * 3.14159265358979 * 150.0 * h * t);
+    }
+    std::error_code             ec;
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "morphaligner_batch_test_dir";
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir, ec);
+    const std::filesystem::path wav = dir / "src.wav";
+    expect(write_wav(wav.u8string(), x, fs).ok(), "batch: テスト用の WAV を書ける");
+
+    const Result<AnalyzedAudio> a = analyze_file(wav.u8string());
+    if (!a.ok() || !a.value.channel) {
+        expect(false, "batch: テスト用の WAV を解析できる（" + a.error + "）");
+        std::filesystem::remove_all(dir, ec);
+        return;
+    }
+
+    BatchExportRequest req;
+    req.base           = a.value.channel;
+    req.target         = a.value.channel;
+    req.anchors        = { Anchor { 0.1, 0.12, { { 700, 750 } } } };
+    req.base_path      = wav.u8string();
+    req.target_path    = wav.u8string();
+    req.settings       = s;
+    req.settings.dir   = dir.u8string();
+    req.settings.count = 3;
+
+    BatchExportProgress prog;
+    const BatchExportResult out = run_batch_export(req, prog);
+    expect(out.ok() && !out.canceled && out.written == 3 && prog.done.load() == 3,
+           "batch: 指定した本数だけ書き出せる" + (out.ok() ? "" : "（" + out.error + "）"));
+    bool all = true;
+    for (double rate : batch_rates(3)) all &= std::filesystem::exists(dir / batch_wav_name(req.settings, rate), ec);
+    expect(all, "batch: 率ごとの WAV が揃う（r000 / r050 / r100）");
+
+    // 残した JSON はセッション形式なので、そのまま読み込める。
+    expect(!out.manifest.empty() && std::filesystem::exists(std::filesystem::u8path(out.manifest), ec),
+           "batch: 設定の JSON を残す");
+    {
+        std::ifstream     is(std::filesystem::u8path(out.manifest), std::ios::binary);
+        std::ostringstream ss;
+        ss << is.rdbuf();
+        const Result<SessionFile> sf = parse_session_json(ss.str());
+        expect(sf.ok() && sf.value.anchors.size() == 1 && near(sf.value.anchors[0].target_t, 0.12)
+                 && sf.value.base_path == req.base_path,
+               "batch: 残した JSON をセッションとして読める");
+    }
+
+    // 書き出したものを数え直すと、WAV 3 本＋JSON で 4 つが上書き対象になる。
+    expect(count_existing_batch_files(req.settings) == 4, "batch: 上書きになる既存ファイルを数えられる");
+
+    // 選んだ軸だけの掃引。JSON に掃引した軸・固定値・各ファイルの全軸の率が残る。
+    {
+        BatchExportRequest sreq = req;
+        for (bool& b : sreq.settings.sweep) b = false;
+        sreq.settings.sweep[2] = true;    // fo だけ
+        sreq.settings.fixed    = MorphRates::uniform(0.0);
+        BatchExportProgress     sp;
+        const BatchExportResult so = run_batch_export(sreq, sp);
+        bool                    ok = so.ok() && so.written == 3
+               && std::filesystem::exists(dir / batch_wav_name(sreq.settings, 1.0), ec);
+        if (ok) {
+            std::ifstream      is(std::filesystem::u8path(so.manifest), std::ios::binary);
+            std::ostringstream ss;
+            ss << is.rdbuf();
+            try {
+                const nlohmann::json  j     = nlohmann::json::parse(ss.str());
+                const nlohmann::json& batch = j.at("batch");
+                const nlohmann::json& files = batch.at("files");
+                // 最後のファイル（率 1）は fo だけ 1 で、ほかは固定値の 0。
+                const nlohmann::json& last = files.back().at("rates");
+                ok = batch.at("sweep") == nlohmann::json::array({ "fo" }) && batch.at("fixed").size() == 4
+                  && !batch.at("fixed").contains("fo") && files.size() == 3
+                  && files.back().at("file") == batch_wav_name(sreq.settings, 1.0)
+                  && near(last.at("fo").get<double>(), 1.0) && near(last.at("tx").get<double>(), 0.0)
+                  && near(last.at("ap").get<double>(), 0.0);
+            } catch (const std::exception&) {
+                ok = false;
+            }
+        }
+        expect(ok, "batch: 選んだ軸だけを掃引して書き出せる" + (so.ok() ? "" : "（" + so.error + "）"));
+    }
+
+    // 中止フラグが立っていれば1本も書かずに戻る。
+    BatchExportProgress canceled;
+    canceled.cancel.store(true);
+    const BatchExportResult c = run_batch_export(req, canceled);
+    expect(c.ok() && c.canceled && c.written == 0, "batch: 中止されたら書き出さずに戻る");
+
+    std::filesystem::remove_all(dir, ec);
+}
+
 void test_session_json() {
     SessionFile s;
     s.base_path   = "C:/音声/base.wav";
@@ -362,6 +538,7 @@ int main() {
     test_analysis();
     test_launch_options();
     test_auto_anchors();
+    test_batch_export();
     test_session_json();
 
     if (g_failures > 0) {
