@@ -1,6 +1,6 @@
 # morphingAligner 開発ログ
 
-最終更新: 2026-09-27（現行版 v26.09.25b）
+最終更新: 2026-11-10（現行版 v26.11.10）
 
 ## 最終目標
 
@@ -44,9 +44,9 @@
 
 - C++17、CMake 4.0 以上。ビルドは vcpkg マニフェストモード＋CMakePresets（Ninja）。
 - WORLD の example ビルドは `WORLD_BUILD_EXAMPLES=OFF` で無効化（ビルド時間短縮）。
-- 版は `CMakeLists.txt` の `project(... VERSION 26.09.25)` と `APP_VERSION_SUFFIX`（同日の出し直し用の
+- 版は `CMakeLists.txt` の `project(... VERSION 26.11.10)` と `APP_VERSION_SUFFIX`（同日の出し直し用の
   接尾辞。英小文字1字で例 `"a"`、無ければ空。2026-09-25 までは `".a"` のようにピリオド付きだった）。合わせたものを `APP_VERSION` としてコンパイル定義で渡し、タイトルバーに
-  `morphingAligner v<版>` と出す（CMake は先頭ゼロを正規化しないので `26.09.25` のまま。VERSION には数字しか
+  `morphingAligner v<版>` と出す（CMake は先頭ゼロを正規化しないので `26.09.25` のように書いたまま。VERSION には数字しか
   書けないので接尾辞は別の変数にしている）。
 
 ## ファイル構成（自作分）
@@ -215,7 +215,12 @@ Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋�
   再生用に miniaudio_cpp へ `play_pcm`(ma_audio_buffer 使用)を追加。
 - ヘッドレス検証済み（JVS 2話者、r=0→base長, r=1→target長, 全ケース有限出力）。
 - 既知の制約: (1)同期実行で数秒 UI が固まる。(2)fs 不一致は未対応。(3)F0 は最近傍
-  フレームサンプル。MATLAB との差分は下の「## MATLAB版との差分」を参照。
+  フレームサンプル。MATLAB との差分は下の「### 版を 26.11.10 に更新（2026-11-10）
+- 連続書き出し（上の2節）を入れた版を `v26.11.10` としてリリース。新しい日付の版なので接尾辞は空に戻した。
+- 包絡の平らさへの対策の試作（OT 由来の周波数アンカー、包絡の凹凸を戻す、包絡を OT で補間する）は
+  ブランチ `experiment/morph-quality` に置いたままで、この版には含めていない（聴感での効果を確かめきれていないため）。
+
+## MATLAB版との差分」を参照。
 
 ### スペクトログラムの周波数軸を ERB 尺度に（`freqscale.hpp` ほか）
 - 表示の周波数軸を **ERB レート**尺度に（低域が広がり聴覚的に自然）。`freqscale::hz_to_erb`/
