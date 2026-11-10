@@ -41,6 +41,37 @@ inline constexpr MorphAxis kMorphAxes[] = {
 };
 inline constexpr int kMorphAxisCount = static_cast<int>(sizeof kMorphAxes / sizeof kMorphAxes[0]);
 
+// スペクトル包絡の混ぜ方（試作）。tcmorph はアンカーで揃えた base/target の包絡を dB で線形に平均
+// するので、山の位置や形が少しでも違うと平らになる（sl = 0.5 付近で凹凸が約 2 割減った。DEVLOG 参照）。
+// どれも sl = 0 / 1 では何もせず（元の音のまま）、フレームの音量は平均のときと同じにする。
+enum class EnvelopeMix {
+    // tcmorph の平均のまま。
+    Average,
+    // 平均の後で凹凸を戻す（restore_envelope_contrast）。フォルマントの帯域（300〜5500 Hz）の凹凸を、
+    // その強さ（envelope_contrast）が「揃えた base/target の凹凸を sl で補間した値」になるように定数倍する。
+    AverageRestore,
+    // 範囲（MorphPostOptions::transport_lo_hz〜hi_hz）の中だけ、平均の代わりに、揃えた base/target の
+    // 間で質量を運んで補間する（envelope_transport.hpp）。範囲の外は平均のまま。周波数アンカーの構造ごとの
+    // 帯の中だけで運ぶ。ずれた山は、平らな2つの山ではなく中間の位置の1つの山になる（揃えた後も山の数や
+    // 形がまったく違うフレームでは、平均より良くはならない）。
+    Transport,
+};
+
+// tcmorph の出力を WORLD で合成する前に掛ける仕上げの処理（試作）。
+struct MorphPostOptions {
+    EnvelopeMix envelope        = EnvelopeMix::Average;
+    double      transport_gamma = 0.3;    // OT で補間するときの質量 = パワー^gamma
+    // OT で補間する範囲 [Hz]。既定は 5 kHz より上。5 kHz 以下は平均のままが聴感上よく（ユーザーの確認）、
+    // 一方 5 kHz より上には周波数アンカーが無く（tcmorph は一様に引き伸ばすだけ）、base/target のエネルギーの
+    // 山が帯域をまたいでずれていた。上限を 12 kHz で止めるのは、その上はほぼ雑音で、録音ごとの高域の
+    // 落ち方の違いに引っぱられて、下の構造の対応までずれるため（上限はナイキスト周波数で切り詰める）。
+    double transport_lo_hz = 5000.0;
+    double transport_hi_hz = 12000.0;
+
+    static constexpr double kGammaMin = 0.05, kGammaMax = 1.0;
+    static constexpr double kRangeMinHz = 300.0, kRangeMaxHz = 24000.0;
+};
+
 // モーフィング結果（morphed の中間データ＋合成音声）。error が空なら成功。
 struct MorphOutput {
     MorphChannel        morphed;    // モーフ後の f0/sp/ap（表示用）
@@ -51,13 +82,36 @@ struct MorphOutput {
     // 計算は続行したが注意が要る点（エンジンの警告＋読み飛ばしたアンカー）。
     std::vector<std::string> warnings;
 
+    // 凹凸を戻したとき、フレームに掛けた倍率の平均（戻さなかったら 0）。ログ用。
+    double contrast_gain = 0.0;
+    // OT で補間したとき: 補間したフレーム数、そのフレームの帯の数の平均、周波数アンカーの逆転で
+    // 平均のままにしたフレーム数（補間しなかったらすべて 0）。ログ用。
+    int    transport_frames  = 0;
+    double transport_bands   = 0.0;
+    int    transport_skipped = 0;
+
     bool ok() const { return error.empty(); }
 };
 
 // 解析済みの base/target チャンネルから、anchors と軸ごとの率で morphed を合成する
 // （base/target の再解析は行わない）。失敗時は結果の error にメッセージを入れる。
 MorphOutput morphing_channels(const MorphChannel& base, const MorphChannel& target,
-                              const std::vector<Anchor>& anchors, const MorphRates& rates);
+                              const std::vector<Anchor>& anchors, const MorphRates& rates,
+                              const MorphPostOptions& post = {});
+
+// 包絡の凹凸の強さ（線形パワーの1フレーム）。300〜5500 Hz の dB 包絡から両端を結ぶ直線（大まかな
+// 傾き）を引き、周期 300 Hz 以上の構造を DST で表したときの係数の大きさ（範囲全体のゆるい膨らみ
+// である最初の係数は除く）。単位は dB。restore_envelope_contrast が目標にする量で、評価にも使う。
+double envelope_contrast(const Eigen::VectorXd& power, int fs);
+
+// 包絡の凹凸を戻す（EnvelopeMix::AverageRestore の中身。単体テスト用に公開）。
+// mix は tcmorph が混ぜた包絡、ref / tgt は同じ格子に揃えた base / target の包絡（sl = 0 / 1 で
+// 合成したもの）。いずれも (nbin, n_frames) の線形パワー。各フレームの線形パワーの和は変えない
+// （強めると山が持ち上がって音量が上がり、聴き比べが音量に引きずられるため。そのための一律の
+// 倍率はフレーム全体にかかる）。
+// 戻り値は掛けた倍率の平均（1 = 何もしなかった）。
+double restore_envelope_contrast(Eigen::MatrixXd& mix, const Eigen::MatrixXd& ref, const Eigen::MatrixXd& tgt,
+                                 double sl, int fs);
 
 // tcmorph が要求する形に整えたアンカー（時間アンカーは両側とも狭義単調増加、周波数
 // アンカーは (本数, 時間アンカー数) の 0 詰め行列）。両端の境界アンカーはエンジン側が

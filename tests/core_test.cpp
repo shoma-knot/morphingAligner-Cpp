@@ -1,7 +1,7 @@
 // コアのライブラリ（GUI に依存しない部分）の単体テスト。
 //
 // 対象: 周波数尺度の変換、アンカーの Side による参照、音声の解析（合成音の WAV を一時ディレクトリに作る）、コマンドライン引数、フォルマントの移動平均、モーフィング用のアンカー整形、
-// アンカー自動生成、連続書き出し、セッション JSON の読み書き。Python は使わないので、
+// アンカー自動生成、OT による周波数アンカー、包絡の凹凸を戻す処理と OT での補間、連続書き出し、セッション JSON の読み書き。Python は使わないので、
 // どこで実行してもよい（CI の build.yml がビルド直後に各 OS で実行する）。
 //
 // ビルド: cmake -DMORPHALIGNER_BUILD_TESTS=ON ... → bin/core_test
@@ -12,6 +12,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -24,7 +25,9 @@
 #include "freqscale.hpp"
 #include "launch_options.hpp"
 #include "morphing.hpp"
+#include "ot_anchors.hpp"
 #include "session_io.hpp"
+#include "envelope_transport.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -307,6 +310,370 @@ void test_launch_options() {
 }
 
 // ── セッション JSON ─────────────────────────────────────────
+// ── OT による周波数アンカー ─────────────────────────────────
+// 周波数ごとのパワーを関数で与えて、1フレーム分（nbin 点、0〜fs/2）を作る。
+template <class F>
+std::vector<double> make_frame(int nbin, int fs, F power_of_hz) {
+    std::vector<double> v(static_cast<std::size_t>(nbin));
+    for (int k = 0; k < nbin; ++k) v[static_cast<std::size_t>(k)] = power_of_hz(k * (fs / 2.0) / (nbin - 1));
+    return v;
+}
+
+// 全フレームが同じ包絡（frame）で、frames フレームぶんのチャンネル。
+MorphChannel make_flat_channel(const std::vector<double>& frame, int fs, int frames) {
+    MorphChannel c;
+    c.fs           = fs;
+    c.nbin         = static_cast<int>(frame.size());
+    c.fft_size     = (c.nbin - 1) * 2;
+    c.n_frames     = frames;
+    c.frame_period = kFramePeriodMs;
+    c.duration     = (frames - 1) * kFramePeriodMs / 1000.0;
+    Eigen::MatrixXd sp(c.nbin, frames);
+    for (int i = 0; i < frames; ++i)
+        for (int k = 0; k < c.nbin; ++k) sp(k, i) = frame[static_cast<std::size_t>(k)];
+    c.world.spectrum_parameter.spectrogram = sp;
+    return c;
+}
+
+void test_ot_anchors() {
+    constexpr int fs = 16000, nbin = 513;
+    OtAnchorParams p;
+    p.min_hz = 1000;
+    p.max_hz = 5000;
+    p.count  = 3;
+    // 設定の範囲・本数・圧縮で1フレームの分位点を求める。
+    const auto quantiles = [](const std::vector<double>& v, const OtAnchorParams& q) {
+        return spectral_quantiles(v.data(), static_cast<int>(v.size()), fs, q.min_hz, q.max_hz, q.count, q.gamma);
+    };
+
+    // 一定の包絡なら、範囲を等分した点になる。
+    {
+        const std::vector<double> flat = make_frame(nbin, fs, [](double) { return 1.0; });
+        const std::vector<double> q    = quantiles(flat, p);
+        expect(q.size() == 3 && near(q[0], 2000, 1e-6) && near(q[1], 3000, 1e-6) && near(q[2], 4000, 1e-6),
+               "ot: 一定の包絡なら範囲を等分する");
+    }
+    // 圧縮（gamma）を小さくすると、弱い帯域にも分位点が寄る（強い低域に引きずられにくくなる）。
+    {
+        const std::vector<double> step = make_frame(nbin, fs, [](double f) { return f < 3000 ? 100.0 : 1.0; });
+        OtAnchorParams            p1 = p, p05 = p;
+        p1.count = p05.count = 1;
+        p1.gamma             = 1.0;
+        p05.gamma            = 0.5;
+        const double m1      = quantiles(step, p1).at(0);
+        const double m05     = quantiles(step, p05).at(0);
+        expect(m1 < 3000 && m05 < 3000 && m05 > m1 + 50, "ot: 圧縮を強めると弱い帯域の重みが増す");
+    }
+    // 山が動けば、分位点も同じだけ動く（山どうしが対応する）。
+    {
+        const auto bump = [](double c) {
+            return [c](double f) { return 1e-6 + std::exp(-0.5 * std::pow((f - c) / 150.0, 2)); };
+        };
+        OtAnchorParams q1 = p;
+        q1.count          = 1;
+        q1.gamma          = 1.0;
+        const std::vector<double> b = make_frame(nbin, fs, bump(2000)), t = make_frame(nbin, fs, bump(2600));
+        const double              mb = quantiles(b, q1).at(0);
+        const double              mt = quantiles(t, q1).at(0);
+        expect(near(mb, 2000, 20) && near(mt, 2600, 20), "ot: 山の位置の移動が分位点の対応になる");
+    }
+    expect(quantiles(make_frame(nbin, fs, [](double) { return 0.0; }), p).empty(), "ot: 質量が 0 なら空");
+
+    // 時間アンカーごとに作り直す。時間はそのまま、周波数アンカーは置き換え、両側とも昇順。
+    const std::vector<double> fb = make_frame(nbin, fs, [](double f) { return 1.0 / (1.0 + f / 500.0); });
+    const std::vector<double> ft = make_frame(nbin, fs, [](double f) { return 1.0 / (1.0 + f / 1500.0); });
+    const MorphChannel        cb = make_flat_channel(fb, fs, 100), ct = make_flat_channel(ft, fs, 100);
+    const std::vector<Anchor> in = { { 0.1, 0.12, { { 700, 800 } } }, { 0.3, 0.35, {} } };
+    OtAnchorParams            pa = p;
+    pa.count                     = 5;
+    const OtAnchorResult r       = make_ot_freq_anchors(cb, ct, in, pa);
+    bool ok = r.ok() && r.anchors.size() == 2 && r.n_freq == 10 && r.skipped == 0 && near(r.anchors[0].base_t, 0.1)
+           && near(r.anchors[1].target_t, 0.35);
+    for (const Anchor& a : r.anchors) {
+        ok &= a.freqs.size() == 5;
+        for (std::size_t j = 1; j < a.freqs.size(); ++j)
+            ok &= a.freqs[j].base_f > a.freqs[j - 1].base_f && a.freqs[j].target_f > a.freqs[j - 1].target_f;
+    }
+    expect(ok, "ot: 時間アンカーはそのままで、周波数アンカーを昇順に作り直す" + (r.ok() ? "" : "（" + r.error + "）"));
+    // target の方が高域寄りの包絡なので、同じ分位点は target の方が高い周波数になる。
+    expect(r.ok() && r.anchors[0].freqs[2].target_f > r.anchors[0].freqs[2].base_f,
+           "ot: 高域寄りの包絡の側で分位点が高くなる");
+
+    // 無音に近い時刻（最大のフレームより 40 dB 以上小さい）には打たない。
+    {
+        MorphChannel quiet = cb;
+        quiet.world.spectrum_parameter.spectrogram.rightCols(50) *= 1e-6;    // 後半を -60 dB に
+        const OtAnchorResult rq = make_ot_freq_anchors(quiet, ct, { { 0.1, 0.1, {} }, { 0.45, 0.45, {} } }, pa);
+        expect(rq.ok() && rq.skipped == 1 && rq.anchors[0].freqs.size() == 5 && rq.anchors[1].freqs.empty()
+                 && !rq.warnings.empty(),
+               "ot: 無音に近い時間アンカーには周波数アンカーを打たない");
+    }
+    expect(!make_ot_freq_anchors(cb, ct, {}, pa).ok(), "ot: 時間アンカーが無ければ失敗");
+    OtAnchorParams bad = pa;
+    bad.max_hz         = bad.min_hz;
+    expect(!make_ot_freq_anchors(cb, ct, in, bad).ok(), "ot: 周波数範囲が不正なら失敗");
+
+    // ── 帯ごと ──
+    // 一定の包絡どうしなら、帯の中の分位点は帯を等分した点になり、その対応がそのまま出る。
+    const std::vector<double> flat = make_frame(nbin, fs, [](double) { return 1.0; });
+    const MorphChannel        cf   = make_flat_channel(flat, fs, 100);
+    OtAnchorParams            pb;
+    pb.mode       = OtMode::Bands;
+    pb.band_count = 2;
+    pb.min_hz     = 300;
+    pb.max_hz     = 5000;
+    {
+        // 既存の周波数アンカー 2 本（base 1000→1200, 2500→2800）で帯が 3 つ: [300,1000]↔[300,1200]、
+        // [1000,2500]↔[1200,2800]、[2500,5000]↔[2800,5000]。各帯に 2 本ずつ足して計 8 本。
+        const std::vector<Anchor> ain = { { 0.2, 0.2, { { 2500, 2800 }, { 1000, 1200 } } } };
+        const OtAnchorResult      rb  = make_ot_freq_anchors(cf, cf, ain, pb);
+        const auto&               f   = rb.anchors.at(0).freqs;
+        bool ok = rb.ok() && rb.n_freq == 6 && rb.n_edges == 2 && f.size() == 8;
+        for (std::size_t j = 1; ok && j < f.size(); ++j)
+            ok &= f[j].base_f > f[j - 1].base_f && f[j].target_f > f[j - 1].target_f;
+        expect(ok, "ot 帯ごと: 既存の周波数アンカーの間の帯に足し、全体が昇順になる"
+                     + (rb.ok() ? "" : "（" + rb.error + "）"));
+        // 真ん中の帯（1000–2500 ↔ 1200–2800）を 3 等分した点: 1500→1733.3、2000→2266.7。
+        // 既存のアンカーは元の値のまま残る。
+        ok = ok && near(f[2].base_f, 1000) && near(f[2].target_f, 1200) && near(f[3].base_f, 1500, 1e-6)
+          && near(f[3].target_f, 1200 + 1600.0 / 3, 1e-6) && near(f[4].base_f, 2000, 1e-6)
+          && near(f[4].target_f, 1200 + 3200.0 / 3, 1e-6) && near(f[5].base_f, 2500) && near(f[5].target_f, 2800);
+        expect(ok, "ot 帯ごと: 帯の中は対応する帯どうしの分位点、既存のアンカーはそのまま");
+    }
+    {
+        // 周波数アンカーが無い時間アンカーは、範囲全体が1つの帯になる。
+        const OtAnchorResult rb = make_ot_freq_anchors(cf, cf, { { 0.2, 0.2, {} } }, pb);
+        expect(rb.ok() && rb.anchors[0].freqs.size() == 2 && rb.n_edges == 0, "ot 帯ごと: アンカーが無ければ範囲全体が1帯");
+    }
+    {
+        // 交差した周波数アンカー（base の順と target の順が逆）は帯が対応しないので、元のまま。
+        const std::vector<Anchor> ain = { { 0.2, 0.2, { { 1000, 2000 }, { 2000, 1500 } } } };
+        const OtAnchorResult      rb  = make_ot_freq_anchors(cf, cf, ain, pb);
+        expect(rb.ok() && rb.crossed == 1 && rb.n_freq == 0 && rb.anchors[0].freqs.size() == 2
+                 && near(rb.anchors[0].freqs[0].base_f, 1000) && !rb.warnings.empty(),
+               "ot 帯ごと: 交差したアンカーの時刻にはかけない");
+    }
+    {
+        // 狭すぎる帯（50 Hz 未満）には足さない: 1000–1030 の帯を除く 2 帯に 2 本ずつ。
+        const std::vector<Anchor> ain = { { 0.2, 0.2, { { 1000, 1000 }, { 1030, 1030 } } } };
+        const OtAnchorResult      rb  = make_ot_freq_anchors(cf, cf, ain, pb);
+        expect(rb.ok() && rb.n_freq == 4 && rb.anchors[0].freqs.size() == 6, "ot 帯ごと: 狭すぎる帯には足さない");
+    }
+}
+
+// ── 包絡の凹凸を戻す ────────────────────────────────────────
+// 1 kHz 幅くらいの山を1つ持つ包絡（線形パワー、0〜fs/2 を nbin 点）。
+Eigen::VectorXd peaked(int nbin, int fs, double center_hz) {
+    Eigen::VectorXd v(nbin);
+    for (int k = 0; k < nbin; ++k) {
+        const double f = k * (fs / 2.0) / (nbin - 1);
+        v[k]           = 1e-3 + std::exp(-0.5 * std::pow((f - center_hz) / 250.0, 2));
+    }
+    return v;
+}
+
+// 合成音（倍音列の振幅を formants の山で重み付けしたもの）を WAV にして解析する。
+// 低い倍音にも 1/h の振幅を残す（無いと基本波が弱すぎて Harvest が F0 を見つけられない）。
+std::shared_ptr<const MorphChannel> analyze_vowel(const std::vector<double>& formants, const std::string& name) {
+    constexpr int       fs = 16000;
+    std::vector<double> x(fs * 4 / 10);
+    for (int h = 1; h * 150.0 < fs / 2.0; ++h) {
+        double amp = 0.3 / h;
+        for (double fc : formants) amp += std::exp(-0.5 * std::pow((h * 150.0 - fc) / 120.0, 2));
+        for (std::size_t i = 0; i < x.size(); ++i)
+            x[i] += 0.05 * amp * std::sin(2.0 * 3.14159265358979 * 150.0 * h * static_cast<double>(i) / fs);
+    }
+    const std::filesystem::path wav = std::filesystem::temp_directory_path() / name;
+    write_wav(wav.u8string(), x, fs);
+    Result<AnalyzedAudio> r = analyze_file(wav.u8string());
+    std::error_code       ec;
+    std::filesystem::remove(wav, ec);
+    return r.ok() ? r.value.channel : nullptr;
+}
+
+void test_restore_contrast() {
+    constexpr int fs = 16000, nbin = 513;
+    const auto    hz = [](int k) { return k * (fs / 2.0) / (nbin - 1); };
+
+    // 3つとも同じなら何もしない。
+    {
+        Eigen::MatrixXd       mix = peaked(nbin, fs, 1500);
+        const Eigen::MatrixXd ref = mix, tgt = mix, before = mix;
+        const double          g   = restore_envelope_contrast(mix, ref, tgt, 0.5, fs);
+        expect(near(g, 1.0) && (mix - before).cwiseAbs().maxCoeff() == 0.0, "contrast: 同じ包絡どうしなら何もしない");
+    }
+    // 山の位置がずれた2つを dB で平均すると平らになる。戻すと凹凸が補間した値に戻る。
+    {
+        const Eigen::VectorXd ref = peaked(nbin, fs, 1200), tgt = peaked(nbin, fs, 1800);
+        Eigen::MatrixXd       mix =
+          (0.5 * (ref.array().log10() + tgt.array().log10())).unaryExpr([](double v) { return std::pow(10.0, v); });
+        const Eigen::VectorXd before   = mix.col(0);
+        const double          want     = 0.5 * (envelope_contrast(ref, fs) + envelope_contrast(tgt, fs));
+        const double          g        = restore_envelope_contrast(mix, ref, tgt, 0.5, fs);
+        const Eigen::VectorXd after    = mix.col(0);
+        expect(envelope_contrast(before, fs) < want * 0.95 && g > 1.0,
+               "contrast: 山のずれた平均は平らになり、戻す倍率は 1 より大きい");
+        expect(near(envelope_contrast(after, fs), want, want * 1e-6), "contrast: 凹凸は両端の凹凸を補間した値になる");
+        // フレームのパワーの和は変わらない。範囲（300〜5500 Hz）の外と範囲の両端は、音量を戻すための
+        // 一律の倍率がかかるだけで形は変わらない（範囲の端で段差ができない）。
+        const double ratio0 = after[0] / before[0];
+        bool         shape  = true;
+        for (int k = 0; k < nbin; ++k)
+            if (hz(k) < 300.0 || hz(k) > 5500.0) shape &= near(after[k] / before[k], ratio0, 1e-9);
+        const int lo = static_cast<int>(std::ceil(300.0 / hz(1))), hi = static_cast<int>(std::floor(5500.0 / hz(1)));
+        shape &= near(after[lo] / before[lo], ratio0, 1e-9) && near(after[hi] / before[hi], ratio0, 1e-9);
+        expect(near(after.sum(), before.sum(), before.sum() * 1e-9) && shape,
+               "contrast: フレームのパワーの和、範囲の外と両端の形は変わらない");
+    }
+    // 倍率には上限（2 倍）がある。
+    {
+        const Eigen::VectorXd ref = peaked(nbin, fs, 1500);
+        Eigen::MatrixXd       mix = Eigen::VectorXd::Constant(nbin, 1.0) + 1e-3 * ref;    // ほぼ平坦
+        const double          g   = restore_envelope_contrast(mix, ref, ref, 0.5, fs);
+        expect(near(g, 2.0), "contrast: 倍率は 2 倍まで");
+    }
+
+    // モーフィング全体で: 山の位置が違う2つの合成音（周波数アンカーなし）。
+    const auto b = analyze_vowel({ 700, 1200, 2600 }, "morphaligner_vowel_b.wav");
+    const auto t = analyze_vowel({ 500, 1700, 2300 }, "morphaligner_vowel_t.wav");
+    if (!b || !t) {
+        expect(false, "contrast: テスト用の合成音を解析できる");
+        return;
+    }
+    MorphPostOptions on;
+    on.envelope = EnvelopeMix::AverageRestore;
+    const MorphOutput off5 = morphing_channels(*b, *t, {}, MorphRates::uniform(0.5));
+    const MorphOutput on5  = morphing_channels(*b, *t, {}, MorphRates::uniform(0.5), on);
+    double            c_off = 0.0, c_on = 0.0;
+    for (int j = 0; j < off5.morphed.n_frames; ++j) {
+        c_off += envelope_contrast(off5.morphed.sp().col(j), b->fs);
+        c_on += envelope_contrast(on5.morphed.sp().col(j), b->fs);
+    }
+    expect(off5.ok() && on5.ok() && on5.contrast_gain > 1.0 && off5.contrast_gain == 0.0 && c_on > c_off * 1.02
+             && on5.wave.size() == off5.wave.size(),
+           "contrast: 率 0.5 のモーフィングで凹凸が戻る");
+    // スペクトルの率が 0 / 1 では何もしない（音はまったく同じ）。
+    MorphRates r0 = MorphRates::uniform(0.5);
+    r0.sl         = 0.0;
+    const MorphOutput a0 = morphing_channels(*b, *t, {}, r0), b0 = morphing_channels(*b, *t, {}, r0, on);
+    expect(a0.wave == b0.wave && b0.contrast_gain == 0.0, "contrast: スペクトルの率が 0 なら元の音のまま");
+}
+
+// ── 包絡を OT で補間する ────────────────────────────────────
+void test_envelope_transport() {
+    constexpr int nbin = 513;
+    // bin の位置 c に幅 8 bin の山を1つ持つ包絡（線形パワー）。
+    const auto peak = [](double c) {
+        std::vector<double> v(nbin);
+        for (int k = 0; k < nbin; ++k) v[static_cast<std::size_t>(k)] = 1e-4 + std::exp(-0.5 * std::pow((k - c) / 8.0, 2));
+        return v;
+    };
+    const auto db = [](double p) { return 10.0 * std::log10(p); };
+    const std::vector<double> ref = peak(100), tgt = peak(160);
+    std::vector<double>       avg(nbin);
+    for (int k = 0; k < nbin; ++k) avg[k] = std::sqrt(ref[k] * tgt[k]);    // dB の平均（tcmorph と同じ）
+    constexpr double a = 20.0, b = 300.0;
+
+    // 率 0.5: 平均は2つの山の間でほぼ平らになるが、運ぶと中間（bin 130）に同じ高さ・幅の山が1つできる。
+    {
+        std::vector<double> out = avg;
+        transport_band(ref.data(), tgt.data(), out.data(), nbin, a, b, a, b, 0.5, 1.0);
+        const int top = static_cast<int>(std::max_element(out.begin() + 21, out.begin() + 300) - out.begin());
+        int       wide = 0;
+        for (int k = 21; k < 300; ++k) wide += out[k] > 0.5 * out[top];
+        expect(std::abs(top - 130) <= 1 && out[top] > 0.9 && avg[130] < 0.01 && std::abs(wide - 19) <= 2,
+               "transport: ずれた山は、中間の位置に同じ高さ・幅の山が1つになる");
+        // 帯の外は触らず、帯の端のすぐ内側は平均とつながっている。
+        bool outside = true;
+        for (int k = 0; k <= 20; ++k) outside &= out[k] == avg[k];
+        for (int k = 300; k < nbin; ++k) outside &= out[k] == avg[k];
+        expect(outside && std::fabs(db(out[21]) - db(avg[21])) < 0.5 && std::fabs(db(out[299]) - db(avg[299])) < 0.5,
+               "transport: 帯の外は平均のまま、帯の端で段差ができない");
+    }
+    // 率 0 なら ref に戻る（bin の幅で均した分の小さな誤差だけ）。
+    {
+        std::vector<double> out = ref;
+        transport_band(ref.data(), tgt.data(), out.data(), nbin, a, b, a, b, 0.0, 0.3);
+        double worst = 0.0;
+        for (int k = 21; k < 300; ++k) worst = std::max(worst, std::fabs(db(out[k]) - db(ref[k])));
+        expect(worst < 0.5, "transport: 率 0 なら base の包絡に戻る");
+    }
+    // 帯の端は側ごとに持てる: base の [20, 200] と target の [40, 260] を率 0.5 で補間すると [30, 230] になる。
+    // 一定の包絡どうしなら、帯の中も一定（端の値 = 両側の値の幾何補間 = 1）。帯の外は触らない。
+    {
+        const std::vector<double> one(nbin, 1.0);
+        std::vector<double>       out(nbin, 0.5);
+        transport_band(one.data(), one.data(), out.data(), nbin, 20, 200, 40, 260, 0.5, 1.0);
+        bool flat = true;
+        for (int k = 31; k <= 229; ++k) flat &= near(out[k], 1.0, 1e-9);
+        expect(flat && out[30] == 0.5 && out[230] == 0.5 && out[25] == 0.5,
+               "transport: 側ごとの帯の端から補間後の帯が決まり、その外は触らない");
+    }
+
+    // 中間の周波数軸上の周波数アンカー（tcmorph と同じ計算）。
+    {
+        const std::vector<double> r = { 700, 1200 }, t = { 500, 1700 };
+        const auto                m0 = morph_axis_freq_anchors(r, t, 0.0, 16000), m1 = morph_axis_freq_anchors(r, t, 1.0, 16000);
+        const auto                mh = morph_axis_freq_anchors(r, t, 0.5, 16000);
+        expect(m0.size() == 2 && near(m0[0], 700, 1e-6) && near(m0[1], 1200, 1e-6) && near(m1[0], 500, 1e-6)
+                 && near(m1[1], 1700, 1e-6) && mh.size() == 2 && mh[0] > 500 && mh[0] < 700 && mh[1] > 1200 && mh[1] < 1700,
+               "transport: 中間の軸の周波数アンカーは fx の率で base → target に動く");
+        expect(morph_axis_freq_anchors({ 700, 1200 }, { 1500, 900 }, 0.5, 16000).empty(),
+               "transport: target 側が逆転していれば帯を決めない");
+    }
+
+    // モーフィング全体で（test_restore_contrast と同じ合成音）。
+    const auto vb = analyze_vowel({ 700, 1200, 2600 }, "morphaligner_vowel_b.wav");
+    const auto vt = analyze_vowel({ 500, 1700, 2300 }, "morphaligner_vowel_t.wav");
+    if (!vb || !vt) {
+        expect(false, "transport: テスト用の合成音を解析できる");
+        return;
+    }
+    // 仕組みを見る項目は、フォルマントの帯域（300〜5500 Hz）で運ぶ。
+    MorphPostOptions ot;
+    ot.envelope        = EnvelopeMix::Transport;
+    ot.transport_lo_hz = 300.0;
+    ot.transport_hi_hz = 5500.0;
+    const MorphOutput avg5 = morphing_channels(*vb, *vt, {}, MorphRates::uniform(0.5));
+    const MorphOutput ot5  = morphing_channels(*vb, *vt, {}, MorphRates::uniform(0.5), ot);
+    double            c_avg = 0.0, c_ot = 0.0;
+    bool              power = ot5.ok() && ot5.morphed.n_frames == avg5.morphed.n_frames;
+    for (int j = 0; power && j < avg5.morphed.n_frames; ++j) {
+        c_avg += envelope_contrast(avg5.morphed.sp().col(j), vb->fs);
+        c_ot += envelope_contrast(ot5.morphed.sp().col(j), vb->fs);
+        const double pa = avg5.morphed.sp().col(j).sum(), po = ot5.morphed.sp().col(j).sum();
+        power &= near(po, pa, pa * 1e-9);
+    }
+    expect(avg5.ok() && power && ot5.transport_frames > 0 && near(ot5.transport_bands, 1.0) && c_ot > c_avg,
+           "transport: 率 0.5 で凹凸が平均より強く、フレームのパワーは平均と同じ");
+    // 周波数アンカーがあれば、帯はアンカー（構造）ごとに1つ（端は隣り合うアンカーの中間）。
+    const std::vector<Anchor> anc = { { 0.2, 0.2, { { 700, 500 }, { 1200, 1700 }, { 2600, 2300 } } } };
+    const MorphOutput         ota = morphing_channels(*vb, *vt, anc, MorphRates::uniform(0.5), ot);
+    expect(ota.ok() && near(ota.transport_bands, 3.0) && ota.transport_skipped == 0,
+           "transport: 周波数アンカーごとに帯を区切る");
+    // スペクトルの率が 0 なら元の音のまま。
+    MorphRates r0 = MorphRates::uniform(0.5);
+    r0.sl         = 0.0;
+    expect(morphing_channels(*vb, *vt, {}, r0).wave == morphing_channels(*vb, *vt, {}, r0, ot).wave,
+           "transport: スペクトルの率が 0 なら元の音のまま");
+    // 既定の範囲（5000〜12000 Hz）なら、範囲の外は形を変えない（フレームのパワーを戻す一律の倍率だけ）。
+    {
+        MorphPostOptions hi;
+        hi.envelope             = EnvelopeMix::Transport;
+        const MorphOutput oh    = morphing_channels(*vb, *vt, {}, MorphRates::uniform(0.5), hi);
+        const int         n     = avg5.morphed.nbin;
+        const double      hz    = vb->fs / (2.0 * n);    // tcmorph の中間の軸の目盛り
+        bool              shape = oh.ok() && oh.transport_frames > 0;
+        for (int j = 0; shape && j < avg5.morphed.n_frames; ++j) {
+            const auto   a = avg5.morphed.sp().col(j), o = oh.morphed.sp().col(j);
+            const double r = o[0] / a[0];
+            for (int k = 0; k < n; ++k)
+                if (k * hz < 5000.0 - hz) shape &= near(o[k] / a[k], r, 1e-9);
+        }
+        expect(shape, "transport: 既定の範囲では 5 kHz より下の形は平均のまま");
+    }
+}
+
 // ── 連続書き出し ────────────────────────────────────────────
 void test_batch_export() {
     // 率は 0 と 1 をちょうど含み、等間隔に並ぶ。
@@ -331,6 +698,15 @@ void test_batch_export() {
     expect(batch_wav_name(sub, 0.5) == "ab_fo+sl_r050.wav" && batch_manifest_name(sub) == "ab_fo+sl_batch.json"
              && !batch_sweeps_all_axes(sub) && batch_sweeps_all_axes(ab),
            "batch: 選んだ軸の名前がファイル名に入る");
+    MorphPostOptions contrast_on, ot_on;
+    contrast_on.envelope   = EnvelopeMix::AverageRestore;
+    ot_on.envelope         = EnvelopeMix::Transport;
+    ot_on.transport_gamma  = 0.3;
+    expect(batch_wav_name(ab, 0.5, contrast_on) == "ab_contrast_r050.wav"
+             && batch_wav_name(sub, 0.5, contrast_on) == "ab_fo+sl_contrast_r050.wav"
+             && batch_manifest_name(ab, contrast_on) == "ab_contrast_batch.json"
+             && batch_wav_name(ab, 0.5, ot_on) == "ab_ot030_5000-12000_r050.wav",
+           "batch: 包絡の混ぜ方が平均でなければファイル名に印が入る");
 
     // 掃引する軸は同じ値で動き、ほかは固定値のまま。
     sub.fixed               = MorphRates { 0.1, 0.2, 0.9, 0.9, 0.3 };
@@ -538,6 +914,9 @@ int main() {
     test_analysis();
     test_launch_options();
     test_auto_anchors();
+    test_ot_anchors();
+    test_restore_contrast();
+    test_envelope_transport();
     test_batch_export();
     test_session_json();
 

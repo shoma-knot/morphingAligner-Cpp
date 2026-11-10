@@ -17,9 +17,102 @@
 #include "world/synthesis.h"
 
 #include "anchor.hpp"
+#include "envelope_transport.hpp"
 
 using Eigen::MatrixXd;
 using Eigen::VectorXd;
+
+namespace {
+
+// 凹凸を測って戻す周波数範囲 [Hz]（フォルマントの帯域）。全帯域で1つの倍率にすると、フォルマントの
+// 無い高域の平らになり方に引っぱられて、フォルマントの帯域を戻しすぎた（hai の組で目標の 1.16 倍）。
+constexpr double kContrastLoHz = 300.0;
+constexpr double kContrastHiHz = 5500.0;
+
+// 戻す対象にする構造の細かさの下限 [Hz]。周波数方向の周期がこれより短い成分は触らない
+// （フォルマントの構造だけを対象にし、包絡に残る F0 由来の細かい波打ちを強めない）。
+constexpr double kContrastMinPeriodHz = 300.0;
+
+// 1フレームに掛ける倍率の上限（凹凸がほとんど無いフレームを極端に強めないため）。
+constexpr double kContrastMaxGain = 2.0;
+
+// 凹凸を測る範囲と、その内側の点に対する DST-I（正規直交）の基底 k = 2..K。
+// 範囲の dB 包絡から両端を結ぶ直線を引いたものを DST で表すと、基底はどれも両端で 0 になる
+// ので、係数を変えても範囲の両端の値は変わらず、範囲の外とつながったままになる（DCT のまま
+// 範囲を切ると端に段差ができる）。直線は大まかな傾き、k = 1 は範囲全体のゆるい膨らみなので触らない。
+struct ContrastBasis {
+    Eigen::Index first = 0, count = 0;    // 範囲の最初の bin と点数（両端を含む）
+    MatrixXd     dst;                     // (K-1, count-2)
+
+    bool ok() const { return dst.rows() > 0; }
+};
+
+ContrastBasis contrast_basis(Eigen::Index nbin, int fs) {
+    ContrastBasis b;
+    if (nbin < 4 || fs <= 0) return b;
+    const double       df    = (fs / 2.0) / static_cast<double>(nbin - 1);
+    const Eigen::Index first = static_cast<Eigen::Index>(std::ceil(kContrastLoHz / df));
+    const Eigen::Index last  = std::min<Eigen::Index>(nbin - 1, static_cast<Eigen::Index>(std::floor(kContrastHiHz / df)));
+    const Eigen::Index n     = last - first - 1;    // 内側の点の数
+    // 基底 k の周期は 2 * (範囲の幅) / k [Hz]。
+    const int K = std::min<int>(static_cast<int>(n), static_cast<int>(std::floor(2.0 * (last - first) * df / kContrastMinPeriodHz)));
+    if (n < 4 || K < 2) return b;
+    b.first = first;
+    b.count = last - first + 1;
+    b.dst.resize(K - 1, n);
+    const double scale = std::sqrt(2.0 / static_cast<double>(n + 1));
+    for (int k = 2; k <= K; ++k)
+        for (Eigen::Index i = 1; i <= n; ++i)
+            b.dst(k - 2, i - 1) = scale * std::sin(3.14159265358979323846 * k * static_cast<double>(i) / (n + 1));
+    return b;
+}
+
+// 線形パワーの1フレームを dB にして、範囲の両端を結ぶ直線を引いた内側の点を返す。
+VectorXd detrended_db(const Eigen::Ref<const VectorXd>& power, const ContrastBasis& b) {
+    const VectorXd db   = 10.0 * power.segment(b.first, b.count).array().max(1e-300).log10();
+    const Eigen::Index m = b.count - 1;
+    VectorXd       out(b.count - 2);
+    for (Eigen::Index i = 1; i < m; ++i)
+        out[i - 1] = db[i] - (db[0] + (db[m] - db[0]) * static_cast<double>(i) / static_cast<double>(m));
+    return out;
+}
+
+}    // namespace
+
+double envelope_contrast(const Eigen::VectorXd& power, int fs) {
+    const ContrastBasis b = contrast_basis(power.size(), fs);
+    return b.ok() ? (b.dst * detrended_db(power, b)).norm() : 0.0;
+}
+
+double restore_envelope_contrast(MatrixXd& mix, const MatrixXd& ref, const MatrixXd& tgt, double sl, int fs) {
+    const Eigen::Index n = mix.rows(), nf = mix.cols();
+    if (ref.rows() != n || tgt.rows() != n || ref.cols() != nf || tgt.cols() != nf) return 1.0;
+    const ContrastBasis b = contrast_basis(n, fs);
+    if (!b.ok()) return 1.0;
+
+    double gain_sum = 0.0;
+    int    n_gain   = 0;
+    for (Eigen::Index j = 0; j < nf; ++j) {
+        const VectorXd y_mix = detrended_db(mix.col(j), b);
+        const VectorXd c_mix = b.dst * y_mix;
+        const double   have  = c_mix.norm();
+        if (have < 1e-9) continue;    // 平坦なフレーム（tcmorph が欠落させたフレームなど）
+        // 凹凸の強さ（dB の係数の大きさ）は、両端の値を sl で線形に補間したものを目標にする。
+        const double want = (1.0 - sl) * (b.dst * detrended_db(ref.col(j), b)).norm()
+                          + sl * (b.dst * detrended_db(tgt.col(j), b)).norm();
+        const double g = std::clamp(want / have, 1.0, kContrastMaxGain);    // 弱めることはしない
+        gain_sum += g;
+        ++n_gain;
+        if (g == 1.0) continue;
+
+        // 範囲の内側の dB に、強めた分（係数の (g-1) 倍）を足す。両端と範囲の外はそのまま。
+        const VectorXd delta = b.dst.transpose() * (c_mix * (g - 1.0));
+        const double   before = mix.col(j).sum();
+        for (Eigen::Index i = 0; i < delta.size(); ++i) mix(b.first + 1 + i, j) *= std::pow(10.0, delta[i] / 10.0);
+        mix.col(j) *= before / mix.col(j).sum();    // フレームのパワーの和は元のまま
+    }
+    return n_gain > 0 ? gain_sum / n_gain : 1.0;
+}
 
 // ── アンカーの整形 ───────────────────────────────────────────
 AnchorMatrices build_anchor_matrices(const std::vector<Anchor>& anchors, double end_ref, double end_tgt,
@@ -110,7 +203,8 @@ AnchorMatrices build_anchor_matrices(const std::vector<Anchor>& anchors, double 
 }
 
 MorphOutput morphing_channels(const MorphChannel& B, const MorphChannel& T,
-                              const std::vector<Anchor>& anchors, const MorphRates& rates) {
+                              const std::vector<Anchor>& anchors, const MorphRates& rates,
+                              const MorphPostOptions& post) {
     MorphOutput R;
     try {
         if (B.empty() || T.empty()) {
@@ -149,6 +243,35 @@ MorphOutput morphing_channels(const MorphChannel& B, const MorphChannel& T,
 
         tcmorph::aligner::Output o = tcmorph::aligner::WordTV2WMorphing(
           B.world, T.world, am.t_ref, am.tf_ref, am.t_tgt, am.tf_tgt, rate, opt);
+
+        // 包絡の混ぜ方を変える。sl = 0 / 1 で合成し直すと、混ぜる前の（同じ時間・周波数の格子に揃えた）
+        // base / target の包絡がそのまま出る（ワープは tx / fx だけで決まり、sl は混ぜる重みにしか
+        // 使われないため）。凹凸を戻すときはそれを目標に、OT で補間するときはそれを運ぶ元と先に使う。
+        if (post.envelope != EnvelopeMix::Average && rate.sl > 0.0 && rate.sl < 1.0) {
+            tcmorph::aligner::MorphRate r0 = rate, r1 = rate;
+            r0.sl = 0.0;
+            r1.sl = 1.0;
+            const tcmorph::aligner::Output o0 =
+              tcmorph::aligner::WordTV2WMorphing(B.world, T.world, am.t_ref, am.tf_ref, am.t_tgt, am.tf_tgt, r0, opt);
+            const tcmorph::aligner::Output o1 =
+              tcmorph::aligner::WordTV2WMorphing(B.world, T.world, am.t_ref, am.tf_ref, am.t_tgt, am.tf_tgt, r1, opt);
+            if (o0.spectrogram.cols() != o.spectrogram.cols() || o1.spectrogram.cols() != o.spectrogram.cols()) {
+                R.warnings.push_back("包絡の混ぜ方を変えられませんでした（base/target の格子のフレーム数が一致しません）");
+            } else if (post.envelope == EnvelopeMix::AverageRestore) {
+                R.contrast_gain = restore_envelope_contrast(o.spectrogram, o0.spectrogram, o1.spectrogram, rate.sl, fs);
+            } else {
+                // フレーム周期は tcmorph と同じく base の最初の2フレームの間隔。
+                const double         frame_s = tb.size() >= 2 ? tb[1] - tb[0] : kFramePeriodMs / 1000.0;
+                const TransportStats ts      = transport_envelopes(o.spectrogram, o0.spectrogram, o1.spectrogram, am,
+                                                                   tb[tb.size() - 1], tt[tt.size() - 1], frame_s,
+                                                                   MorphRates { rate.tx, rate.fx, rate.fo, rate.sl, rate.ap },
+                                                                   fs, post.transport_gamma, post.transport_lo_hz,
+                                                                   post.transport_hi_hz);
+                R.transport_frames  = ts.frames;
+                R.transport_bands   = ts.bands;
+                R.transport_skipped = ts.skipped;
+            }
+        }
 
         R.warnings = std::move(o.warnings);
         if (am.dropped_time > 0)
