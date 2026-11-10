@@ -152,6 +152,7 @@ void apply_track(Track& tr, const std::string& path, AnalyzedAudio&& audio) {
     tr.tex     = tr.channel ? make_heatmap_texture(tr.channel->sp(), tr.spec.fs, /*as_db=*/true, tr.spec.db_min,
                                                    tr.spec.db_max)
                             : GlTexture {};
+    tr.f0    = tr.channel ? make_f0_curve(*tr.channel) : F0Curve {};
     tr.y_min = 0.0;    // 周波数軸の表示範囲をリセット（ERB レート）
     tr.y_max = freqscale::hz_to_erb(tr.spec.fs / 2.0);
     // ミニマップの枠を全体表示で初期化。

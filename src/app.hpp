@@ -33,6 +33,7 @@ struct Track {
     // WORLD の解析結果（f0/sp/ap）。表示とモーフィングで共有する（immutable）。
     std::shared_ptr<const MorphChannel> channel;
     Spectrogram  spec;       // スペクトル包絡の要約（fs・長さ・dB の範囲）
+    F0Curve      f0;         // F0 の線（channel の f0 から作る。表示用）
     GlTexture    tex;        // channel の sp を焼き込んだテクスチャ
     double       y_min = 0;  // 周波数軸の表示範囲 [ERB レート]。ズームで変わり、
     double       y_max = 0;  // 読み込み時に [0, ERB(fs/2)] に戻す
@@ -144,6 +145,7 @@ struct MorphState {
 // 画面の表示状態（フレームをまたいで持つもの）。
 struct ViewState {
     bool     show_minimap = false;      // スペクトログラムのミニマップ表示
+    bool     show_f0      = false;      // スペクトログラムに F0 の線を重ねる
     bool     log_open     = true;       // 下部ログ領域の展開状態
     ImFont*  mono_font    = nullptr;    // 等幅フォント（ライセンス表示用、null なら既定）
 

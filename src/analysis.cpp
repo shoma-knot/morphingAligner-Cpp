@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -12,6 +13,7 @@
 
 #include <miniaudio_cpp/audio.hpp>
 
+#include "freqscale.hpp"
 #include "world/cheaptrick.h"
 #include "world/d4c.h"
 #include "world/harvest.h"
@@ -103,6 +105,22 @@ Result<MorphChannel> analyze_channel(const std::string& path) {
     } catch (const std::exception& e) {
         return Result<MorphChannel>::failure(e.what());
     }
+}
+
+F0Curve make_f0_curve(const MorphChannel& c) {
+    F0Curve out;
+    if (c.empty()) return out;
+    const Eigen::VectorXd& f0 = c.f0();
+    const double           fp = c.frame_period > 0.0 ? c.frame_period : kFramePeriodMs;
+    const std::size_t      n  = static_cast<std::size_t>(f0.size());
+    out.t.resize(n);
+    out.erb.resize(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        out.t[i]   = static_cast<double>(i) * fp / 1000.0;
+        const double hz = f0[static_cast<Eigen::Index>(i)];
+        out.erb[i] = hz > 0.0 ? freqscale::hz_to_erb(hz) : std::numeric_limits<double>::quiet_NaN();
+    }
+    return out;
 }
 
 Spectrogram summarize_spectrogram(const MorphChannel& c) {

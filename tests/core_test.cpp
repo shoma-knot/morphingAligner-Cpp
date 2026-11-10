@@ -225,6 +225,29 @@ void test_analysis() {
            "analysis: 表示用の要約がチャンネルと一致する");
     expect(near(a.spec.db_max, 10.0 * std::log10(c.sp().maxCoeff())), "analysis: dB の範囲は sp から求める");
 
+    // F0 の線: フレームごとに時刻と ERB レート、無声のフレームは NaN（線の切れ目）。
+    {
+        const F0Curve f = make_f0_curve(c);
+        expect(static_cast<int>(f.t.size()) == c.n_frames && f.erb.size() == f.t.size()
+                 && near(f.t[1] - f.t[0], c.frame_period / 1000.0),
+               "make_f0_curve: フレームごとに時刻を持つ");
+        int  voiced = 0;
+        bool ok     = true;
+        for (std::size_t i = 0; i < f.t.size(); ++i) {
+            const double hz = c.f0()[static_cast<Eigen::Index>(i)];
+            if (hz > 0.0) {
+                ++voiced;
+                ok &= near(f.erb[i], freqscale::hz_to_erb(hz));
+            } else {
+                ok &= std::isnan(f.erb[i]);
+            }
+        }
+        expect(ok && voiced > 0, "make_f0_curve: 有声は F0 の ERB レート、無声は NaN");
+        const std::size_t mid = f.t.size() / 2;
+        expect(near(freqscale::erb_to_hz(f.erb[mid]), 150.0, 5.0), "make_f0_curve: 150 Hz の合成音で約 150 Hz");
+        expect(make_f0_curve(MorphChannel {}).empty(), "make_f0_curve: 空のチャンネルなら空");
+    }
+
     // 同じチャンネルどうしのモーフィング（アンカーなし）が最後まで通る。
     const MorphOutput o = morphing_channels(c, c, {}, MorphRates::uniform(0.5));
     expect(o.ok() && o.fs == fs && !o.wave.empty() && std::fabs(static_cast<double>(o.wave.size()) - c.duration * fs) < fs * 0.02,

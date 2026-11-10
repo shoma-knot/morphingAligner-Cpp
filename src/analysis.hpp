@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <tcmorph/generalized_tc_morphing.hpp>    // WorldParameter などの共通データ構造
 
@@ -51,6 +52,16 @@ struct AnalyzedAudio {
     std::shared_ptr<const MorphChannel> channel;
     Spectrogram                         spec;
 };
+
+// アライメントタブに重ねる F0 の線（MorphChannel::f0 から作る）。t は各フレームの時刻 [s]、erb は
+// F0 の ERB レート（スペクトログラムの Y 軸の座標）。無声のフレーム（f0 = 0）は NaN にして、線を切る。
+struct F0Curve {
+    std::vector<double> t, erb;
+    bool empty() const { return t.empty(); }
+};
+
+// チャンネルの F0（Harvest）から F0Curve を作る。
+F0Curve make_f0_curve(const MorphChannel& c);
 
 // 1音源を WORLD で解析して f0/sp/ap のチャンネルを作る。失敗時は error に理由（デコードの失敗など）。
 Result<MorphChannel> analyze_channel(const std::string& path);

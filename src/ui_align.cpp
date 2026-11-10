@@ -256,6 +256,23 @@ void draw_minimap(Track& tr, float width, float height) {
     ImGui::PopID();
 }
 
+// F0 の線（WORLD の Harvest。無声区間は切れる）を重ねる。背景の viridis（低域は明るい黄緑になりやすい）、
+// アンカー（橙）、フォルマント（白・水色・桃・灰）と見分けられるよう、暗い縁取りの赤い線にする。
+void draw_f0(const F0Curve& f0) {
+    if (f0.empty()) return;
+    const int n = static_cast<int>(f0.t.size());
+    ImPlotSpec edge;
+    edge.LineColor  = ImVec4(0.0f, 0.0f, 0.0f, 0.7f);
+    edge.LineWeight = 4.0f;
+    edge.Flags      = ImPlotItemFlags_NoFit;    // NaN は線の切れ目として描かれる（SkipNaN なし）
+    ImPlot::PlotLine("##f0_edge", f0.t.data(), f0.erb.data(), n, edge);
+    ImPlotSpec line;
+    line.LineColor  = ImVec4(1.0f, 0.25f, 0.25f, 1.0f);
+    line.LineWeight = 2.0f;
+    line.Flags      = ImPlotItemFlags_NoFit;
+    ImPlot::PlotLine("##f0", f0.t.data(), f0.erb.data(), n, line);
+}
+
 // ミニマップの配置。
 enum class Minimap { None, Above, Below };
 
@@ -321,6 +338,7 @@ void draw_spectrogram(App& app, Side side, float height, std::vector<EdgePoint>&
         // 焼き込み済みテクスチャ: bin * frame 数に依らず1クアッドで描画。Y は ERB レート範囲。
         ImPlot::PlotImage("##env", tr.tex.imgui_id(), ImPlotPoint(0, 0),
                           ImPlotPoint(sp.duration, freqscale::hz_to_erb(sp.fs / 2.0)));
+        if (app.view.show_f0) draw_f0(tr.f0);
         if (app.speech.show_formants) draw_formants(tr.formants, app.speech.show_formant_ma ? &tr.formants_ma : nullptr);
 
         handle_freq_axis_input(tr, sp);
@@ -375,6 +393,10 @@ void draw_left_panel(App& app) {
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Checkbox("ミニマップを表示", &app.view.show_minimap);
+    ImGui::Checkbox("F0 を表示", &app.view.show_f0);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("読み込み時の WORLD（Harvest）の F0 を赤い線で重ねます（無声区間は切れます）。\n"
+                          "モーフィングに使う F0 と同じものです。");
 
     // ── 音声解析（フォルマント・音素セグメンテーション） ─────────
     ImGui::Spacing();
