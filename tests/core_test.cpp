@@ -19,6 +19,7 @@
 #include "analysis.hpp"
 #include "anchor.hpp"
 #include "auto_anchors.hpp"
+#include "batch_cli.hpp"
 #include "batch_export.hpp"
 #include "formant_smoothing.hpp"
 #include "freqscale.hpp"
@@ -286,47 +287,182 @@ void test_launch_options() {
     using V = std::vector<std::string>;
     {
         const Result<LaunchOptions> r = parse_launch_options({});
-        expect(r.ok() && !r.value.has_files() && !r.value.align, "launch: 引数なしは何もしない");
+        expect(r.ok() && r.value.command == LaunchCommand::Gui && !r.value.has_files() && !r.value.align,
+               "launch: 引数なしは何も読み込まずに gui");
     }
     {
         const Result<LaunchOptions> r =
-          parse_launch_options(V { "--base", "a.wav", "--target=b.wav", "--transcript", "あいうえお", "--align" });
+          parse_launch_options(V { "gui", "--base", "a.wav", "--target=b.wav", "--transcript", "あいうえお", "--align" });
         const LaunchOptions& o = r.value;
-        expect(r.ok() && o.base == "a.wav" && o.target == "b.wav" && o.has_transcript && o.transcript == "あいうえお"
-                 && o.align && o.session.empty(),
+        expect(r.ok() && o.command == LaunchCommand::Gui && o.base == "a.wav" && o.target == "b.wav" && o.has_transcript
+                 && o.transcript == "あいうえお" && o.align && o.session.empty(),
                "launch: 「--name 値」と「--name=値」の両方を読める");
     }
     {
-        const Result<LaunchOptions> r = parse_launch_options(V { "--session", "s.json", "--align" });
-        expect(r.ok() && r.value.session == "s.json" && r.value.align && !r.value.has_transcript,
-               "launch: --session があれば --align に --transcript は要らない（書き起こしはセッションから）");
+        const Result<LaunchOptions> r = parse_launch_options(V { "GUI", "--session", "s.json", "--align" });
+        expect(r.ok() && r.value.command == LaunchCommand::Gui && r.value.session == "s.json" && r.value.align
+                 && !r.value.has_transcript,
+               "launch: サブコマンドは大文字でもよい。--session があれば --align に --transcript は要らない");
     }
     {
-        const Result<LaunchOptions> r = parse_launch_options(V { "--transcript=" });
+        const Result<LaunchOptions> r = parse_launch_options(V { "gui", "--transcript=" });
         expect(r.ok() && r.value.has_transcript && r.value.transcript.empty(), "launch: 空の書き起こしも指定できる");
     }
-    expect(parse_launch_options(V { "--help", "--nope" }).value.help, "launch: --help はほかの誤りより優先");
-    expect(parse_launch_options(V { "--version" }).value.version, "launch: --version");
-    expect(fails_with(parse_launch_options(V { "a.wav" }), "知らない引数です: a.wav"),
+    {
+        const Result<LaunchOptions> r = parse_launch_options(V { "--help", "--nope" });
+        expect(r.ok() && r.value.help && r.value.command == LaunchCommand::None, "launch: サブコマンドなしの --help は全体の説明");
+    }
+    expect(parse_launch_options(V { "--version" }).value.version, "launch: サブコマンドなしの --version");
+    {
+        const Result<LaunchOptions> r = parse_launch_options(V { "batch", "--nope", "-h" });
+        expect(r.ok() && r.value.help && r.value.command == LaunchCommand::Batch,
+               "launch: サブコマンドの --help はほかの誤りより優先");
+    }
+    expect(fails_with(parse_launch_options(V { "--base", "a.wav" }), "サブコマンドがありません"),
+           "launch: 引数があるのにサブコマンドが無ければ誤り");
+    expect(fails_with(parse_launch_options(V { "a.wav" }), "知らないサブコマンドです: a.wav"), "launch: 知らないサブコマンド");
+    expect(launch_command_of(V { "Batch", "x" }) == LaunchCommand::Batch && launch_command_of(V { "x" }) == LaunchCommand::None,
+           "launch: 最初の引数からサブコマンドを判定");
+    expect(fails_with(parse_launch_options(V { "gui", "a.wav" }), "知らない引数です: a.wav"),
            "launch: オプション名の無い引数は受け付けない");
-    expect(fails_with(parse_launch_options(V { "--bass", "a.wav" }), "知らない引数です: --bass"), "launch: 知らないオプション");
-    expect(fails_with(parse_launch_options(V { "--base" }), "--base に値がありません"), "launch: 値の無いオプション");
-    expect(fails_with(parse_launch_options(V { "--base=" }), "--base の値（パス）が空です"), "launch: 空のパス");
-    expect(fails_with(parse_launch_options(V { "--base", "a", "--base", "b" }), "--base が2回指定されています"),
+    expect(fails_with(parse_launch_options(V { "gui", "--bass", "a.wav" }), "知らない引数です: --bass"), "launch: 知らないオプション");
+    expect(fails_with(parse_launch_options(V { "gui", "--base" }), "--base に値がありません"), "launch: 値の無いオプション");
+    expect(fails_with(parse_launch_options(V { "gui", "--base=" }), "--base の値が空です"), "launch: 空のパス");
+    expect(fails_with(parse_launch_options(V { "gui", "--base", "a", "--base", "b" }), "--base が2回指定されています"),
            "launch: 同じオプションの重複");
-    expect(fails_with(parse_launch_options(V { "--transcript", "x", "--align" }), "--align には --base"),
+    expect(fails_with(parse_launch_options(V { "gui", "--align=1", "--base", "a" }), "知らない引数です: --align=1"),
+           "launch: 値を取らないオプションに = は付けられない");
+    expect(fails_with(parse_launch_options(V { "gui", "--transcript", "x", "--align" }), "--align には --base"),
            "launch: 音声なしの --align");
-    expect(fails_with(parse_launch_options(V { "--base", "a.wav", "--align" }), "--align には --transcript"),
+    expect(fails_with(parse_launch_options(V { "gui", "--base", "a.wav", "--align" }), "--align には --transcript"),
            "launch: 書き起こしなしの --align");
+    expect(fails_with(parse_launch_options(V { "gui", "--count", "7" }), "--count は gui では使えません"),
+           "launch: batch のオプションは gui で使えない");
+
+    // batch
+    {
+        const Result<LaunchOptions> r = parse_launch_options(V { "batch", "--session", "s.json", "--count=7", "--out", "o",
+                                                                 "--prefix", "p", "--sweep", "fo,SL", "--fixed",
+                                                                 "tx=0.5,fx=1,ap=0", "--no-manifest", "--overwrite" });
+        const BatchCliOptions& b = r.value.batch;
+        expect(r.ok() && r.value.command == LaunchCommand::Batch && r.value.session == "s.json" && b.count == 7
+                 && b.out == "o" && b.prefix == "p" && !b.sweep[0] && !b.sweep[1] && b.sweep[2] && b.sweep[3] && !b.sweep[4]
+                 && near(b.fixed[0], 0.5) && near(b.fixed[1], 1.0) && near(b.fixed[4], 0.0) && !b.manifest && b.overwrite,
+               "launch: batch の設定を読める" + (r.ok() ? "" : "（" + r.error + "）"));
+    }
+    {
+        const Result<LaunchOptions> r =
+          parse_launch_options(V { "batch", "--base", "a.wav", "--target", "b.wav", "--count", "2", "--out", "o" });
+        const BatchCliOptions& b = r.value.batch;
+        expect(r.ok() && b.manifest && !b.overwrite && b.prefix.empty() && b.sweep[0] && b.sweep[4],
+               "launch: batch の既定は全軸・JSON あり・上書きしない");
+    }
+    const V in { "batch", "--session", "s.json" };
+    const auto with = [&](V extra) {
+        V v = in;
+        v.insert(v.end(), extra.begin(), extra.end());
+        return parse_launch_options(v);
+    };
+    expect(fails_with(with({ "--out", "o" }), "batch には --count"), "launch: batch は --count が必須");
+    expect(fails_with(with({ "--count", "3" }), "batch には --out"), "launch: batch は --out が必須");
+    expect(fails_with(with({ "--count", "1", "--out", "o" }), "--count は 2〜101"), "launch: 本数が少なすぎる");
+    expect(fails_with(with({ "--count", "102", "--out", "o" }), "--count は 2〜101"), "launch: 本数が多すぎる");
+    expect(fails_with(with({ "--count", "3x", "--out", "o" }), "--count は 2〜101"), "launch: 本数が整数でない");
+    expect(fails_with(with({ "--count", "3", "--out", "o", "--sweep", "fo,f0" }), "--sweep に知らない軸があります: f0"),
+           "launch: 知らない軸");
+    expect(fails_with(with({ "--count", "3", "--out", "o", "--fixed", "tx=0.5" }), "--fixed の tx は変化させる軸です"),
+           "launch: 変化させる軸は固定できない");
+    expect(fails_with(with({ "--count", "3", "--out", "o", "--sweep", "fo", "--fixed", "tx=1.5" }), "--fixed の率は 0〜1"),
+           "launch: 固定値が範囲外");
+    expect(fails_with(with({ "--count", "3", "--out", "o", "--sweep", "fo", "--fixed", "tx" }), "--fixed は「軸=率」"),
+           "launch: 固定値の書式");
+    expect(fails_with(with({ "--count", "3", "--out", "o", "--sweep", "fo", "--fixed", "tx=0,tx=1" }),
+                      "--fixed で tx が2回"),
+           "launch: 固定値の重複");
+    expect(fails_with(with({ "--count", "3", "--out", "o", "--align" }), "--align は batch では使えません"),
+           "launch: gui のオプションは batch で使えない");
+    expect(fails_with(parse_launch_options(V { "batch", "--base", "a.wav", "--count", "3", "--out", "o" }),
+                      "--base と --target は両方"),
+           "launch: batch で音声が片方だけ");
+    expect(fails_with(parse_launch_options(V { "batch", "--count", "3", "--out", "o" }), "batch には --session か"),
+           "launch: batch で入力が無い");
 
     // 相対パスは絶対パスにし、空の項目はそのまま。
     LaunchOptions o;
     o.base = u8"sub/../音声.wav";
-    make_paths_absolute(o);
     const std::filesystem::path expect_path =
       (std::filesystem::current_path() / std::filesystem::u8path(u8"音声.wav")).lexically_normal();
-    expect(std::filesystem::u8path(o.base) == expect_path && o.target.empty(),
+    o.batch.out = "out";
+    make_paths_absolute(o);
+    expect(std::filesystem::u8path(o.base) == expect_path && o.target.empty()
+             && std::filesystem::u8path(o.batch.out) == std::filesystem::current_path() / "out",
            "launch: 相対パスを絶対パスにする（日本語を含んでも UTF-8 のまま）");
+}
+
+// ── batch サブコマンド ──────────────────────────────────────
+// 一時ファイルに書かれた内容を読み出す。
+std::string read_all(std::FILE* f) {
+    std::string s;
+    std::rewind(f);
+    char buf[512];
+    while (std::fgets(buf, sizeof buf, f)) s += buf;
+    return s;
+}
+
+void test_batch_command() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path  dir = fs::temp_directory_path() / u8"morphaligner_batch_cli_test";
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+
+    // 0.3 秒の合成音を2本（F0 違い）書き、それを指すセッションを作る。
+    constexpr int fs_hz = 16000;
+    for (const auto& [name, f0] : { std::pair { "a.wav", 150.0 }, std::pair { "b.wav", 200.0 } }) {
+        std::vector<double> x(fs_hz * 3 / 10);
+        for (std::size_t i = 0; i < x.size(); ++i)
+            for (int h = 1; h <= 10; ++h)
+                x[i] += 0.3 / h * std::sin(2.0 * 3.14159265358979 * f0 * h * static_cast<double>(i) / fs_hz);
+        expect(write_wav((dir / name).u8string(), x, fs_hz).ok(), std::string { "batch cli: テスト用の WAV を書ける: " } + name);
+    }
+    SessionFile sf;
+    sf.base_path   = (dir / "a.wav").u8string();
+    sf.target_path = (dir / "b.wav").u8string();
+    sf.anchors     = { Anchor { 0.1, 0.12, {} } };
+    std::ofstream(dir / "s.json") << session_to_json(sf);
+
+    const auto run = [&](std::vector<std::string> extra, std::string* out_text = nullptr) {
+        std::vector<std::string> args { "batch", "--session", (dir / "s.json").u8string(), "--count", "3", "--out",
+                                        (dir / u8"出力").u8string(), "--prefix", "x" };
+        args.insert(args.end(), extra.begin(), extra.end());
+        const Result<LaunchOptions> o = parse_launch_options(args);
+        if (!o.ok()) return -1;
+        std::FILE* out = std::tmpfile();
+        std::FILE* log = std::tmpfile();
+        const int  rc  = run_batch_command(o.value, out, log);
+        if (out_text) *out_text = read_all(out);
+        std::fclose(out);
+        std::fclose(log);
+        return rc;
+    };
+
+    std::string listed;
+    expect(run({}, &listed) == 0, "batch cli: セッションから書き出せる（出力先のフォルダは作る）");
+    const fs::path od = dir / u8"出力";
+    expect(fs::exists(od / "x_r000.wav", ec) && fs::exists(od / "x_r050.wav", ec) && fs::exists(od / "x_r100.wav", ec)
+             && fs::exists(od / "x_batch.json", ec),
+           "batch cli: GUI と同じ名前の WAV と JSON が揃う");
+    expect(listed.find("x_r050.wav") != std::string::npos && listed.find("x_batch.json") != std::string::npos,
+           "batch cli: 書き出したファイルを標準出力に並べる");
+    expect(run({}) == 1, "batch cli: 同じ名前のファイルがあれば中止する");
+    expect(run({ "--overwrite" }) == 0, "batch cli: --overwrite なら上書きする");
+    expect(run({ "--sweep", "fo", "--no-manifest" }) == 0 && fs::exists(od / "x_fo_r050.wav", ec)
+             && !fs::exists(od / "x_fo_batch.json", ec),
+           "batch cli: 軸を選べば軸の名前入りのファイル名、--no-manifest なら JSON を書かない");
+    expect(run({ "--base", sf.base_path, "--target", sf.target_path }) == 1,
+           "batch cli: 音声のパスを含むセッションと --base / --target は同時に使えない");
+
+    fs::remove_all(dir, ec);
 }
 
 // ── セッション JSON ─────────────────────────────────────────
@@ -562,6 +698,7 @@ int main() {
     test_launch_options();
     test_auto_anchors();
     test_batch_export();
+    test_batch_command();
     test_session_json();
 
     if (g_failures > 0) {

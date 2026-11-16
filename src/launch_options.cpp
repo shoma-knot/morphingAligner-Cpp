@@ -1,8 +1,13 @@
 #include "launch_options.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <system_error>
 #include <utility>
+
+#include "batch_export.hpp"    // BatchExportSettings::kCountMin / kCountMax
 
 #ifdef _WIN32
     #ifndef NOMINMAX
@@ -17,83 +22,231 @@
 
 namespace {
 
-// 値を取るオプション。
-struct ValueOption {
-    const char*  name;
-    std::string LaunchOptions::*field;
+// オプションを使えるサブコマンド（ビットの組み合わせ）。
+constexpr int kGui   = 1;
+constexpr int kBatch = 2;
+
+struct OptionSpec {
+    const char* name;
+    bool        takes_value;
+    int         commands;
 };
-const ValueOption kValueOptions[] = {
-    { "--base", &LaunchOptions::base },
-    { "--target", &LaunchOptions::target },
-    { "--session", &LaunchOptions::session },
-    { "--transcript", &LaunchOptions::transcript },
+const OptionSpec kOptions[] = {
+    { "--base", true, kGui | kBatch },     { "--target", true, kGui | kBatch }, { "--session", true, kGui | kBatch },
+    { "--transcript", true, kGui },        { "--align", false, kGui },          { "--count", true, kBatch },
+    { "--out", true, kBatch },             { "--prefix", true, kBatch },        { "--sweep", true, kBatch },
+    { "--fixed", true, kBatch },           { "--no-manifest", false, kBatch },  { "--overwrite", false, kBatch },
 };
 
 Result<LaunchOptions> fail(std::string msg) {
     return Result<LaunchOptions>::failure(std::move(msg));
 }
 
+std::string ascii_lower(std::string s) {
+    for (char& c : s)
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    return s;
+}
+
+std::vector<std::string> split_commas(const std::string& s) {
+    std::vector<std::string> out;
+    std::size_t              from = 0;
+    while (true) {
+        const std::size_t comma = s.find(',', from);
+        out.push_back(s.substr(from, comma == std::string::npos ? std::string::npos : comma - from));
+        if (comma == std::string::npos) return out;
+        from = comma + 1;
+    }
+}
+
+// 軸の名前（tx など。大文字でもよい）の添字。知らない名前なら -1。
+int axis_index(const std::string& name) {
+    const std::string n = ascii_lower(name);
+    for (int i = 0; i < kMorphAxisCount; ++i)
+        if (n == kMorphAxes[i].key) return i;
+    return -1;
+}
+
+std::string axis_list() {
+    std::string s;
+    for (int i = 0; i < kMorphAxisCount; ++i) s += (i ? ", " : "") + std::string { kMorphAxes[i].key };
+    return s;
+}
+
+// 文字列の全体が整数なら値を返す。
+bool parse_int(const std::string& s, int& out) {
+    if (s.empty() || s.size() > 6) return false;
+    int v = 0;
+    for (char c : s) {
+        if (c < '0' || c > '9') return false;
+        v = v * 10 + (c - '0');
+    }
+    out = v;
+    return true;
+}
+
+// 文字列の全体が有限の実数なら値を返す。
+bool parse_double(const std::string& s, double& out) {
+    if (s.empty()) return false;
+    char*        end = nullptr;
+    const double v   = std::strtod(s.c_str(), &end);
+    if (end != s.c_str() + s.size() || !std::isfinite(v)) return false;
+    out = v;
+    return true;
+}
+
+// 1つのオプションを LaunchOptions に反映する。誤りがあれば理由を返す（空 = 成功）。
+std::string apply_option(LaunchOptions& o, bool fixed_set[], const std::string& name, const std::string& value) {
+    BatchCliOptions& b = o.batch;
+    if (name == "--align") {
+        o.align = true;
+    } else if (name == "--no-manifest") {
+        b.manifest = false;
+    } else if (name == "--overwrite") {
+        b.overwrite = true;
+    } else if (name == "--transcript") {
+        o.transcript     = value;
+        o.has_transcript = true;
+    } else if (value.empty()) {
+        return name + " の値が空です";
+    } else if (name == "--base") {
+        o.base = value;
+    } else if (name == "--target") {
+        o.target = value;
+    } else if (name == "--session") {
+        o.session = value;
+    } else if (name == "--out") {
+        b.out = value;
+    } else if (name == "--prefix") {
+        b.prefix = value;
+    } else if (name == "--count") {
+        if (!parse_int(value, b.count) || b.count < BatchExportSettings::kCountMin || b.count > BatchExportSettings::kCountMax)
+            return "--count は " + std::to_string(BatchExportSettings::kCountMin) + "〜"
+                 + std::to_string(BatchExportSettings::kCountMax) + " の整数で指定してください: " + value;
+    } else if (name == "--sweep") {
+        if (ascii_lower(value) == "all") {
+            for (bool& s : b.sweep) s = true;
+            return {};
+        }
+        for (bool& s : b.sweep) s = false;
+        for (const std::string& t : split_commas(value)) {
+            const int i = axis_index(t);
+            if (i < 0) return "--sweep に知らない軸があります: " + t + "（" + axis_list() + "、または all）";
+            b.sweep[i] = true;
+        }
+    } else if (name == "--fixed") {
+        for (const std::string& t : split_commas(value)) {
+            const std::size_t eq = t.find('=');
+            const int         i  = eq == std::string::npos ? -1 : axis_index(t.substr(0, eq));
+            if (i < 0) return "--fixed は「軸=率」をコンマで区切って書いてください（軸は " + axis_list() + "）: " + t;
+            double v = 0.0;
+            if (!parse_double(t.substr(eq + 1), v) || v < 0.0 || v > 1.0)
+                return "--fixed の率は 0〜1 の数で指定してください: " + t;
+            if (fixed_set[i]) return std::string { "--fixed で " } + kMorphAxes[i].key + " が2回指定されています";
+            fixed_set[i] = true;
+            b.fixed[i]   = v;
+        }
+    }
+    return {};
+}
+
 }    // namespace
+
+LaunchCommand launch_command_of(const std::vector<std::string>& args) {
+    if (args.empty()) return LaunchCommand::None;
+    const std::string first = ascii_lower(args.front());
+    if (first == "gui") return LaunchCommand::Gui;
+    if (first == "batch") return LaunchCommand::Batch;
+    return LaunchCommand::None;
+}
 
 Result<LaunchOptions> parse_launch_options(const std::vector<std::string>& args) {
     LaunchOptions o;
+    if (args.empty()) return Result<LaunchOptions>::success(std::move(o));    // 引数なしの起動は gui
+
+    o.command = launch_command_of(args);
+    if (o.command == LaunchCommand::None) {
+        // サブコマンドなしの --help / --version は全体の説明・版を出す（--version は CI でも使う）。
+        for (const std::string& a : args) {
+            if (a == "--help" || a == "-h") o.help = true;
+            if (a == "--version") o.version = true;
+        }
+        if (o.help || o.version) return Result<LaunchOptions>::success(std::move(o));
+        if (!args.front().empty() && args.front()[0] == '-')
+            return fail("サブコマンドがありません。最初に gui か batch を書いてください（例: morphingAlignerCpp gui "
+                        + args.front() + " ...）");
+        return fail("知らないサブコマンドです: " + args.front() + "（gui か batch）");
+    }
+    const int         cmd_bit  = o.command == LaunchCommand::Gui ? kGui : kBatch;
+    const std::string cmd_name = o.command == LaunchCommand::Gui ? "gui" : "batch";
 
     // --help / --version は、ほかの引数に誤りがあっても優先する。
-    for (const std::string& a : args) {
-        if (a == "--help" || a == "-h") o.help = true;
-        if (a == "--version") o.version = true;
+    for (std::size_t i = 1; i < args.size(); ++i) {
+        if (args[i] == "--help" || args[i] == "-h") o.help = true;
+        if (args[i] == "--version") o.version = true;
     }
     if (o.help || o.version) return Result<LaunchOptions>::success(std::move(o));
 
-    bool seen_align = false;
-    for (std::size_t i = 0; i < args.size(); ++i) {
+    std::vector<std::string> seen;
+    bool                     fixed_set[kMorphAxisCount] = {};
+    for (std::size_t i = 1; i < args.size(); ++i) {
         const std::string& a = args[i];
-        if (a == "--align") {
-            if (seen_align) return fail("--align が2回指定されています");
-            seen_align = o.align = true;
-            continue;
-        }
 
-        // 「--name 値」と「--name=値」
-        const ValueOption* opt = nullptr;
-        std::string        value;
-        bool               has_value = false;
-        for (const ValueOption& v : kValueOptions) {
-            const std::string name = v.name;
+        // 「--name 値」と「--name=値」。値を取らないオプションに「=」は付けられない。
+        const OptionSpec* opt = nullptr;
+        std::string       value;
+        for (const OptionSpec& spec : kOptions) {
+            const std::string name = spec.name;
             if (a == name) {
-                opt = &v;
-                if (i + 1 >= args.size()) return fail(name + " に値がありません");
-                value     = args[++i];
-                has_value = true;
-            } else if (a.rfind(name + "=", 0) == 0) {
-                opt       = &v;
-                value     = a.substr(name.size() + 1);
-                has_value = true;
+                opt = &spec;
+                if (spec.takes_value) {
+                    if (i + 1 >= args.size()) return fail(name + " に値がありません");
+                    value = args[++i];
+                }
+            } else if (spec.takes_value && a.rfind(name + "=", 0) == 0) {
+                opt   = &spec;
+                value = a.substr(name.size() + 1);
             }
             if (opt) break;
         }
         if (!opt) return fail("知らない引数です: " + a);
-
-        std::string& field  = o.*(opt->field);
-        const bool   is_trn = opt->field == &LaunchOptions::transcript;
-        if (is_trn ? o.has_transcript : !field.empty())
+        if (!(opt->commands & cmd_bit)) return fail(std::string { opt->name } + " は " + cmd_name + " では使えません");
+        if (std::find(seen.begin(), seen.end(), opt->name) != seen.end())
             return fail(std::string { opt->name } + " が2回指定されています");
-        if (!is_trn && value.empty()) return fail(std::string { opt->name } + " の値（パス）が空です");
-        field = std::move(value);
-        if (is_trn) o.has_transcript = has_value;
+        seen.emplace_back(opt->name);
+        if (const std::string e = apply_option(o, fixed_set, opt->name, value); !e.empty()) return fail(e);
     }
 
-    // --align は音声が要る。書き起こしは --transcript か、セッションの中のもの（読み込むまで
-    // 分からないので、ここでは --session があれば通し、無ければ実行時に知らせる）。
-    if (o.align && o.base.empty() && o.target.empty() && o.session.empty())
-        return fail("--align には --base / --target / --session のどれかが要ります");
-    if (o.align && !o.has_transcript && o.session.empty())
-        return fail("--align には --transcript（または書き起こしを含む --session）が要ります");
+    if (o.command == LaunchCommand::Gui) {
+        // --align は音声が要る。書き起こしは --transcript か、セッションの中のもの（読み込むまで
+        // 分からないので、ここでは --session があれば通し、無ければ実行時に知らせる）。
+        if (o.align && o.base.empty() && o.target.empty() && o.session.empty())
+            return fail("--align には --base / --target / --session のどれかが要ります");
+        if (o.align && !o.has_transcript && o.session.empty())
+            return fail("--align には --transcript（または書き起こしを含む --session）が要ります");
+        return Result<LaunchOptions>::success(std::move(o));
+    }
+
+    // batch: 本数と出力先は必須。音声は、音声のパスを含むセッションか、--base と --target の両方
+    // （tcmorph のアンカー JSON を --session で乗せてもよい）。セッションの中身は読むまで分からない
+    // ので、--session と --base / --target の組み合わせの可否は実行時に確かめる。
+    const BatchCliOptions& b = o.batch;
+    if (b.count == 0) return fail("batch には --count（書き出す本数）が要ります");
+    if (b.out.empty()) return fail("batch には --out（出力先のフォルダ）が要ります");
+    if (o.base.empty() != o.target.empty()) return fail("--base と --target は両方指定してください");
+    if (o.base.empty() && o.session.empty())
+        return fail("batch には --session か、--base と --target の両方が要ります");
+    for (int i = 0; i < kMorphAxisCount; ++i)
+        if (fixed_set[i] && b.sweep[i])
+            return fail(std::string { "--fixed の " } + kMorphAxes[i].key
+                        + " は変化させる軸です（--sweep で外した軸だけ固定できます）");
+    if (std::none_of(std::begin(b.sweep), std::end(b.sweep), [](bool s) { return s; }))
+        return fail("--sweep で変化させる軸がありません");
     return Result<LaunchOptions>::success(std::move(o));
 }
 
 void make_paths_absolute(LaunchOptions& opts) {
-    for (std::string* p : { &opts.base, &opts.target, &opts.session }) {
+    for (std::string* p : { &opts.base, &opts.target, &opts.session, &opts.batch.out }) {
         if (p->empty()) continue;
         std::error_code             ec;
         const std::filesystem::path abs = std::filesystem::absolute(std::filesystem::u8path(*p), ec);
@@ -101,21 +254,61 @@ void make_paths_absolute(LaunchOptions& opts) {
     }
 }
 
-std::string launch_usage() {
-    return "使い方: morphingAlignerCpp [オプション]\n"
+std::string launch_usage(LaunchCommand command) {
+    static const char* kGuiUsage =
+      "使い方: morphingAlignerCpp gui [オプション]\n"
+      "  音声・セッションを読み込んで GUI を開く。\n"
+      "\n"
+      "  --base <音声>          base の音声を読み込む\n"
+      "  --target <音声>        target の音声を読み込む\n"
+      "  --session <JSON>       セッションを読み込む。tcmorph のアンカー JSON なら、\n"
+      "                         --base / --target の音声にアンカーだけを乗せる\n"
+      "  --transcript <文>      音素アライメント（MFA）用の書き起こし（セッションのものより優先）\n"
+      "  --align                読み込み後、音声解析の環境が使えたら音素アライメントを実行する\n"
+      "  -h, --help             この説明を表示して終了する\n"
+      "\n"
+      "音声のパスを含むセッションと --base / --target は同時には指定できません。\n";
+    static const char* kBatchUsage =
+      "使い方: morphingAlignerCpp batch --count <本数> --out <フォルダ> [オプション]\n"
+      "  ウィンドウを開かずに、率を 0（base）から 1（target）まで等間隔に変えた WAV を書き出す\n"
+      "  （GUI の「連続書き出し」と同じ処理）。アンカーはセッションのものを使う。\n"
+      "\n"
+      "  --session <JSON>       セッション（音声のパスとアンカー）。tcmorph のアンカー JSON なら\n"
+      "                         --base と --target も指定する\n"
+      "  --base <音声>          base の音声（--target と一緒に指定する）\n"
+      "  --target <音声>        target の音声\n"
+      "  --count <本数>         書き出す本数（両端を含む。2〜101）\n"
+      "  --out <フォルダ>       出力先（無ければ作る）\n"
+      "  --prefix <接頭辞>      ファイル名の接頭辞（既定: base と target のファイル名をつないだもの）\n"
+      "  --sweep <軸,...>       変化させる軸（tx, fx, fo, sl, ap をコンマで区切る。既定: all）\n"
+      "  --fixed <軸=率,...>    変化させない軸の率（既定: 0）。例: --sweep fo --fixed tx=0.5\n"
+      "  --no-manifest          率とアンカーを残す JSON（<接頭辞>_batch.json）を書かない\n"
+      "  --overwrite            同じ名前のファイルがあれば上書きする（無ければ、あるときは中止する）\n"
+      "  -h, --help             この説明を表示して終了する\n"
+      "\n"
+      "ファイル名は <接頭辞>_r050.wav（軸を選んだときは <接頭辞>_fo_r050.wav）。\n"
+      "終了コード: 0 = 成功、1 = 処理の失敗、2 = 引数の誤り。\n";
+    static const char* kCommon =
+      "\n"
+      "値は「--base a.wav」「--base=a.wav」のどちらでも書けます。相対パスは起動したときの\n"
+      "カレントディレクトリが基準です。\n";
+
+    switch (command) {
+    case LaunchCommand::Gui: return std::string { kGuiUsage } + kCommon;
+    case LaunchCommand::Batch: return std::string { kBatchUsage } + kCommon;
+    case LaunchCommand::None: break;
+    }
+    return "使い方: morphingAlignerCpp <サブコマンド> [オプション]\n"
            "\n"
-           "  --base <音声>          base の音声を読み込む\n"
-           "  --target <音声>        target の音声を読み込む\n"
-           "  --session <JSON>       セッションを読み込む。tcmorph のアンカー JSON なら、\n"
-           "                         --base / --target の音声にアンカーだけを乗せる\n"
-           "  --transcript <文>      音素アライメント（MFA）用の書き起こし（セッションのものより優先）\n"
-           "  --align                読み込み後、音声解析の環境が使えたら音素アライメントを実行する\n"
+           "  gui      音声・セッションを読み込んで GUI を開く\n"
+           "  batch    ウィンドウを開かずに連続書き出しをする\n"
+           "\n"
            "  --version              版を表示して終了する\n"
            "  -h, --help             この説明を表示して終了する\n"
            "\n"
-           "値は「--base a.wav」「--base=a.wav」のどちらでも書けます。相対パスは起動したときの\n"
-           "カレントディレクトリが基準です。音声のパスを含むセッションと --base / --target は\n"
-           "同時には指定できません。\n";
+           "引数なしで起動すると、何も読み込まずに GUI を開きます。\n"
+           "サブコマンドごとのオプションは「morphingAlignerCpp gui --help」「morphingAlignerCpp batch --help」\n"
+           "で表示します。\n";
 }
 
 void use_utf8_console() {

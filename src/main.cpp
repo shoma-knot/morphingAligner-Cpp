@@ -2,6 +2,7 @@
 #include <exception>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -12,6 +13,7 @@
 
 #include "app.hpp"
 #include "app_icon.hpp"
+#include "batch_cli.hpp"
 #include "file_jobs.hpp"
 #include "launch_options.hpp"
 #include "log.hpp"
@@ -87,21 +89,27 @@ void glfw_error_callback(int error, const char* description) {
 }    // namespace
 
 int main(int argc, char** argv) {
-    // コマンドライン引数。--help / --version と引数の誤りは、ウィンドウを開く前に表示して終わる
-    // （GUI の無い環境、たとえば CI でも --version は動く）。
-    const Result<LaunchOptions> parsed = parse_launch_options(utf8_arguments(argc, argv));
+    // コマンドライン引数。--help / --version、引数の誤り、batch サブコマンドは、ウィンドウを開く前に
+    // 処理して終わる（GUI の無い環境、たとえば CI やサーバーでも動く）。
+    const std::vector<std::string> args   = utf8_arguments(argc, argv);
+    const Result<LaunchOptions>    parsed = parse_launch_options(args);
     if (!parsed.ok() || parsed.value.help || parsed.value.version) {
         use_utf8_console();
         if (!parsed.ok()) {
-            std::fprintf(stderr, "%s\n\n%s", parsed.error.c_str(), launch_usage().c_str());
+            // 誤りのあったサブコマンドの使い方を添える（サブコマンドが分からなければ全体の説明）。
+            std::fprintf(stderr, "%s\n\n%s", parsed.error.c_str(), launch_usage(launch_command_of(args)).c_str());
             return 2;
         }
-        if (parsed.value.help) std::fputs(launch_usage().c_str(), stdout);
+        if (parsed.value.help) std::fputs(launch_usage(parsed.value.command).c_str(), stdout);
         else std::printf("morphingAligner v%s\n", APP_VERSION);
         return 0;
     }
     LaunchOptions launch = parsed.value;
     make_paths_absolute(launch);
+    if (launch.command == LaunchCommand::Batch) {
+        use_utf8_console();
+        return run_batch_command(launch);
+    }
 
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit()) {

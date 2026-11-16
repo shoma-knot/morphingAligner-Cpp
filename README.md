@@ -104,14 +104,22 @@ Linux でタスクバーにアイコンを出したい場合は `tools/install-d
 
 ### コマンドライン引数
 
-起動と同時に音声やセッションを読み込めます（毎回ダイアログで開く手間を省くためのものです）。
+最初にサブコマンドを書きます。`gui` は起動と同時に音声やセッションを読み込んで GUI を開き（毎回ダイアログで
+開く手間を省くためのものです）、`batch` はウィンドウを開かずに連続書き出しをして終わります。
+引数なしで起動すると、何も読み込まずに GUI を開きます。引数があるのにサブコマンドが無いときは、
+エラーを出して止まります。
 
 ```sh
-morphingAlignerCpp --base a.wav --target b.wav                    # 音声を読み込む
-morphingAlignerCpp --session work.json                             # セッションを読み込む
-morphingAlignerCpp --base a.wav --target b.wav --session anchors.json   # tcmorph のアンカーを乗せる
-morphingAlignerCpp --base a.wav --target b.wav --transcript はい --align  # 読み込み後に音素アライメント
+morphingAlignerCpp gui --base a.wav --target b.wav                    # 音声を読み込む
+morphingAlignerCpp gui --session work.json                             # セッションを読み込む
+morphingAlignerCpp gui --base a.wav --target b.wav --session anchors.json   # tcmorph のアンカーを乗せる
+morphingAlignerCpp gui --base a.wav --target b.wav --transcript はい --align  # 読み込み後に音素アライメント
+
+morphingAlignerCpp batch --session work.json --count 7 --out stim/                    # 全軸を連動させて 7 本
+morphingAlignerCpp batch --session work.json --count 11 --out stim/ --sweep fo --fixed tx=0.5   # F0 だけを変える
 ```
+
+`gui` のオプション:
 
 | オプション | 内容 |
 |---|---|
@@ -119,9 +127,26 @@ morphingAlignerCpp --base a.wav --target b.wav --transcript はい --align  # �
 | `--session <JSON>` | セッションを読み込む。tcmorph のアンカー JSON なら、`--base` / `--target` の音声にアンカーだけを乗せる |
 | `--transcript <文>` | 音素アライメント用の書き起こし（セッションの書き起こしより優先） |
 | `--align` | 読み込み後、音声解析の環境が使えたら音素アライメントを実行する（`--transcript` か、書き起こしを含むセッションが必要） |
-| `--version` / `-h`, `--help` | 版 / 使い方を表示して終了する |
 
+`batch` のオプション（GUI の「連続書き出し...」と同じ処理で、ファイル名と JSON も同じです）:
+
+| オプション | 内容 |
+|---|---|
+| `--session <JSON>` | 音声のパスとアンカーを含むセッション。tcmorph のアンカー JSON なら `--base` / `--target` も指定する |
+| `--base <音声>` / `--target <音声>` | base / target の音声（両方を指定する） |
+| `--count <本数>` | 書き出す本数（両端を含む。2〜101。必須） |
+| `--out <フォルダ>` | 出力先（無ければ作る。必須） |
+| `--prefix <接頭辞>` | ファイル名の接頭辞（既定: base と target のファイル名をつないだもの） |
+| `--sweep <軸,...>` | 変化させる軸（`tx`, `fx`, `fo`, `sl`, `ap` をコンマで区切る。既定: `all`） |
+| `--fixed <軸=率,...>` | 変化させない軸の率（既定: 0） |
+| `--no-manifest` | 率とアンカーを残す JSON（`<接頭辞>_batch.json`）を書かない |
+| `--overwrite` | 同じ名前のファイルがあれば上書きする（付けなければ、あるときは中止する） |
+
+- 共通: `--version` / `-h`, `--help`（サブコマンドの後に書けば、そのサブコマンドの説明）。
 - 値は `--base a.wav` と `--base=a.wav` のどちらでも書けます。相対パスは起動したときのカレントディレクトリが基準です。
 - 音声のパスを含むセッションと `--base` / `--target` は同時に指定できません。
+- `batch` は、アンカーを打つ作業はしません。GUI でアンカーを打って保存したセッションを渡してください。
+  経過は標準エラーに、書き出したファイルの一覧は標準出力に出ます。終了コードは 0 = 成功、1 = 処理の失敗、
+  2 = 引数の誤りです。
 - フォント・ライセンスの条文・音声解析の環境（`.env`）はカレントディレクトリ（とその1つ上）から探すので、
   配布物のルート（開発時はリポジトリのルート）をカレントディレクトリにして起動してください。
