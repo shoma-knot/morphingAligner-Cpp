@@ -177,6 +177,8 @@ BatchExportResult run_batch_export(const BatchExportRequest& req, BatchExportPro
                 if (s.sweep[i]) sweep.push_back(kMorphAxes[i].key);
                 else fixed[kMorphAxes[i].key] = s.fixed.*kMorphAxes[i].rate;
             }
+            if (!req.manifest_extra.empty())
+                for (auto& [k, v] : nlohmann::json::parse(req.manifest_extra).items()) j[k] = v;
             j["batch"] = { { "count", s.count },           { "sweep", std::move(sweep) },
                            { "fixed", std::move(fixed) },  { "canceled", R.canceled },
                            { "files", std::move(files) } };

@@ -5,19 +5,25 @@
 ///
 ///   morphingAlignerCpp gui   [--base <音声>] [--target <音声>] [--session <JSON>]
 ///                            [--transcript <書き起こし>] [--align]
-///   morphingAlignerCpp batch --count <本数> --out <フォルダ> （--session <JSON> | --base <音声> --target <音声>）
-///                            [--prefix <接頭辞>] [--sweep <軸,...>] [--fixed <軸=率,...>]
-///                            [--no-manifest] [--overwrite]
+///   morphingAlignerCpp batch （--session <JSON> | --base <音声> --target <音声>）
+///                            [--count <本数> --out <フォルダ>] [--prefix <接頭辞>] [--sweep <軸,...>]
+///                            [--fixed <軸=率,...>] [--no-manifest] [--overwrite]
+///                            [--auto-anchors [--transcript <書き起こし>] [--divisions <n>]
+///                             [--formant-window <ms>] [--max-formant <Hz>] [--acoustic-model <名前>]
+///                             [--dictionary <名前>] [--save-session <JSON>]]
 ///   morphingAlignerCpp --help | --version
 ///
 /// gui は起動時に音声・セッションを読み込んで GUI を開く。batch はウィンドウを開かずに連続書き出し
-/// （batch_export.hpp）をして終わる。引数が1つも無ければ gui とみなす（デスクトップのアイコンや
+/// （batch_export.hpp）をして終わる。--auto-anchors を付けると、書き出しの前に音素アライメントから
+/// アンカーを自動で作る（auto_anchor_pipeline.hpp）。--save-session だけで --count / --out を
+/// 省けば、アンカーを作って保存するところで止める。引数が1つも無ければ gui とみなす（デスクトップのアイコンや
 /// ダブルクリックでの起動）。引数があるのにサブコマンドが無ければ誤り。
 /// 値は「--base a.wav」「--base=a.wav」のどちらでも書ける。パスは UTF-8。
 
 #include <string>
 #include <vector>
 
+#include "auto_anchor_pipeline.hpp"    // AutoAnchorSettings
 #include "morphing.hpp"    // kMorphAxisCount
 #include "result.hpp"
 
@@ -29,8 +35,8 @@ enum class LaunchCommand {
 
 // batch の設定（gui では使わない）。
 struct BatchCliOptions {
-    int         count = 0;    // --count: 書き出す本数（必須）
-    std::string out;          // --out: 出力先のフォルダ（必須。無ければ作る）
+    int         count = 0;    // --count: 書き出す本数（0 = 書き出さない。--save-session だけのとき）
+    std::string out;          // --out: 出力先のフォルダ（--count と一緒に指定する。無ければ作る）
     std::string prefix;       // --prefix: ファイル名の接頭辞（空 = base と target のファイル名から作る）
     // --sweep: 変化させる軸（添字は kMorphAxes）。既定は全軸。
     bool sweep[kMorphAxisCount] = { true, true, true, true, true };
@@ -38,6 +44,15 @@ struct BatchCliOptions {
     double fixed[kMorphAxisCount] = {};
     bool   manifest  = true;     // --no-manifest で false（率とアンカーの JSON を書かない）
     bool   overwrite = false;    // --overwrite: 既存のファイルを上書きしてよい
+
+    // --auto-anchors: 音素アライメントからアンカーを作ってから書き出す。設定の書き起こしは空のままで、
+    // 実行時に --transcript かセッションのものを入れる。
+    bool               auto_anchors = false;
+    AutoAnchorSettings auto_settings;    // --divisions / --formant-window / --max-formant / --acoustic-model / --dictionary
+    std::string        save_session;     // --save-session: 作ったアンカーをセッションとして保存する先
+
+    // 連続書き出しをするか（--count と --out）。
+    bool exports() const { return count > 0; }
 };
 
 struct LaunchOptions {
@@ -45,7 +60,7 @@ struct LaunchOptions {
     std::string base;          // --base: base の音声（空 = 指定なし）
     std::string target;        // --target: target の音声
     std::string session;       // --session: セッション（または tcmorph のアンカー JSON）
-    std::string transcript;    // --transcript: MFA 用の書き起こし（gui のみ。セッションの書き起こしより優先）
+    std::string transcript;    // --transcript: MFA 用の書き起こし（セッションの書き起こしより優先）
     bool has_transcript = false;    // --transcript が指定されたか（空文字列の指定と区別する）
     bool align          = false;    // --align: 読み込み後、音声解析の環境が使えたら音素アライメントを実行（gui のみ）
     bool help           = false;    // --help: 使い方を表示して終了（command のサブコマンドの説明）

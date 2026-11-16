@@ -117,6 +117,8 @@ morphingAlignerCpp gui --base a.wav --target b.wav --transcript はい --align  
 
 morphingAlignerCpp batch --session work.json --count 7 --out stim/                    # 全軸を連動させて 7 本
 morphingAlignerCpp batch --session work.json --count 11 --out stim/ --sweep fo --fixed tx=0.5   # F0 だけを変える
+morphingAlignerCpp batch --base a.wav --target b.wav --transcript はい --auto-anchors --count 7 --out stim/   # アンカーを自動で作って書き出す
+morphingAlignerCpp batch --base a.wav --target b.wav --transcript はい --auto-anchors --save-session auto.json  # アンカーを作って保存するだけ
 ```
 
 `gui` のオプション:
@@ -140,13 +142,23 @@ morphingAlignerCpp batch --session work.json --count 11 --out stim/ --sweep fo -
 | `--sweep <軸,...>` | 変化させる軸（`tx`, `fx`, `fo`, `sl`, `ap` をコンマで区切る。既定: `all`） |
 | `--fixed <軸=率,...>` | 変化させない軸の率（既定: 0） |
 | `--no-manifest` | 率とアンカーを残す JSON（`<接頭辞>_batch.json`）を書かない |
-| `--overwrite` | 同じ名前のファイルがあれば上書きする（付けなければ、あるときは中止する） |
+| `--overwrite` | 同じ名前のファイル（`--save-session` の保存先も）があれば上書きする（付けなければ、あるときは中止する） |
+| `--auto-anchors` | 音素アライメント（MFA）とフォルマントから、GUI の「アンカー自動生成」と同じ方法でアンカーを作り直して使う（音声解析のセットアップが必要） |
+| `--transcript <文>` | 書き起こし（`--auto-anchors` 用。セッションの書き起こしより優先） |
+| `--divisions <n>` | 各音素の区間を何等分するか（1〜10。既定: 2） |
+| `--formant-window <ms>` | フォルマントの移動平均の窓幅（5〜500。既定: 50） |
+| `--max-formant <Hz>` | 最大フォルマント（base / target 共通。2000〜10000。既定: 5500） |
+| `--acoustic-model <名前>` / `--dictionary <名前>` | MFA の音響モデル / 辞書（既定: `japanese_mfa`） |
+| `--save-session <JSON>` | 作ったアンカーをセッションとして保存する。`--count` / `--out` を省けば、保存して止める |
 
 - 共通: `--version` / `-h`, `--help`（サブコマンドの後に書けば、そのサブコマンドの説明）。
 - 値は `--base a.wav` と `--base=a.wav` のどちらでも書けます。相対パスは起動したときのカレントディレクトリが基準です。
 - 音声のパスを含むセッションと `--base` / `--target` は同時に指定できません。
-- `batch` は、アンカーを打つ作業はしません。GUI でアンカーを打って保存したセッションを渡してください。
-  経過は標準エラーに、書き出したファイルの一覧は標準出力に出ます。終了コードは 0 = 成功、1 = 処理の失敗、
-  2 = 引数の誤りです。
+- `batch` は、`--auto-anchors` が無ければセッションのアンカーをそのまま使います（GUI でアンカーを打って
+  保存したセッションを渡してください）。`--auto-anchors` を付けると、セッションのアンカーは使わずに作り直します。
+  自動のアンカーは誤ることがあるので、`--save-session` で保存したものを GUI で開いて確かめてから書き出すと安心です。
+  生成の設定と音素列は、保存したセッションと書き出しの JSON の `auto_anchors` に残ります。
+- 経過は標準エラーに、書き出したファイル（と保存したセッション）の一覧は標準出力に出ます。終了コードは
+  0 = 成功、1 = 処理の失敗、2 = 引数の誤り、130 = Ctrl+C で中止です。
 - フォント・ライセンスの条文・音声解析の環境（`.env`）はカレントディレクトリ（とその1つ上）から探すので、
   配布物のルート（開発時はリポジトリのルート）をカレントディレクトリにして起動してください。

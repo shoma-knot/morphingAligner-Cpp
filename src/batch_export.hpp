@@ -42,6 +42,9 @@ struct BatchExportRequest {
     // 書き出した JSON をそのままセッションとして読み直せるようにするための情報。
     std::string base_path, target_path, transcript;
     BatchExportSettings settings;
+    // 設定の JSON の最上位に足す項目（JSON のオブジェクトの文字列。空なら足さない）。
+    // batch の --auto-anchors が、アンカーを自動で作ったときの設定と音素列を残すのに使う。
+    std::string manifest_extra;
 };
 
 // 進捗と中止。UI スレッドとワーカーで共有する（JobQueue はどちらも持たないため）。

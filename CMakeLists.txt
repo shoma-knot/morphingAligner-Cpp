@@ -52,6 +52,7 @@ add_subdirectory(third-party/world)
 # ここに GUI のヘッダ（app.hpp など）を読み込むファイルを入れないこと。
 add_library(morphaligner_core STATIC
     src/analysis.cpp
+    src/auto_anchor_pipeline.cpp
     src/auto_anchors.cpp
     src/batch_cli.cpp
     src/batch_export.cpp

@@ -15,6 +15,7 @@
 
 #include "analysis.hpp"
 #include "anchor.hpp"
+#include "auto_anchor_pipeline.hpp"    // AutoAnchorSettings（設定の範囲）
 #include "anchors.hpp"    // EdgePoint
 #include "batch_export.hpp"    // BatchExportSettings / BatchExportProgress
 #include "gl_texture.hpp"
@@ -79,10 +80,10 @@ struct SpeechState {
     // 済んだら実行して下ろす（ensure_pending_alignment）。
     bool align_on_ready = false;
 
-    // UI で受け付ける範囲。
-    static constexpr int    kMaMsMin = 5, kMaMsMax = 500;                    // 移動平均の窓幅 [ms]
-    static constexpr int    kDivisionsMin = 1, kDivisionsMax = 10;           // 自動生成の分割数
-    static constexpr double kMaxFormantMin = 2000.0, kMaxFormantMax = 10000.0;    // 最大フォルマント [Hz]
+    // UI で受け付ける範囲（batch の --auto-anchors と共通。auto_anchor_pipeline.hpp）。
+    static constexpr int    kMaMsMin = AutoAnchorSettings::kWindowMsMin, kMaMsMax = AutoAnchorSettings::kWindowMsMax;    // 移動平均の窓幅 [ms]
+    static constexpr int    kDivisionsMin = AutoAnchorSettings::kDivisionsMin, kDivisionsMax = AutoAnchorSettings::kDivisionsMax;    // 自動生成の分割数
+    static constexpr double kMaxFormantMin = AutoAnchorSettings::kMaxFormantMin, kMaxFormantMax = AutoAnchorSettings::kMaxFormantMax;    // 最大フォルマント [Hz]
 };
 
 // モーフィングタブの設定と状態。

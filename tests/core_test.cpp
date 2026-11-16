@@ -7,6 +7,8 @@
 // ビルド: cmake -DMORPHALIGNER_BUILD_TESTS=ON ... → bin/core_test
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <exception>
@@ -14,10 +16,12 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "analysis.hpp"
 #include "anchor.hpp"
+#include "auto_anchor_pipeline.hpp"
 #include "auto_anchors.hpp"
 #include "batch_cli.hpp"
 #include "batch_export.hpp"
@@ -387,6 +391,56 @@ void test_launch_options() {
     expect(fails_with(parse_launch_options(V { "batch", "--count", "3", "--out", "o" }), "batch には --session か"),
            "launch: batch で入力が無い");
 
+    // batch --auto-anchors
+    {
+        const Result<LaunchOptions> r = parse_launch_options(
+          V { "batch", "--base", "a.wav", "--target", "b.wav", "--auto-anchors", "--transcript", "はい", "--divisions", "3",
+              "--formant-window=80", "--max-formant", "5000", "--acoustic-model", "m", "--dictionary", "d", "--save-session", "s.json" });
+        const BatchCliOptions& b = r.value.batch;
+        expect(r.ok() && b.auto_anchors && !b.exports() && b.save_session == "s.json" && r.value.transcript == "はい"
+                 && b.auto_settings.divisions == 3 && b.auto_settings.formant_window_ms == 80
+                 && near(b.auto_settings.formant.max_formant_hz, 5000.0) && b.auto_settings.align.acoustic_model == "m"
+                 && b.auto_settings.align.dictionary == "d",
+               "launch: --auto-anchors の設定を読み、--count が無ければ保存だけ" + (r.ok() ? "" : "（" + r.error + "）"));
+    }
+    {
+        const Result<LaunchOptions> r = parse_launch_options(V { "batch", "--session", "s.json", "--auto-anchors", "--count", "3", "--out", "o" });
+        const AutoAnchorSettings&   a = r.value.batch.auto_settings;
+        expect(r.ok() && r.value.batch.exports() && a.divisions == 2 && a.formant_window_ms == 50
+                 && near(a.formant.max_formant_hz, 5500.0) && a.align.acoustic_model == "japanese_mfa",
+               "launch: --auto-anchors の既定は GUI と同じ。セッションがあれば --transcript は要らない");
+    }
+    const V ab { "batch", "--base", "a.wav", "--target", "b.wav" };
+    const auto with_ab = [&](V extra) {
+        V v = ab;
+        v.insert(v.end(), extra.begin(), extra.end());
+        return parse_launch_options(v);
+    };
+    expect(fails_with(with_ab({ "--auto-anchors", "--count", "3", "--out", "o" }), "--auto-anchors には --transcript"),
+           "launch: セッションも --transcript も無い --auto-anchors");
+    expect(fails_with(with_ab({ "--divisions", "3", "--count", "3", "--out", "o" }), "--divisions は --auto-anchors と一緒に"),
+           "launch: 自動生成の設定は --auto-anchors が要る");
+    expect(fails_with(with_ab({ "--transcript", "x", "--count", "3", "--out", "o" }), "batch の --transcript は --auto-anchors"),
+           "launch: batch の --transcript は --auto-anchors が要る");
+    expect(fails_with(with_ab({ "--save-session", "s.json" }), "--save-session は --auto-anchors と一緒に"),
+           "launch: --save-session は --auto-anchors が要る");
+    expect(fails_with(with_ab({ "--auto-anchors", "--transcript", "x" }), "batch には --count"),
+           "launch: 書き出しも保存もしなければ誤り");
+    expect(fails_with(with_ab({ "--auto-anchors", "--transcript", "x", "--save-session", "s", "--out", "o" }), "batch には --count"),
+           "launch: --out だけで --count が無い");
+    expect(fails_with(with_ab({ "--auto-anchors", "--transcript", "x", "--save-session", "s", "--divisions", "11" }),
+                      "--divisions は 1〜10"),
+           "launch: 分割数が範囲外");
+    expect(fails_with(with_ab({ "--auto-anchors", "--transcript", "x", "--save-session", "s", "--formant-window", "4" }),
+                      "--formant-window は 5〜500"),
+           "launch: 窓幅が範囲外");
+    expect(fails_with(with_ab({ "--auto-anchors", "--transcript", "x", "--save-session", "s", "--max-formant", "abc" }),
+                      "--max-formant は 2000〜10000"),
+           "launch: 最大フォルマントが数でない");
+    expect(fails_with(with_ab({ "--auto-anchors", "--transcript", "x", "--save-session", "s", "--acoustic-model=" }),
+                      "--acoustic-model の値が空です"),
+           "launch: モデル名が空");
+
     // 相対パスは絶対パスにし、空の項目はそのまま。
     LaunchOptions o;
     o.base = u8"sub/../音声.wav";
@@ -397,6 +451,92 @@ void test_launch_options() {
     expect(std::filesystem::u8path(o.base) == expect_path && o.target.empty()
              && std::filesystem::u8path(o.batch.out) == std::filesystem::current_path() / "out",
            "launch: 相対パスを絶対パスにする（日本語を含んでも UTF-8 のまま）");
+}
+
+// ── アンカー自動生成の一続きの処理（Python のツールは偽物） ──────────
+// 音素を 0.05 s から 0.06 s ずつ並べ、フォルマントは一定の値にした偽物のツール。
+AutoAnchorTools fake_tools(std::vector<std::string> base_phones, std::vector<std::string> target_phones,
+                           bool ready = true) {
+    AutoAnchorTools t;
+    t.check = [ready](const AlignParams&) {
+        SpeechEnvStatus st;
+        st.ready = ready;
+        if (!ready) st.problems = { "Python が見つかりません" };
+        return st;
+    };
+    t.formants = [](const std::string&, const FormantParams& p) {
+        Formants f;
+        for (int k = 0; k < p.num_tracks; ++k) {
+            FormantTrack tr;
+            for (int i = 0; i <= 60; ++i) {
+                tr.t.push_back(i * 0.005);
+                tr.hz.push_back(500.0 + 1000.0 * k);
+                tr.erb.push_back(freqscale::hz_to_erb(tr.hz.back()));
+            }
+            f.tracks.push_back(std::move(tr));
+        }
+        return Result<Formants>::success(std::move(f));
+    };
+    t.align = [base_phones, target_phones](const std::string& wav, const std::string&, const AlignParams&) {
+        const std::vector<std::string>& ph = wav.find("b.wav") != std::string::npos ? target_phones : base_phones;
+        Segmentation                    seg;
+        SegTier                         tier;
+        tier.name = "phones";
+        double t0 = 0.0;
+        tier.intervals.push_back({ 0.0, 0.05, "sil" });
+        t0 = 0.05;
+        for (const std::string& l : ph) {
+            tier.intervals.push_back({ t0, t0 + 0.06, l });
+            t0 += 0.06;
+        }
+        seg.tiers.push_back(std::move(tier));
+        return Result<Segmentation>::success(std::move(seg));
+    };
+    t.terminate = []() {};
+    return t;
+}
+
+void test_auto_anchor_pipeline() {
+    AutoAnchorSettings s;
+    s.transcript = "はい";
+    const AutoAnchorSource b { "/x/a.wav", 0.3 }, t { "/x/b.wav", 0.3 };
+    const auto             quiet = [](const std::string&) {};
+
+    const AutoAnchorPipelineResult ok = build_auto_anchors(b, t, s, fake_tools({ "h", "a", "i" }, { "h", "a", "i" }), quiet);
+    expect(ok.ok() && ok.anchors.size() > 1 && ok.n_freq > 0 && ok.base_phones == "h a i",
+           "auto pipeline: 偽物のツールの結果からアンカーを作る" + (ok.ok() ? "" : "（" + ok.error + "）"));
+    const AutoAnchorPipelineResult d3 = [&]() {
+        AutoAnchorSettings s3 = s;
+        s3.divisions          = 3;
+        return build_auto_anchors(b, t, s3, fake_tools({ "h", "a", "i" }, { "h", "a", "i" }), quiet);
+    }();
+    expect(d3.ok() && d3.anchors.size() > ok.anchors.size(), "auto pipeline: 分割数を増やせば時間アンカーが増える");
+
+    const AutoAnchorPipelineResult mm = build_auto_anchors(b, t, s, fake_tools({ "h", "a", "i" }, { "h", "a" }), quiet);
+    expect(!mm.ok() && mm.error.find("h a i") != std::string::npos && mm.error.find("h a）") != std::string::npos,
+           "auto pipeline: 音素の数が違えば、両方の音素列を添えて失敗");
+    const AutoAnchorPipelineResult nr = build_auto_anchors(b, t, s, fake_tools({ "a" }, { "a" }, false), quiet);
+    expect(!nr.ok() && nr.error.find("Python が見つかりません") != std::string::npos,
+           "auto pipeline: 環境が使えなければ、理由を添えて失敗");
+    AutoAnchorSettings empty = s;
+    empty.transcript.clear();
+    expect(!build_auto_anchors(b, t, empty, fake_tools({ "a" }, { "a" }), quiet).ok(), "auto pipeline: 書き起こしが無ければ失敗");
+
+    // 中止: 音素アライメントは terminate が呼ばれるまで終わらない（MFA が走っている間に Ctrl+C）。
+    std::atomic<bool> cancel { true }, stopped { false };
+    AutoAnchorTools   slow = fake_tools({ "a" }, { "a" });
+    slow.align = [&stopped, inner = slow.align](const std::string& w, const std::string& x, const AlignParams& p) {
+        while (!stopped.load()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        return inner(w, x, p);
+    };
+    slow.terminate = [&stopped]() { stopped.store(true); };
+    const AutoAnchorPipelineResult cr = build_auto_anchors(b, t, s, slow, quiet, &cancel);
+    expect(cr.canceled && !cr.ok() && stopped.load(), "auto pipeline: 中止が立てば、実行中のツールを止めて canceled で返す");
+
+    const nlohmann::json rec = nlohmann::json::parse(auto_anchor_record_json(s, ok));
+    expect(rec["max_formant_hz"] == 5500.0 && rec["acoustic_model"] == "japanese_mfa" && rec["target_phones"] == "h a i"
+             && rec["time_anchors"] == ok.anchors.size(),
+           "auto pipeline: 記録に設定と音素列と個数を残す");
 }
 
 // ── batch サブコマンド ──────────────────────────────────────
@@ -461,6 +601,56 @@ void test_batch_command() {
            "batch cli: 軸を選べば軸の名前入りのファイル名、--no-manifest なら JSON を書かない");
     expect(run({ "--base", sf.base_path, "--target", sf.target_path }) == 1,
            "batch cli: 音声のパスを含むセッションと --base / --target は同時に使えない");
+
+    // --auto-anchors（Python のツールは偽物）。アンカーだけを保存して止める。
+    const AutoAnchorTools tools = fake_tools({ "h", "a", "i" }, { "h", "a", "i" });
+    const auto run_auto = [&](std::vector<std::string> args) {
+        args.insert(args.begin(), "batch");
+        const Result<LaunchOptions> o = parse_launch_options(args);
+        if (!o.ok()) return -1;
+        std::FILE* out = std::tmpfile();
+        std::FILE* log = std::tmpfile();
+        const int  rc  = run_batch_command(o.value, out, log, &tools);
+        std::fclose(out);
+        std::fclose(log);
+        return rc;
+    };
+    const fs::path saved = dir / "auto.json";
+    expect(run_auto({ "--session", (dir / "s.json").u8string(), "--auto-anchors", "--transcript", "はい", "--save-session",
+                      saved.u8string(), "--divisions", "3" })
+             == 0,
+           "batch cli: --auto-anchors --save-session でアンカーだけを作って保存する");
+    {
+        std::ifstream      is(saved);
+        std::ostringstream ss;
+        ss << is.rdbuf();
+        const Result<SessionFile> back = parse_session_json(ss.str());
+        const nlohmann::json      j    = nlohmann::json::parse(ss.str(), nullptr, false);
+        expect(back.ok() && back.value.transcript == "はい" && back.value.anchors.size() > 1
+                 && back.value.base_path == sf.base_path && !j.is_discarded() && j["auto_anchors"]["divisions"] == 3
+                 && j["auto_anchors"]["base_phones"] == "h a i",
+               "batch cli: 保存したセッションは読み直せて、生成の設定と音素列が残る");
+    }
+    expect(run_auto({ "--session", (dir / "s.json").u8string(), "--auto-anchors", "--transcript", "はい", "--save-session",
+                      saved.u8string() })
+             == 1,
+           "batch cli: 保存先のセッションがすでにあれば中止する");
+    expect(run_auto({ "--session", (dir / "s.json").u8string(), "--auto-anchors", "--save-session", (dir / "b.json").u8string() })
+             == 1,
+           "batch cli: 書き起こしがどこにも無ければ失敗");
+    expect(run_auto({ "--session", (dir / "s.json").u8string(), "--auto-anchors", "--transcript", "はい", "--count", "3",
+                      "--out", od.u8string(), "--prefix", "auto" })
+               == 0
+             && fs::exists(od / "auto_r050.wav", ec),
+           "batch cli: --auto-anchors で作ったアンカーで書き出す");
+    {
+        std::ifstream      is(od / "auto_batch.json");
+        std::ostringstream ss;
+        ss << is.rdbuf();
+        const nlohmann::json j = nlohmann::json::parse(ss.str(), nullptr, false);
+        expect(!j.is_discarded() && j.contains("auto_anchors") && j.contains("batch") && j["anchors"].size() > 1,
+               "batch cli: 書き出しの JSON にも生成の設定とアンカーが残る");
+    }
 
     fs::remove_all(dir, ec);
 }
@@ -698,6 +888,7 @@ int main() {
     test_launch_options();
     test_auto_anchors();
     test_batch_export();
+    test_auto_anchor_pipeline();
     test_batch_command();
     test_session_json();
 
