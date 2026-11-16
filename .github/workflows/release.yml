@@ -11,7 +11,11 @@ permissions:
 
 jobs:
   build:
+    # コアの単体テストも実行する（落ちたらリリースを作らない）。ci.yml の結果は待たないので、
+    # テストを通らないままのリリースを防ぐにはここで実行するしかない（v26.11.16 で起きた。DEVLOG 参照）。
     uses: ./.github/workflows/build.yml
+    with:
+      with_tests: true
 
   release:
     name: リリースを作る

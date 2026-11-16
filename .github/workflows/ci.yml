@@ -1,6 +1,9 @@
 # push・プルリクエストごとのビルド確認と、音声解析（Python 連携）のテスト。
 #
 #   build        … 本体のビルドと配布物の検査（build.yml）。結合テストの実行ファイルも作る。
+#   sanitize     … Linux で AddressSanitizer と UndefinedBehaviorSanitizer を有効にしてコアの単体テストを
+#                  ビルド・実行する。解放済みメモリの読み出しや未定義動作は、普通のビルドでは
+#                  たまたま正しく動いて見逃すことがある（v26.11.16 の不具合。DEVLOG 参照）。
 #   speech-tools … 各 OS で、配布物と同じ手順（利用者と同じ micromamba の入手 →
 #                  install-win.bat / install.sh）で Python 環境を作り、C++ から子プロセスで
 #                  Python を呼ぶ結合テスト（tests/speech_tools_test.cpp）を実行する。
@@ -8,7 +11,7 @@
 # 週に1回も走らせる。こちらが何も変えていなくても、conda-forge / PyPI 側の変化で環境構築が
 # 壊れることがあるため（environment.yml で版を固定していても、依存の依存は動く）。
 # リリース（release.yml）はこの結果を待たない。環境構築の一時的な不調で本体のリリースを
-# 止めないため。
+# 止めないため（コアの単体テストは release.yml 側でも実行する）。
 name: ci
 
 on:
@@ -27,6 +30,61 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       with_tests: true
+
+  sanitize:
+    name: sanitize (linux-x64, ASan + UBSan)
+    runs-on: ubuntu-latest
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+    steps:
+      - name: チェックアウト（WORLD はサブモジュール）
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Linux のビルド依存を入れる
+        # vcpkg が GLFW などマニフェストの依存をすべて入れるので、本体のビルドと同じものが要る。
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xorg-dev libxinerama-dev libxcursor-dev libglu1-mesa-dev \
+            libasound2-dev pkg-config
+
+      - name: CMake と Ninja を入れる
+        uses: lukka/get-cmake@latest
+
+      - name: vcpkg のバイナリキャッシュを復元する
+        # 依存ライブラリは計装しない（vcpkg のポートは自分のフラグでビルドされる）ので、
+        # build.yml の linux-x64 とキャッシュを共有できる。
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: vcpkg-linux-x64-
+
+      - name: 構成
+        # 未定義動作は報告だけで続けず、その場で止める（-fno-sanitize-recover）。最適化は CI の
+        # 本番のビルドに近づけつつ、スタックトレースを読めるよう RelWithDebInfo にする。
+        run: |
+          set -eux
+          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DMORPHALIGNER_BUILD_TESTS=ON \
+            "-DCMAKE_C_FLAGS=-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer" \
+            "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer" \
+            "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined"
+
+      - name: ビルド（コアの単体テストだけ）
+        run: cmake --build build --target core_test
+
+      - name: 単体テスト（ASan + UBSan）
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ./bin/core_test
 
   speech-tools:
     name: speech-tools (${{ matrix.name }})
