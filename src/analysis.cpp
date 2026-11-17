@@ -107,13 +107,17 @@ Result<MorphChannel> analyze_channel(const std::string& path) {
     }
 }
 
-Result<int> read_sample_rate(const std::string& path) {
+Result<AudioInfo> read_audio_info(const std::string& path) {
     try {
         // ヘッダだけ読む口が無いのでデコードする（WORLD の解析に比べれば軽い）。
         const ma::decoder dec { path };
-        return Result<int>::success(static_cast<int>(dec.sample_rate()));
+        AudioInfo         info;
+        info.fs = static_cast<int>(dec.sample_rate());
+        if (info.fs <= 0) throw std::runtime_error("標本化周波数が不正: " + path);
+        info.duration = static_cast<double>(dec.frame_count()) / info.fs;
+        return Result<AudioInfo>::success(info);
     } catch (const std::exception& e) {
-        return Result<int>::failure(e.what());
+        return Result<AudioInfo>::failure(e.what());
     }
 }
 

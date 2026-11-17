@@ -22,9 +22,13 @@ struct SessionFile {
     std::vector<Anchor> anchors;
     // 読み込めたが知らせておくこと（tcmorph 形式の警告や素材名）。呼び出し側がログに出す。
     std::vector<std::string> notes;
+    // 最上位の、このアプリが読まない項目（auto_anchors・tcmorph・batch などの記録）。JSON のオブジェクトの
+    // 文字列で、空なら無し。読むときに集め、書くときに足す（コマンドラインのサブコマンドの間で記録を引き継ぐ）。
+    std::string extras;
 };
 
 // セッション形式の JSON 文字列にする（整形済み、末尾に改行）。anchors_only と notes は使わない。
+// extras の項目は最上位に足す（version・waves・transcript・anchors と同じ名前のものは足さない）。
 std::string session_to_json(const SessionFile& s);
 
 // JSON 文字列を読む。形式が不正なら error に理由（例: "anchors が不正: ..."）。

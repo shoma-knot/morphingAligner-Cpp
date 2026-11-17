@@ -85,6 +85,11 @@ std::string session_to_json(const SessionFile& s) {
         });
     }
     j["anchors"] = anchors;
+    if (!s.extras.empty()) {
+        const json extras = json::parse(s.extras);
+        for (const auto& [k, v] : extras.items())
+            if (!j.contains(k)) j[k] = v;
+    }
     return j.dump(2) + '\n';
 }
 
@@ -141,6 +146,12 @@ SessionFile parse_session_json_or_throw(const std::string& text) {
     } catch (const std::exception& e) {
         rethrow_with("anchors が不正: ", e);
     }
+
+    // 読まない項目は、そのまま持っておく。
+    json extras = json::object();
+    for (const auto& [k, v] : j.items())
+        if (k != "version" && k != "waves" && k != "transcript" && k != "anchors") extras[k] = v;
+    if (!extras.empty()) s.extras = extras.dump();
     return s;
 }
 

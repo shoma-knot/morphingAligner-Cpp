@@ -54,8 +54,11 @@ add_library(morphaligner_core STATIC
     src/analysis.cpp
     src/auto_anchor_pipeline.cpp
     src/auto_anchors.cpp
-    src/batch_cli.cpp
     src/batch_export.cpp
+    src/cli_auto_anchors.cpp
+    src/cli_common.cpp
+    src/cli_convert.cpp
+    src/cli_export.cpp
     src/envelope_transport.cpp
     src/formant_smoothing.cpp
     src/launch_options.cpp

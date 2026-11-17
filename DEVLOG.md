@@ -83,9 +83,10 @@
 - `src/result.hpp` — 失敗しうる処理の戻り値 `Result<T>` / `Status`（コアの関数の失敗の返し方の約束も書いてある）
 - `src/resource_path.hpp` / `.cpp` — 同梱の資材（font/・licenses/・python/・.env/）を `x` → `../x` の順に探す
 - `src/launch_options.hpp` / `.cpp` — コマンドライン引数の解釈（サブコマンド `gui` / `batch` と各オプション）と UTF-8 での取り出し（コア）
-- `src/batch_cli.hpp` / `.cpp` — `batch` サブコマンド（ウィンドウを開かずに連続書き出し。コア）
-- `src/auto_anchor_pipeline.hpp` / `.cpp` — 音声と書き起こしからアンカー自動生成までを一続きで行う（`batch --auto-anchors`。コア）
-- `src/tcmorph_manifest.hpp` / `.cpp` — tcmorph の `manifest.json` から音声のパスと標本化周波数を読む（`batch`。コア）
+- `src/cli_commands.hpp`・`src/cli_common.hpp` / `.cpp`・`src/cli_auto_anchors.cpp`・`src/cli_convert.cpp`・`src/cli_export.cpp`
+  — ウィンドウを開かないサブコマンド `auto-anchors`・`convert`・`export`（コア。2026-11-17 に `batch_cli` を分けた）
+- `src/auto_anchor_pipeline.hpp` / `.cpp` — 音声と書き起こしからアンカー自動生成までを一続きで行う（`auto-anchors`。コア）
+- `src/tcmorph_manifest.hpp` / `.cpp` — tcmorph の `manifest.json` から音声のパスと標本化周波数を読む（`convert`。コア）
 - `src/speech_tools.hpp` / `src/speech_tools.cpp` — Python ツールの呼び出し（子プロセス起動・JSON の
   要求/応答・終了時の停止）と結果の型（`Formants` / `Segmentation`）
 - `src/speech_view.hpp` / `src/speech_view.cpp` — フォルマントの重ね描き、音素セグメンテーションのプロット
@@ -243,6 +244,7 @@ Kawahara の generalizedTCmorphing.m を参考に、2ソース(base/target)＋�
 - F0 の表示（上の節）を入れた版を `v26.11.10a` としてリリース（同日の出し直しなので接尾辞 `"a"`）。
 
 ### コマンドライン: サブコマンド gui / batch（2026-11-16、`launch_options.cpp`・`batch_cli.cpp`）
+※ 2026-11-17、`batch` は `auto-anchors`・`convert`・`export` に分けてなくした（下の「コマンドライン: batch を auto-anchors / convert / export に分ける」）。
 GUI への読み込みと、ウィンドウを開かない処理を、最初の引数のサブコマンドで分けた（使い方は README）。
 - **形式**: `morphingAlignerCpp gui [--base ...]` は従来の起動時の読み込み、`morphingAlignerCpp batch ...` は
   連続書き出しをして終わる。サブコマンドは大文字でもよい（`GUI`）。
@@ -275,6 +277,7 @@ GUI への読み込みと、ウィンドウを開かない処理を、最初の�
   足した（計 109 項目）。
 
 ### batch --auto-anchors（2026-11-16、`auto_anchor_pipeline.cpp`）
+※ 2026-11-17、`batch` は `auto-anchors`・`convert`・`export` に分けてなくした（下の「コマンドライン: batch を auto-anchors / convert / export に分ける」）。
 `batch` で、音素アライメントとアンカー自動生成から書き出しまでを一続きで走らせられるようにした（使い方は README）。
 - **一続きの処理**（`build_auto_anchors`、コア）: GUI がジョブで走らせている ①環境の確認（`run_check`）
   ②フォルマント推定 ③移動平均 ④音素アライメント ⑤`generate_auto_anchors` を順に呼ぶ。②と④は base / target を
@@ -910,6 +913,7 @@ AddressSanitizer で `stack-use-after-scope` として検出できた。
 
 
 ### batch: tcmorph の anchors.json と manifest.json からセッションを作る（2026-11-17、`tcmorph_manifest.cpp`）
+※ 2026-11-17、`batch` は `auto-anchors`・`convert`・`export` に分けてなくした（下の「コマンドライン: batch を auto-anchors / convert / export に分ける」）。
 tcmorph の `mat2json.py` が書き出した `anchors.json` と `manifest.json` を組み合わせて、セッションの JSON にできる
 ようにした（ユーザーの依頼）。使い方は `batch --session for-cpp/anchors.json --save-session out.json`。
 - tcmorph のアンカー JSON を `--base` / `--target` なしで渡すと、同じフォルダの `manifest.json` から音声を決める。
@@ -1183,6 +1187,41 @@ OT 由来の周波数アンカー）は従来法に対する優位性をあま�
   `experiment/morph-quality` を main にマージ」と、MSVC でのコンパイルの修正を入れた版を `v26.11.17` として
   リリース。新しい日付の版なので接尾辞は空に戻した。
 
+### コマンドライン: batch を auto-anchors / convert / export に分ける（2026-11-17、`cli_*.cpp`）
+`batch` に連続書き出し・アンカーの自動生成・セッションの保存・tcmorph の変換が集まり、オプションの組み合わせの
+規則が込み入ってきたので、役割ごとのサブコマンドに分けた（ユーザーの指示。使い方は README）。`batch` はなくした
+（ユーザーの指示で、別名として残さない。`batch` と打つと、代わりのサブコマンドを案内するエラーで止まる）。
+- どのサブコマンドも入力が1種類、出力が1種類で、セッションの JSON を受け渡す。
+  - `auto-anchors`: 音声2本（`--base` / `--target`）か、音声のパスを含む `--session` と書き起こしから、アンカーを作って
+    `--out` のセッションに保存する（旧 `batch --auto-anchors --save-session`）。
+  - `convert <anchors.json>`: tcmorph のアンカー JSON をセッションにして `--out` に保存する。音声は `--base` / `--target`
+    か、同じフォルダの `manifest.json` から決める（旧 `batch --session anchors.json --save-session`）。
+  - `export <セッション>`: `--count` と `--out` が必須で、連続書き出しをする（旧 `batch --count ... --out ...`）。
+  - `convert` と `export` の入力は、オプション名の無い引数で1つだけ受け取る。
+- `--count` / `--out` / `--save-session` の組み合わせ、`--auto-anchors` と一緒にだけ使える
+  オプション、`--session` の中身による `--base` / `--target` の必須・禁止は、各サブコマンドの必須の引数と、
+  サブコマンドごとに使えるオプションの表（`kOptions` のビット）に置き換わった。`--save-session` と `--auto-anchors` は
+  なくなり、`--out` の意味はサブコマンドで決まる（`auto-anchors` / `convert` は保存するセッション、`export` は
+  出力先のフォルダ）。
+- 記録を引き継ぐため、`SessionFile` に `extras`（最上位の、このアプリが読まない項目）を足した。`parse_session_json` が
+  集め、`session_to_json` が書き戻す。`export` は入力のセッションの `extras` を `manifest_extra` に渡すので、
+  `auto_anchors` と `tcmorph` の記録が書き出しの JSON に引き継がれる。`auto-anchors` は、元のセッションの記録を
+  引き継がない（作り直したアンカーには当てはまらないため）。`convert` は `--base` / `--target` のときも、元の
+  `anchors.json` のパスを `tcmorph` に残す。
+- `auto-anchors` は、音声の長さを WORLD の解析ではなく `read_audio_info`（デコードだけ。`read_sample_rate` を
+  置き換え）で求めるようにした。`MorphChannel::duration` と同じ計算なので、作られるアンカーは変わらない。
+- `batch_cli.hpp` / `.cpp` をなくし、`cli_commands.hpp`（3つのサブコマンドの関数）、`cli_common.hpp` / `.cpp`（SIGINT・
+  セッションの読み書き・上書きの確認）、`cli_auto_anchors.cpp`・`cli_convert.cpp`・`cli_export.cpp` に分けた。
+  `LaunchOptions` の `BatchCliOptions` は、`input`・`out`・`overwrite`・`ExportCliOptions`・`AutoAnchorSettings` になった。
+- 検証（実データ）: `harigane_batch_session.json` から `auto-anchors --divisions 5` で作ったアンカー（時間 39 個・
+  周波数 148 個）は、前に `batch --auto-anchors` で作ったものと一致した。それを `export --count 11` で書き出した WAV 11 本は、
+  `.test/b-anch_fromBatch`（`batch` で書き出したもの）とバイト単位で一致し、書き出しの JSON に `auto_anchors` が残った。
+  `convert` は `07-29_harigane/fhi-mya` の `anchors.json` から、アンカー 24 個のセッションを作れた。
+- 単体テスト（計 183 項目）: 引数の解釈（3つのサブコマンドの設定・必須の引数・使えないオプション・入力の重複・
+  `batch` の案内）と、3つのサブコマンドの実行（保存・保存先の既存・書き起こしなし・セッションと `--base` の同時指定・
+  manifest の誤り3種・tcmorph の JSON を `export` に渡したときと、セッションを `convert` に渡したときの案内・
+  `auto-anchors` / `convert` の出力から書き出して記録が残ること）。
+
 ## MATLAB版との差分
 
 ※ **旧・自前実装についての比較**。現在は tcmorph（MATLAB 版の移植、丸め誤差レベルで一致を
@@ -1310,13 +1349,10 @@ install-win.bat          # Windows（-Yes で非対話）
 - アンカー自動生成の改良: 音素数が違うときの対応づけ（ラベルの編集距離で揃える等）、
   使うフォルマントの選択（F4 は不安定なことがある）、無声区間の扱い。
 - フォルマント/セグメンテーション結果のセッション保存（再計算を省く）。
-- **`batch` の整理（必ずやる。ユーザーの指示、2026-11-17）**: 書き出し・アンカーの自動生成・セッションの保存・
-  tcmorph の変換が1つのサブコマンドに集まり、オプションの組み合わせの規則（`--count` / `--out` / `--save-session` /
-  `--auto-anchors` / `--session` と `--base` の関係）が込み入ってきた。サブコマンドを役割で分ける（例: アンカーを作る・
-  変換する・書き出す）などを検討する。
-- `batch` の拡張: 1本だけの書き出し（任意の率）、複数のペアの一括処理、最大フォルマントを base / target で
+- `export` / `auto-anchors` の拡張: 1本だけの書き出し（任意の率）、複数のペアの一括処理、包絡の混ぜ方（OT）を
+  `export` で選ぶ、最大フォルマントを base / target で
   別々に指定する（今は GUI と同じく共通）、MFA を使う結合テスト（CI に使える音声を用意する必要がある）。
 - CI に ThreadSanitizer を足す（GUI のジョブ（`JobQueue`・非同期のモーフィング・音声解析のジョブ）を GUI から
-  切り離してテストできるようになってから。今は `core_test` で通るスレッドの処理が `batch` の2か所だけ）。
+  切り離してテストできるようになってから。今は `core_test` で通るスレッドの処理が `auto-anchors` と `export` の2か所だけ）。
 - 済: 時間アンカーの個別削除（右クリック）、対応線、周波数アンカー、モーフィング本体（tcmorph）、
-  フォルマント表示・音素セグメンテーション（Python 連携）、アンカー自動生成。
+  フォルマント表示・音素セグメンテーション（Python 連携）、アンカー自動生成、`batch` の整理（2026-11-17）。

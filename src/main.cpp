@@ -13,7 +13,7 @@
 
 #include "app.hpp"
 #include "app_icon.hpp"
-#include "batch_cli.hpp"
+#include "cli_commands.hpp"
 #include "file_jobs.hpp"
 #include "launch_options.hpp"
 #include "log.hpp"
@@ -89,7 +89,7 @@ void glfw_error_callback(int error, const char* description) {
 }    // namespace
 
 int main(int argc, char** argv) {
-    // コマンドライン引数。--help / --version、引数の誤り、batch サブコマンドは、ウィンドウを開く前に
+    // コマンドライン引数。--help / --version、引数の誤り、gui 以外のサブコマンドは、ウィンドウを開く前に
     // 処理して終わる（GUI の無い環境、たとえば CI やサーバーでも動く）。
     const std::vector<std::string> args   = utf8_arguments(argc, argv);
     const Result<LaunchOptions>    parsed = parse_launch_options(args);
@@ -106,9 +106,12 @@ int main(int argc, char** argv) {
     }
     LaunchOptions launch = parsed.value;
     make_paths_absolute(launch);
-    if (launch.command == LaunchCommand::Batch) {
-        use_utf8_console();
-        return run_batch_command(launch);
+    switch (launch.command) {
+    case LaunchCommand::AutoAnchors: use_utf8_console(); return run_auto_anchors_command(launch);
+    case LaunchCommand::Convert: use_utf8_console(); return run_convert_command(launch);
+    case LaunchCommand::Export: use_utf8_console(); return run_export_command(launch);
+    case LaunchCommand::None:
+    case LaunchCommand::Gui: break;
     }
 
     glfwSetErrorCallback(glfw_error_callback);

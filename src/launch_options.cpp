@@ -23,8 +23,10 @@
 namespace {
 
 // オプションを使えるサブコマンド（ビットの組み合わせ）。
-constexpr int kGui   = 1;
-constexpr int kBatch = 2;
+constexpr int kGui     = 1;
+constexpr int kAuto    = 2;
+constexpr int kConvert = 4;
+constexpr int kExport  = 8;
 
 struct OptionSpec {
     const char* name;
@@ -32,18 +34,43 @@ struct OptionSpec {
     int         commands;
 };
 const OptionSpec kOptions[] = {
-    { "--base", true, kGui | kBatch },     { "--target", true, kGui | kBatch }, { "--session", true, kGui | kBatch },
-    { "--transcript", true, kGui | kBatch }, { "--align", false, kGui },         { "--count", true, kBatch },
-    { "--out", true, kBatch },             { "--prefix", true, kBatch },        { "--sweep", true, kBatch },
-    { "--fixed", true, kBatch },           { "--no-manifest", false, kBatch },  { "--overwrite", false, kBatch },
-    { "--auto-anchors", false, kBatch },   { "--divisions", true, kBatch },     { "--formant-window", true, kBatch },
-    { "--max-formant", true, kBatch },     { "--acoustic-model", true, kBatch }, { "--dictionary", true, kBatch },
-    { "--save-session", true, kBatch },
+    { "--base", true, kGui | kAuto | kConvert },
+    { "--target", true, kGui | kAuto | kConvert },
+    { "--session", true, kGui | kAuto },
+    { "--transcript", true, kGui | kAuto },
+    { "--align", false, kGui },
+    { "--out", true, kAuto | kConvert | kExport },
+    { "--overwrite", false, kAuto | kConvert | kExport },
+    { "--divisions", true, kAuto },
+    { "--formant-window", true, kAuto },
+    { "--max-formant", true, kAuto },
+    { "--acoustic-model", true, kAuto },
+    { "--dictionary", true, kAuto },
+    { "--count", true, kExport },
+    { "--prefix", true, kExport },
+    { "--sweep", true, kExport },
+    { "--fixed", true, kExport },
+    { "--no-manifest", false, kExport },
 };
 
-// --auto-anchors と一緒にだけ使えるオプション。
-const char* const kAutoAnchorOptions[] = { "--divisions", "--formant-window", "--max-formant", "--acoustic-model",
-                                           "--dictionary" };
+// サブコマンドの名前とビット。
+struct CommandSpec {
+    LaunchCommand command;
+    const char*   name;
+    int           bit;
+};
+const CommandSpec kCommands[] = {
+    { LaunchCommand::Gui, "gui", kGui },
+    { LaunchCommand::AutoAnchors, "auto-anchors", kAuto },
+    { LaunchCommand::Convert, "convert", kConvert },
+    { LaunchCommand::Export, "export", kExport },
+};
+
+const CommandSpec& command_spec(LaunchCommand c) {
+    for (const CommandSpec& cs : kCommands)
+        if (cs.command == c) return cs;
+    return kCommands[0];
+}
 
 Result<LaunchOptions> fail(std::string msg) {
     return Result<LaunchOptions>::failure(std::move(msg));
@@ -104,15 +131,14 @@ bool parse_double(const std::string& s, double& out) {
 
 // 1つのオプションを LaunchOptions に反映する。誤りがあれば理由を返す（空 = 成功）。
 std::string apply_option(LaunchOptions& o, bool fixed_set[], const std::string& name, const std::string& value) {
-    BatchCliOptions& b = o.batch;
+    ExportCliOptions&   b  = o.exp;
+    AutoAnchorSettings& as = o.auto_settings;
     if (name == "--align") {
         o.align = true;
     } else if (name == "--no-manifest") {
         b.manifest = false;
     } else if (name == "--overwrite") {
-        b.overwrite = true;
-    } else if (name == "--auto-anchors") {
-        b.auto_anchors = true;
+        o.overwrite = true;
     } else if (name == "--transcript") {
         o.transcript     = value;
         o.has_transcript = true;
@@ -125,27 +151,25 @@ std::string apply_option(LaunchOptions& o, bool fixed_set[], const std::string& 
     } else if (name == "--session") {
         o.session = value;
     } else if (name == "--out") {
-        b.out = value;
+        o.out = value;
     } else if (name == "--prefix") {
         b.prefix = value;
-    } else if (name == "--save-session") {
-        b.save_session = value;
     } else if (name == "--acoustic-model") {
-        b.auto_settings.align.acoustic_model = value;
+        as.align.acoustic_model = value;
     } else if (name == "--dictionary") {
-        b.auto_settings.align.dictionary = value;
+        as.align.dictionary = value;
     } else if (name == "--divisions") {
-        int& v = b.auto_settings.divisions;
+        int& v = as.divisions;
         if (!parse_int(value, v) || v < AutoAnchorSettings::kDivisionsMin || v > AutoAnchorSettings::kDivisionsMax)
             return "--divisions は " + std::to_string(AutoAnchorSettings::kDivisionsMin) + "〜"
                  + std::to_string(AutoAnchorSettings::kDivisionsMax) + " の整数で指定してください: " + value;
     } else if (name == "--formant-window") {
-        int& v = b.auto_settings.formant_window_ms;
+        int& v = as.formant_window_ms;
         if (!parse_int(value, v) || v < AutoAnchorSettings::kWindowMsMin || v > AutoAnchorSettings::kWindowMsMax)
             return "--formant-window は " + std::to_string(AutoAnchorSettings::kWindowMsMin) + "〜"
                  + std::to_string(AutoAnchorSettings::kWindowMsMax) + " の整数（ms）で指定してください: " + value;
     } else if (name == "--max-formant") {
-        double& v = b.auto_settings.formant.max_formant_hz;
+        double& v = as.formant.max_formant_hz;
         if (!parse_double(value, v) || v < AutoAnchorSettings::kMaxFormantMin || v > AutoAnchorSettings::kMaxFormantMax)
             return "--max-formant は " + std::to_string(static_cast<int>(AutoAnchorSettings::kMaxFormantMin)) + "〜"
                  + std::to_string(static_cast<int>(AutoAnchorSettings::kMaxFormantMax)) + " の数（Hz）で指定してください: "
@@ -186,8 +210,8 @@ std::string apply_option(LaunchOptions& o, bool fixed_set[], const std::string& 
 LaunchCommand launch_command_of(const std::vector<std::string>& args) {
     if (args.empty()) return LaunchCommand::None;
     const std::string first = ascii_lower(args.front());
-    if (first == "gui") return LaunchCommand::Gui;
-    if (first == "batch") return LaunchCommand::Batch;
+    for (const CommandSpec& cs : kCommands)
+        if (first == cs.name) return cs.command;
     return LaunchCommand::None;
 }
 
@@ -204,12 +228,17 @@ Result<LaunchOptions> parse_launch_options(const std::vector<std::string>& args)
         }
         if (o.help || o.version) return Result<LaunchOptions>::success(std::move(o));
         if (!args.front().empty() && args.front()[0] == '-')
-            return fail("サブコマンドがありません。最初に gui か batch を書いてください（例: morphingAlignerCpp gui "
-                        + args.front() + " ...）");
-        return fail("知らないサブコマンドです: " + args.front() + "（gui か batch）");
+            return fail("サブコマンドがありません。最初に gui・auto-anchors・convert・export のどれかを書いてください"
+                        "（例: morphingAlignerCpp gui " + args.front() + " ...）");
+        // batch は auto-anchors / convert / export に分けてなくした（2026-11-17）。古いスクリプトに分かるように知らせる。
+        if (ascii_lower(args.front()) == "batch")
+            return fail("batch サブコマンドはなくなりました。アンカーの自動生成は auto-anchors、tcmorph のアンカー JSON の"
+                        "変換は convert、連続書き出しは export を使ってください");
+        return fail("知らないサブコマンドです: " + args.front() + "（gui・auto-anchors・convert・export）");
     }
-    const int         cmd_bit  = o.command == LaunchCommand::Gui ? kGui : kBatch;
-    const std::string cmd_name = o.command == LaunchCommand::Gui ? "gui" : "batch";
+    const int         cmd_bit  = command_spec(o.command).bit;
+    const std::string cmd_name = command_spec(o.command).name;
+    const bool        takes_input = o.command == LaunchCommand::Convert || o.command == LaunchCommand::Export;
 
     // --help / --version は、ほかの引数に誤りがあっても優先する。
     for (std::size_t i = 1; i < args.size(); ++i) {
@@ -240,7 +269,15 @@ Result<LaunchOptions> parse_launch_options(const std::vector<std::string>& args)
             }
             if (opt) break;
         }
-        if (!opt) return fail("知らない引数です: " + a);
+        if (!opt) {
+            // convert / export は、入力の JSON をオプション名なしで1つ受け取る。
+            if (takes_input && !a.empty() && a[0] != '-') {
+                if (!o.input.empty()) return fail("入力の JSON は1つだけ指定してください: " + a);
+                o.input = a;
+                continue;
+            }
+            return fail("知らない引数です: " + a);
+        }
         if (!(opt->commands & cmd_bit)) return fail(std::string { opt->name } + " は " + cmd_name + " では使えません");
         if (std::find(seen.begin(), seen.end(), opt->name) != seen.end())
             return fail(std::string { opt->name } + " が2回指定されています");
@@ -258,25 +295,29 @@ Result<LaunchOptions> parse_launch_options(const std::vector<std::string>& args)
         return Result<LaunchOptions>::success(std::move(o));
     }
 
-    // batch: 書き出すなら本数と出力先の両方が要る。書き出さないのは、--save-session でセッションを
-    // 保存するだけのとき（--auto-anchors で作ったアンカーや、tcmorph のアンカー JSON を変換したもの）。
-    // 音声は、音声のパスを含むセッションか、--base と --target の両方（tcmorph のアンカー JSON を
-    // --session で乗せてもよい。--base / --target が無ければ同じフォルダの manifest.json から決める）。
-    // セッションの中身は読むまで分からないので、--session と --base / --target の組み合わせの可否は
-    // 実行時に確かめる。
-    const BatchCliOptions& b    = o.batch;
-    const auto             seen_opt = [&](const char* n) { return std::find(seen.begin(), seen.end(), n) != seen.end(); };
-    if (b.count == 0 && (!b.out.empty() || b.save_session.empty()))
-        return fail("batch には --count（書き出す本数）が要ります（セッションを保存するだけなら --save-session）");
-    if (b.count > 0 && b.out.empty()) return fail("batch には --out（出力先のフォルダ）が要ります");
-    for (const char* n : kAutoAnchorOptions)
-        if (seen_opt(n) && !b.auto_anchors) return fail(std::string { n } + " は --auto-anchors と一緒に使います");
-    if (o.has_transcript && !b.auto_anchors) return fail("batch の --transcript は --auto-anchors と一緒に使います");
-    if (b.auto_anchors && o.session.empty() && (!o.has_transcript || o.transcript.empty()))
-        return fail("--auto-anchors には --transcript（または書き起こしを含む --session）が要ります");
     if (o.base.empty() != o.target.empty()) return fail("--base と --target は両方指定してください");
-    if (o.base.empty() && o.session.empty())
-        return fail("batch には --session か、--base と --target の両方が要ります");
+
+    if (o.command == LaunchCommand::AutoAnchors) {
+        // 音声は --base / --target か、音声のパスを含むセッション。書き起こしは --transcript か、
+        // セッションの中のもの（読むまで分からないので、--session があれば実行時に確かめる）。
+        if (o.base.empty() && o.session.empty())
+            return fail("auto-anchors には --base と --target、または --session が要ります");
+        if (o.session.empty() && (!o.has_transcript || o.transcript.empty()))
+            return fail("auto-anchors には --transcript（または書き起こしを含む --session）が要ります");
+        if (o.out.empty()) return fail("auto-anchors には --out（保存するセッション）が要ります");
+        return Result<LaunchOptions>::success(std::move(o));
+    }
+
+    if (o.input.empty()) return fail(cmd_name + " には入力の JSON が要ります（例: morphingAlignerCpp " + cmd_name + " work.json ...）");
+    if (o.command == LaunchCommand::Convert) {
+        if (o.out.empty()) return fail("convert には --out（保存するセッション）が要ります");
+        return Result<LaunchOptions>::success(std::move(o));
+    }
+
+    // export
+    const ExportCliOptions& b = o.exp;
+    if (b.count == 0) return fail("export には --count（書き出す本数）が要ります");
+    if (o.out.empty()) return fail("export には --out（出力先のフォルダ）が要ります");
     for (int i = 0; i < kMorphAxisCount; ++i)
         if (fixed_set[i] && b.sweep[i])
             return fail(std::string { "--fixed の " } + kMorphAxes[i].key
@@ -287,7 +328,7 @@ Result<LaunchOptions> parse_launch_options(const std::vector<std::string>& args)
 }
 
 void make_paths_absolute(LaunchOptions& opts) {
-    for (std::string* p : { &opts.base, &opts.target, &opts.session, &opts.batch.out, &opts.batch.save_session }) {
+    for (std::string* p : { &opts.base, &opts.target, &opts.session, &opts.input, &opts.out }) {
         if (p->empty()) continue;
         std::error_code             ec;
         const std::filesystem::path abs = std::filesystem::absolute(std::filesystem::u8path(*p), ec);
@@ -309,37 +350,52 @@ std::string launch_usage(LaunchCommand command) {
       "  -h, --help             この説明を表示して終了する\n"
       "\n"
       "音声のパスを含むセッションと --base / --target は同時には指定できません。\n";
-    static const char* kBatchUsage =
-      "使い方: morphingAlignerCpp batch --count <本数> --out <フォルダ> [オプション]\n"
-      "        morphingAlignerCpp batch --save-session <JSON> [オプション]\n"
-      "  ウィンドウを開かずに、率を 0（base）から 1（target）まで等間隔に変えた WAV を書き出す\n"
-      "  （GUI の「連続書き出し」と同じ処理）。アンカーはセッションのものを使うか、--auto-anchors で\n"
-      "  音素アライメントから作る。--count / --out を省けば、セッションを保存するだけで止める。\n"
+    static const char* kAutoUsage =
+      "使い方: morphingAlignerCpp auto-anchors --base <音声> --target <音声> --transcript <文> --out <JSON> [オプション]\n"
+      "        morphingAlignerCpp auto-anchors --session <JSON> --out <JSON> [オプション]\n"
+      "  音素アライメント（MFA）とフォルマントからアンカーを作り（GUI の「アンカー自動生成」と同じ方法）、\n"
+      "  セッションとして保存する。音声解析の環境 .env が要る（配布物のルートで実行する）。\n"
       "\n"
-      "  --session <JSON>       セッション（音声のパスとアンカー）。tcmorph のアンカー JSON なら、\n"
-      "                         音声は --base / --target か、同じフォルダの manifest.json から決める\n"
       "  --base <音声>          base の音声（--target と一緒に指定する）\n"
       "  --target <音声>        target の音声\n"
+      "  --session <JSON>       音声のパス（と書き起こし）を含むセッション。中のアンカーは使わず作り直す\n"
+      "  --transcript <文>      書き起こし（セッションのものより優先）\n"
+      "  --out <JSON>           保存するセッション\n"
+      "  --divisions <n>        各音素の区間を何等分するか（1〜10。既定: 2）\n"
+      "  --formant-window <ms>  フォルマントの移動平均の窓幅（5〜500。既定: 50）\n"
+      "  --max-formant <Hz>     最大フォルマント（base / target 共通。2000〜10000。既定: 5500）\n"
+      "  --acoustic-model <名前> MFA の音響モデル（既定: japanese_mfa）\n"
+      "  --dictionary <名前>    MFA の辞書（既定: japanese_mfa）\n"
+      "  --overwrite            保存先があれば上書きする（付けなければ、あるときは中止する）\n"
+      "  -h, --help             この説明を表示して終了する\n";
+    static const char* kConvertUsage =
+      "使い方: morphingAlignerCpp convert <tcmorph のアンカー JSON> --out <JSON> [オプション]\n"
+      "  tcmorph のアンカー JSON（mat2json.py の anchors.json）をセッションにする。音声は --base / --target か、\n"
+      "  同じフォルダの manifest.json（fileFullPath と fileName）から決める。\n"
+      "\n"
+      "  --out <JSON>           保存するセッション\n"
+      "  --base <音声>          base の音声（--target と一緒に指定する。manifest.json は読まない）\n"
+      "  --target <音声>        target の音声\n"
+      "  --overwrite            保存先があれば上書きする（付けなければ、あるときは中止する）\n"
+      "  -h, --help             この説明を表示して終了する\n";
+    static const char* kExportUsage =
+      "使い方: morphingAlignerCpp export <セッション> --count <本数> --out <フォルダ> [オプション]\n"
+      "  率を 0（base）から 1（target）まで等間隔に変えた WAV を書き出す（GUI の「連続書き出し」と同じ処理）。\n"
+      "  セッションは、音声のパスとアンカーを含むもの（GUI で保存したもの、auto-anchors や convert の出力）。\n"
+      "\n"
       "  --count <本数>         書き出す本数（両端を含む。2〜101）\n"
       "  --out <フォルダ>       出力先（無ければ作る）\n"
       "  --prefix <接頭辞>      ファイル名の接頭辞（既定: base と target のファイル名をつないだもの）\n"
       "  --sweep <軸,...>       変化させる軸（tx, fx, fo, sl, ap をコンマで区切る。既定: all）\n"
       "  --fixed <軸=率,...>    変化させない軸の率（既定: 0）。例: --sweep fo --fixed tx=0.5\n"
       "  --no-manifest          率とアンカーを残す JSON（<接頭辞>_batch.json）を書かない\n"
-      "  --overwrite            同じ名前のファイルがあれば上書きする（無ければ、あるときは中止する）\n"
-      "  --save-session <JSON>  使うアンカーと音声をセッションとして保存する（GUI で開いて確かめられる）\n"
-      "\n"
-      "  --auto-anchors         音素アライメント（MFA）とフォルマントから、アンカーを作り直して使う\n"
-      "                         （音声解析の環境 .env が要る。配布物のルートで実行する）\n"
-      "  --transcript <文>      書き起こし（セッションのものより優先）\n"
-      "  --divisions <n>        各音素の区間を何等分するか（1〜10。既定: 2）\n"
-      "  --formant-window <ms>  フォルマントの移動平均の窓幅（5〜500。既定: 50）\n"
-      "  --max-formant <Hz>     最大フォルマント（base / target 共通。2000〜10000。既定: 5500）\n"
-      "  --acoustic-model <名前> MFA の音響モデル（既定: japanese_mfa）\n"
-      "  --dictionary <名前>    MFA の辞書（既定: japanese_mfa）\n"
+      "  --overwrite            同じ名前のファイルがあれば上書きする（付けなければ、あるときは中止する）\n"
       "  -h, --help             この説明を表示して終了する\n"
       "\n"
-      "ファイル名は <接頭辞>_r050.wav（軸を選んだときは <接頭辞>_fo_r050.wav）。\n"
+      "ファイル名は <接頭辞>_r050.wav（軸を選んだときは <接頭辞>_fo_r050.wav）。\n";
+    static const char* kExitCodes =
+      "\n"
+      "作ったファイルの一覧は標準出力に、経過は標準エラーに出す。\n"
       "終了コード: 0 = 成功、1 = 処理の失敗、2 = 引数の誤り、130 = Ctrl+C で中止。\n";
     static const char* kCommon =
       "\n"
@@ -348,20 +404,23 @@ std::string launch_usage(LaunchCommand command) {
 
     switch (command) {
     case LaunchCommand::Gui: return std::string { kGuiUsage } + kCommon;
-    case LaunchCommand::Batch: return std::string { kBatchUsage } + kCommon;
+    case LaunchCommand::AutoAnchors: return std::string { kAutoUsage } + kExitCodes + kCommon;
+    case LaunchCommand::Convert: return std::string { kConvertUsage } + kExitCodes + kCommon;
+    case LaunchCommand::Export: return std::string { kExportUsage } + kExitCodes + kCommon;
     case LaunchCommand::None: break;
     }
     return "使い方: morphingAlignerCpp <サブコマンド> [オプション]\n"
            "\n"
-           "  gui      音声・セッションを読み込んで GUI を開く\n"
-           "  batch    ウィンドウを開かずに連続書き出しをする\n"
+           "  gui           音声・セッションを読み込んで GUI を開く\n"
+           "  auto-anchors  音素アライメントからアンカーを作ってセッションに保存する\n"
+           "  convert       tcmorph のアンカー JSON をセッションにする\n"
+           "  export        セッションから、率を変えた WAV を連続で書き出す\n"
            "\n"
            "  --version              版を表示して終了する\n"
            "  -h, --help             この説明を表示して終了する\n"
            "\n"
            "引数なしで起動すると、何も読み込まずに GUI を開きます。\n"
-           "サブコマンドごとのオプションは「morphingAlignerCpp gui --help」「morphingAlignerCpp batch --help」\n"
-           "で表示します。\n";
+           "サブコマンドごとのオプションは「morphingAlignerCpp <サブコマンド> --help」で表示します。\n";
 }
 
 void use_utf8_console() {

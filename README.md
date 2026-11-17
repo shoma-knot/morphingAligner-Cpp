@@ -104,10 +104,17 @@ Linux でタスクバーにアイコンを出したい場合は `tools/install-d
 
 ### コマンドライン引数
 
-最初にサブコマンドを書きます。`gui` は起動と同時に音声やセッションを読み込んで GUI を開き（毎回ダイアログで
-開く手間を省くためのものです）、`batch` はウィンドウを開かずに連続書き出しをして終わります。
-引数なしで起動すると、何も読み込まずに GUI を開きます。引数があるのにサブコマンドが無いときは、
+最初にサブコマンドを書きます。`gui` は起動と同時に音声やセッションを読み込んで GUI を開きます（毎回ダイアログで
+開く手間を省くためのものです）。`auto-anchors`・`convert`・`export` はウィンドウを開かずに動き、セッションの JSON を
+受け渡します。引数なしで起動すると、何も読み込まずに GUI を開きます。引数があるのにサブコマンドが無いときは、
 エラーを出して止まります。
+
+| サブコマンド | 入力 | 出力 |
+|---|---|---|
+| `gui` | 音声・セッション（任意） | GUI を開く |
+| `auto-anchors` | 音声2本（またはセッション）と書き起こし | アンカーを自動で作ったセッション |
+| `convert` | tcmorph のアンカー JSON | セッション |
+| `export` | セッション | 率を変えた WAV の列と `<接頭辞>_batch.json` |
 
 ```sh
 morphingAlignerCpp gui --base a.wav --target b.wav                    # 音声を読み込む
@@ -115,11 +122,10 @@ morphingAlignerCpp gui --session work.json                             # セッ�
 morphingAlignerCpp gui --base a.wav --target b.wav --session anchors.json   # tcmorph のアンカーを乗せる
 morphingAlignerCpp gui --base a.wav --target b.wav --transcript はい --align  # 読み込み後に音素アライメント
 
-morphingAlignerCpp batch --session work.json --count 7 --out stim/                    # 全軸を連動させて 7 本
-morphingAlignerCpp batch --session work.json --count 11 --out stim/ --sweep fo --fixed tx=0.5   # F0 だけを変える
-morphingAlignerCpp batch --base a.wav --target b.wav --transcript はい --auto-anchors --count 7 --out stim/   # アンカーを自動で作って書き出す
-morphingAlignerCpp batch --base a.wav --target b.wav --transcript はい --auto-anchors --save-session auto.json  # アンカーを作って保存するだけ
-morphingAlignerCpp batch --session for-cpp/anchors.json --save-session work.json   # tcmorph の anchors.json と manifest.json をセッションにする
+morphingAlignerCpp auto-anchors --base a.wav --target b.wav --transcript はい --out auto.json   # アンカーを自動で作る
+morphingAlignerCpp convert for-cpp/anchors.json --out work.json        # tcmorph の anchors.json と manifest.json をセッションにする
+morphingAlignerCpp export work.json --count 7 --out stim/              # 全軸を連動させて 7 本
+morphingAlignerCpp export work.json --count 11 --out stim/ --sweep fo --fixed tx=0.5   # F0 だけを変える
 ```
 
 `gui` のオプション:
@@ -131,40 +137,54 @@ morphingAlignerCpp batch --session for-cpp/anchors.json --save-session work.json
 | `--transcript <文>` | 音素アライメント用の書き起こし（セッションの書き起こしより優先） |
 | `--align` | 読み込み後、音声解析の環境が使えたら音素アライメントを実行する（`--transcript` か、書き起こしを含むセッションが必要） |
 
-`batch` のオプション（GUI の「連続書き出し...」と同じ処理で、ファイル名と JSON も同じです）:
+`auto-anchors` のオプション（GUI の「アンカー自動生成」と同じ方法で作ります。音声解析のセットアップが必要です）:
 
 | オプション | 内容 |
 |---|---|
-| `--session <JSON>` | 音声のパスとアンカーを含むセッション。tcmorph のアンカー JSON なら、音声は `--base` / `--target` か、同じフォルダの `manifest.json` から決める |
 | `--base <音声>` / `--target <音声>` | base / target の音声（両方を指定する） |
-| `--count <本数>` | 書き出す本数（両端を含む。2〜101。`--out` と一緒に指定する） |
-| `--out <フォルダ>` | 出力先（無ければ作る） |
-| `--prefix <接頭辞>` | ファイル名の接頭辞（既定: base と target のファイル名をつないだもの） |
-| `--sweep <軸,...>` | 変化させる軸（`tx`, `fx`, `fo`, `sl`, `ap` をコンマで区切る。既定: `all`） |
-| `--fixed <軸=率,...>` | 変化させない軸の率（既定: 0） |
-| `--no-manifest` | 率とアンカーを残す JSON（`<接頭辞>_batch.json`）を書かない |
-| `--overwrite` | 同じ名前のファイル（`--save-session` の保存先も）があれば上書きする（付けなければ、あるときは中止する） |
-| `--auto-anchors` | 音素アライメント（MFA）とフォルマントから、GUI の「アンカー自動生成」と同じ方法でアンカーを作り直して使う（音声解析のセットアップが必要） |
-| `--transcript <文>` | 書き起こし（`--auto-anchors` 用。セッションの書き起こしより優先） |
+| `--session <JSON>` | 音声のパス（と書き起こし）を含むセッション。中のアンカーは使わずに作り直す |
+| `--transcript <文>` | 書き起こし（セッションの書き起こしより優先） |
+| `--out <JSON>` | 保存するセッション（必須） |
 | `--divisions <n>` | 各音素の区間を何等分するか（1〜10。既定: 2） |
 | `--formant-window <ms>` | フォルマントの移動平均の窓幅（5〜500。既定: 50） |
 | `--max-formant <Hz>` | 最大フォルマント（base / target 共通。2000〜10000。既定: 5500） |
 | `--acoustic-model <名前>` / `--dictionary <名前>` | MFA の音響モデル / 辞書（既定: `japanese_mfa`） |
-| `--save-session <JSON>` | 使うアンカーと音声をセッションとして保存する。`--count` / `--out` を省けば、保存して止める |
+| `--overwrite` | 保存先があれば上書きする（付けなければ、あるときは中止する） |
+
+`convert <tcmorph のアンカー JSON>` のオプション:
+
+| オプション | 内容 |
+|---|---|
+| `--out <JSON>` | 保存するセッション（必須） |
+| `--base <音声>` / `--target <音声>` | base / target の音声（両方を指定する。指定すると `manifest.json` は読まない） |
+| `--overwrite` | 保存先があれば上書きする（付けなければ、あるときは中止する） |
+
+`export <セッション>` のオプション（GUI の「連続書き出し...」と同じ処理で、ファイル名と JSON も同じです）:
+
+| オプション | 内容 |
+|---|---|
+| `--count <本数>` | 書き出す本数（両端を含む。2〜101。必須） |
+| `--out <フォルダ>` | 出力先（無ければ作る。必須） |
+| `--prefix <接頭辞>` | ファイル名の接頭辞（既定: base と target のファイル名をつないだもの） |
+| `--sweep <軸,...>` | 変化させる軸（`tx`, `fx`, `fo`, `sl`, `ap` をコンマで区切る。既定: `all`） |
+| `--fixed <軸=率,...>` | 変化させない軸の率（既定: 0） |
+| `--no-manifest` | 率とアンカーを残す JSON（`<接頭辞>_batch.json`）を書かない |
+| `--overwrite` | 同じ名前のファイルがあれば上書きする（付けなければ、あるときは中止する） |
 
 - 共通: `--version` / `-h`, `--help`（サブコマンドの後に書けば、そのサブコマンドの説明）。
 - 値は `--base a.wav` と `--base=a.wav` のどちらでも書けます。相対パスは起動したときのカレントディレクトリが基準です。
 - 音声のパスを含むセッションと `--base` / `--target` は同時に指定できません。
-- `batch` は、`--auto-anchors` が無ければセッションのアンカーをそのまま使います（GUI でアンカーを打って
-  保存したセッションを渡してください）。`--auto-anchors` を付けると、セッションのアンカーは使わずに作り直します。
-  自動のアンカーは誤ることがあるので、`--save-session` で保存したものを GUI で開いて確かめてから書き出すと安心です。
-  生成の設定と音素列は、保存したセッションと書き出しの JSON の `auto_anchors` に残ります。
-- `batch` に tcmorph の `anchors.json`（`mat2json.py` の出力）を `--base` / `--target` なしで渡すと、同じフォルダの
-  `manifest.json` の `fileFullPath` と `fileName` から音声を決めます（相対パスは `manifest.json` のフォルダが基準）。
-  `manifest.json` が無いとき、音声が見つからないとき、音声の標本化周波数が manifest と違うときは、エラーで止まります。
-  元の `.mat` のパスなど manifest の情報は、保存したセッションと書き出しの JSON の `tcmorph` に残ります。
+- 自動のアンカーは誤ることがあるので、`auto-anchors` で保存したセッションを GUI で開いて確かめてから `export` に渡すと
+  安心です。確かめずに続けて書き出すなら、`&&` でつなぎます（`auto-anchors ... --out auto.json && export auto.json ...`）。
+- `convert` は、`--base` / `--target` が無ければ、同じフォルダの `manifest.json`（`mat2json.py` の出力）の
+  `fileFullPath` と `fileName` から音声を決めます（相対パスは `manifest.json` のフォルダが基準）。`manifest.json` が
+  無いとき、音声が見つからないとき、音声の標本化周波数が manifest と違うときは、エラーで止まります。
   WORLD パラメータ（npy）は使わず、音声はこのアプリで解析し直します。
-- 経過は標準エラーに、書き出したファイル（と保存したセッション）の一覧は標準出力に出ます。終了コードは
-  0 = 成功、1 = 処理の失敗、2 = 引数の誤り、130 = Ctrl+C で中止です。
+- 生成の設定と音素列（`auto_anchors`）や、元の `.mat` のパスなど manifest の情報（`tcmorph`）はセッションに残り、
+  `export` の書き出しの JSON にも引き継がれます。
+- 経過は標準エラーに、作ったファイルの一覧は標準出力に出ます。終了コードは 0 = 成功、1 = 処理の失敗、
+  2 = 引数の誤り、130 = Ctrl+C で中止です。
+- v26.11.17 までの `batch` サブコマンドはなくしました。`batch --auto-anchors --save-session` は `auto-anchors`、
+  `batch --session anchors.json --save-session` は `convert`、`batch --count ... --out ...` は `export` に当たります。
 - フォント・ライセンスの条文・音声解析の環境（`.env`）はカレントディレクトリ（とその1つ上）から探すので、
   配布物のルート（開発時はリポジトリのルート）をカレントディレクトリにして起動してください。

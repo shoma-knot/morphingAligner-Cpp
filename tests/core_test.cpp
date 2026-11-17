@@ -24,7 +24,7 @@
 #include "anchor.hpp"
 #include "auto_anchor_pipeline.hpp"
 #include "auto_anchors.hpp"
-#include "batch_cli.hpp"
+#include "cli_commands.hpp"
 #include "batch_export.hpp"
 #include "formant_smoothing.hpp"
 #include "freqscale.hpp"
@@ -321,14 +321,17 @@ void test_launch_options() {
     }
     expect(parse_launch_options(V { "--version" }).value.version, "launch: サブコマンドなしの --version");
     {
-        const Result<LaunchOptions> r = parse_launch_options(V { "batch", "--nope", "-h" });
-        expect(r.ok() && r.value.help && r.value.command == LaunchCommand::Batch,
+        const Result<LaunchOptions> r = parse_launch_options(V { "export", "--nope", "-h" });
+        expect(r.ok() && r.value.help && r.value.command == LaunchCommand::Export,
                "launch: サブコマンドの --help はほかの誤りより優先");
     }
     expect(fails_with(parse_launch_options(V { "--base", "a.wav" }), "サブコマンドがありません"),
            "launch: 引数があるのにサブコマンドが無ければ誤り");
     expect(fails_with(parse_launch_options(V { "a.wav" }), "知らないサブコマンドです: a.wav"), "launch: 知らないサブコマンド");
-    expect(launch_command_of(V { "Batch", "x" }) == LaunchCommand::Batch && launch_command_of(V { "x" }) == LaunchCommand::None,
+    expect(launch_command_of(V { "Export", "x" }) == LaunchCommand::Export
+             && launch_command_of(V { "auto-anchors" }) == LaunchCommand::AutoAnchors
+             && launch_command_of(V { "convert" }) == LaunchCommand::Convert && launch_command_of(V { "x" }) == LaunchCommand::None
+             && launch_command_of(V { "batch" }) == LaunchCommand::None,
            "launch: 最初の引数からサブコマンドを判定");
     expect(fails_with(parse_launch_options(V { "gui", "a.wav" }), "知らない引数です: a.wav"),
            "launch: オプション名の無い引数は受け付けない");
@@ -344,107 +347,110 @@ void test_launch_options() {
     expect(fails_with(parse_launch_options(V { "gui", "--base", "a.wav", "--align" }), "--align には --transcript"),
            "launch: 書き起こしなしの --align");
     expect(fails_with(parse_launch_options(V { "gui", "--count", "7" }), "--count は gui では使えません"),
-           "launch: batch のオプションは gui で使えない");
+           "launch: export のオプションは gui で使えない");
+    expect(fails_with(parse_launch_options(V { "batch", "--session", "s.json", "--count", "3", "--out", "o" }),
+                      "batch サブコマンドはなくなりました"),
+           "launch: batch はなくなったことを知らせる");
 
-    // batch
+    // export
     {
-        const Result<LaunchOptions> r = parse_launch_options(V { "batch", "--session", "s.json", "--count=7", "--out", "o",
-                                                                 "--prefix", "p", "--sweep", "fo,SL", "--fixed",
-                                                                 "tx=0.5,fx=1,ap=0", "--no-manifest", "--overwrite" });
-        const BatchCliOptions& b = r.value.batch;
-        expect(r.ok() && r.value.command == LaunchCommand::Batch && r.value.session == "s.json" && b.count == 7
-                 && b.out == "o" && b.prefix == "p" && !b.sweep[0] && !b.sweep[1] && b.sweep[2] && b.sweep[3] && !b.sweep[4]
-                 && near(b.fixed[0], 0.5) && near(b.fixed[1], 1.0) && near(b.fixed[4], 0.0) && !b.manifest && b.overwrite,
-               "launch: batch の設定を読める" + (r.ok() ? "" : "（" + r.error + "）"));
+        const Result<LaunchOptions> r = parse_launch_options(V { "export", "s.json", "--count=7", "--out", "o", "--prefix",
+                                                                 "p", "--sweep", "fo,SL", "--fixed", "tx=0.5,fx=1,ap=0",
+                                                                 "--no-manifest", "--overwrite" });
+        const ExportCliOptions& b = r.value.exp;
+        expect(r.ok() && r.value.command == LaunchCommand::Export && r.value.input == "s.json" && b.count == 7
+                 && r.value.out == "o" && b.prefix == "p" && !b.sweep[0] && !b.sweep[1] && b.sweep[2] && b.sweep[3]
+                 && !b.sweep[4] && near(b.fixed[0], 0.5) && near(b.fixed[1], 1.0) && near(b.fixed[4], 0.0) && !b.manifest
+                 && r.value.overwrite,
+               "launch: export の設定を読める（入力はオプション名なし）" + (r.ok() ? "" : "（" + r.error + "）"));
     }
     {
-        const Result<LaunchOptions> r =
-          parse_launch_options(V { "batch", "--base", "a.wav", "--target", "b.wav", "--count", "2", "--out", "o" });
-        const BatchCliOptions& b = r.value.batch;
-        expect(r.ok() && b.manifest && !b.overwrite && b.prefix.empty() && b.sweep[0] && b.sweep[4],
-               "launch: batch の既定は全軸・JSON あり・上書きしない");
+        const Result<LaunchOptions> r = parse_launch_options(V { "export", "--count", "2", "--out", "o", "s.json" });
+        const ExportCliOptions&     b = r.value.exp;
+        expect(r.ok() && r.value.input == "s.json" && b.manifest && !r.value.overwrite && b.prefix.empty() && b.sweep[0]
+                 && b.sweep[4],
+               "launch: export の既定は全軸・JSON あり・上書きしない。入力はどこに書いてもよい");
     }
-    const V in { "batch", "--session", "s.json" };
-    const auto with = [&](V extra) {
-        V v = in;
+    const auto ex = [&](V extra) {
+        V v { "export", "s.json" };
         v.insert(v.end(), extra.begin(), extra.end());
         return parse_launch_options(v);
     };
-    expect(fails_with(with({ "--out", "o" }), "batch には --count"), "launch: batch は --count が必須");
-    expect(fails_with(with({ "--count", "3" }), "batch には --out"), "launch: batch は --out が必須");
-    expect(fails_with(with({ "--count", "1", "--out", "o" }), "--count は 2〜101"), "launch: 本数が少なすぎる");
-    expect(fails_with(with({ "--count", "102", "--out", "o" }), "--count は 2〜101"), "launch: 本数が多すぎる");
-    expect(fails_with(with({ "--count", "3x", "--out", "o" }), "--count は 2〜101"), "launch: 本数が整数でない");
-    expect(fails_with(with({ "--count", "3", "--out", "o", "--sweep", "fo,f0" }), "--sweep に知らない軸があります: f0"),
+    expect(fails_with(ex({ "--out", "o" }), "export には --count"), "launch: export は --count が必須");
+    expect(fails_with(ex({ "--count", "3" }), "export には --out"), "launch: export は --out が必須");
+    expect(fails_with(parse_launch_options(V { "export", "--count", "3", "--out", "o" }), "export には入力の JSON が要ります"),
+           "launch: export は入力が必須");
+    expect(fails_with(ex({ "t.json", "--count", "3", "--out", "o" }), "入力の JSON は1つだけ"), "launch: 入力が2つ");
+    expect(fails_with(ex({ "--count", "1", "--out", "o" }), "--count は 2〜101"), "launch: 本数が少なすぎる");
+    expect(fails_with(ex({ "--count", "102", "--out", "o" }), "--count は 2〜101"), "launch: 本数が多すぎる");
+    expect(fails_with(ex({ "--count", "3x", "--out", "o" }), "--count は 2〜101"), "launch: 本数が整数でない");
+    expect(fails_with(ex({ "--count", "3", "--out", "o", "--sweep", "fo,f0" }), "--sweep に知らない軸があります: f0"),
            "launch: 知らない軸");
-    expect(fails_with(with({ "--count", "3", "--out", "o", "--fixed", "tx=0.5" }), "--fixed の tx は変化させる軸です"),
+    expect(fails_with(ex({ "--count", "3", "--out", "o", "--fixed", "tx=0.5" }), "--fixed の tx は変化させる軸です"),
            "launch: 変化させる軸は固定できない");
-    expect(fails_with(with({ "--count", "3", "--out", "o", "--sweep", "fo", "--fixed", "tx=1.5" }), "--fixed の率は 0〜1"),
+    expect(fails_with(ex({ "--count", "3", "--out", "o", "--sweep", "fo", "--fixed", "tx=1.5" }), "--fixed の率は 0〜1"),
            "launch: 固定値が範囲外");
-    expect(fails_with(with({ "--count", "3", "--out", "o", "--sweep", "fo", "--fixed", "tx" }), "--fixed は「軸=率」"),
+    expect(fails_with(ex({ "--count", "3", "--out", "o", "--sweep", "fo", "--fixed", "tx" }), "--fixed は「軸=率」"),
            "launch: 固定値の書式");
-    expect(fails_with(with({ "--count", "3", "--out", "o", "--sweep", "fo", "--fixed", "tx=0,tx=1" }),
-                      "--fixed で tx が2回"),
+    expect(fails_with(ex({ "--count", "3", "--out", "o", "--sweep", "fo", "--fixed", "tx=0,tx=1" }), "--fixed で tx が2回"),
            "launch: 固定値の重複");
-    expect(fails_with(with({ "--count", "3", "--out", "o", "--align" }), "--align は batch では使えません"),
-           "launch: gui のオプションは batch で使えない");
-    expect(fails_with(parse_launch_options(V { "batch", "--base", "a.wav", "--count", "3", "--out", "o" }),
-                      "--base と --target は両方"),
-           "launch: batch で音声が片方だけ");
-    expect(fails_with(parse_launch_options(V { "batch", "--count", "3", "--out", "o" }), "batch には --session か"),
-           "launch: batch で入力が無い");
+    expect(fails_with(ex({ "--count", "3", "--out", "o", "--base", "a.wav" }), "--base は export では使えません"),
+           "launch: export は音声をセッションからだけ取る");
+    expect(fails_with(ex({ "--count", "3", "--out", "o", "--divisions", "3" }), "--divisions は export では使えません"),
+           "launch: 自動生成の設定は export で使えない");
 
-    // batch --auto-anchors
+    // convert
+    {
+        const Result<LaunchOptions> r = parse_launch_options(V { "convert", "anchors.json", "--out", "s.json" });
+        expect(r.ok() && r.value.command == LaunchCommand::Convert && r.value.input == "anchors.json" && r.value.out == "s.json"
+                 && r.value.base.empty(),
+               "launch: convert は入力と --out だけでよい");
+    }
+    expect(fails_with(parse_launch_options(V { "convert", "anchors.json" }), "convert には --out"), "launch: convert は --out が必須");
+    expect(fails_with(parse_launch_options(V { "convert", "anchors.json", "--out", "s", "--base", "a.wav" }),
+                      "--base と --target は両方"),
+           "launch: convert で音声が片方だけ");
+    expect(fails_with(parse_launch_options(V { "convert", "anchors.json", "--out", "s", "--count", "3" }),
+                      "--count は convert では使えません"),
+           "launch: 書き出しの設定は convert で使えない");
+
+    // auto-anchors
     {
         const Result<LaunchOptions> r = parse_launch_options(
-          V { "batch", "--base", "a.wav", "--target", "b.wav", "--auto-anchors", "--transcript", "はい", "--divisions", "3",
-              "--formant-window=80", "--max-formant", "5000", "--acoustic-model", "m", "--dictionary", "d", "--save-session", "s.json" });
-        const BatchCliOptions& b = r.value.batch;
-        expect(r.ok() && b.auto_anchors && !b.exports() && b.save_session == "s.json" && r.value.transcript == "はい"
-                 && b.auto_settings.divisions == 3 && b.auto_settings.formant_window_ms == 80
-                 && near(b.auto_settings.formant.max_formant_hz, 5000.0) && b.auto_settings.align.acoustic_model == "m"
-                 && b.auto_settings.align.dictionary == "d",
-               "launch: --auto-anchors の設定を読み、--count が無ければ保存だけ" + (r.ok() ? "" : "（" + r.error + "）"));
+          V { "auto-anchors", "--base", "a.wav", "--target", "b.wav", "--transcript", "はい", "--divisions", "3",
+              "--formant-window=80", "--max-formant", "5000", "--acoustic-model", "m", "--dictionary", "d", "--out", "s.json" });
+        const AutoAnchorSettings& a = r.value.auto_settings;
+        expect(r.ok() && r.value.command == LaunchCommand::AutoAnchors && r.value.out == "s.json" && r.value.transcript == "はい"
+                 && a.divisions == 3 && a.formant_window_ms == 80 && near(a.formant.max_formant_hz, 5000.0)
+                 && a.align.acoustic_model == "m" && a.align.dictionary == "d",
+               "launch: auto-anchors の設定を読める" + (r.ok() ? "" : "（" + r.error + "）"));
     }
     {
-        const Result<LaunchOptions> r = parse_launch_options(V { "batch", "--session", "s.json", "--auto-anchors", "--count", "3", "--out", "o" });
-        const AutoAnchorSettings&   a = r.value.batch.auto_settings;
-        expect(r.ok() && r.value.batch.exports() && a.divisions == 2 && a.formant_window_ms == 50
-                 && near(a.formant.max_formant_hz, 5500.0) && a.align.acoustic_model == "japanese_mfa",
-               "launch: --auto-anchors の既定は GUI と同じ。セッションがあれば --transcript は要らない");
+        const Result<LaunchOptions> r = parse_launch_options(V { "auto-anchors", "--session", "s.json", "--out", "o.json" });
+        const AutoAnchorSettings&   a = r.value.auto_settings;
+        expect(r.ok() && a.divisions == 2 && a.formant_window_ms == 50 && near(a.formant.max_formant_hz, 5500.0)
+                 && a.align.acoustic_model == "japanese_mfa",
+               "launch: auto-anchors の既定は GUI と同じ。セッションがあれば --transcript は要らない");
     }
-    const V ab { "batch", "--base", "a.wav", "--target", "b.wav" };
-    const auto with_ab = [&](V extra) {
-        V v = ab;
+    const auto au = [&](V extra) {
+        V v { "auto-anchors", "--base", "a.wav", "--target", "b.wav" };
         v.insert(v.end(), extra.begin(), extra.end());
         return parse_launch_options(v);
     };
-    expect(fails_with(with_ab({ "--auto-anchors", "--count", "3", "--out", "o" }), "--auto-anchors には --transcript"),
-           "launch: セッションも --transcript も無い --auto-anchors");
-    expect(fails_with(with_ab({ "--divisions", "3", "--count", "3", "--out", "o" }), "--divisions は --auto-anchors と一緒に"),
-           "launch: 自動生成の設定は --auto-anchors が要る");
-    expect(fails_with(with_ab({ "--transcript", "x", "--count", "3", "--out", "o" }), "batch の --transcript は --auto-anchors"),
-           "launch: batch の --transcript は --auto-anchors が要る");
-    {
-        const Result<LaunchOptions> r = parse_launch_options(V { "batch", "--session", "anchors.json", "--save-session", "s.json" });
-        expect(r.ok() && !r.value.batch.auto_anchors && !r.value.batch.exports() && r.value.batch.save_session == "s.json",
-               "launch: --save-session は --auto-anchors なしでも使え、--count が無ければ保存だけ");
-    }
-    expect(fails_with(with_ab({ "--auto-anchors", "--transcript", "x" }), "batch には --count"),
-           "launch: 書き出しも保存もしなければ誤り");
-    expect(fails_with(with_ab({ "--auto-anchors", "--transcript", "x", "--save-session", "s", "--out", "o" }), "batch には --count"),
-           "launch: --out だけで --count が無い");
-    expect(fails_with(with_ab({ "--auto-anchors", "--transcript", "x", "--save-session", "s", "--divisions", "11" }),
-                      "--divisions は 1〜10"),
+    expect(fails_with(au({ "--out", "o.json" }), "auto-anchors には --transcript"), "launch: 書き起こしの無い auto-anchors");
+    expect(fails_with(au({ "--transcript", "x" }), "auto-anchors には --out"), "launch: auto-anchors は --out が必須");
+    expect(fails_with(parse_launch_options(V { "auto-anchors", "--transcript", "x", "--out", "o" }),
+                      "auto-anchors には --base と --target、または --session"),
+           "launch: auto-anchors で入力が無い");
+    expect(fails_with(au({ "--transcript", "x", "--out", "o", "s.json" }), "知らない引数です: s.json"),
+           "launch: auto-anchors はオプション名の無い引数を取らない");
+    expect(fails_with(au({ "--transcript", "x", "--out", "o", "--divisions", "11" }), "--divisions は 1〜10"),
            "launch: 分割数が範囲外");
-    expect(fails_with(with_ab({ "--auto-anchors", "--transcript", "x", "--save-session", "s", "--formant-window", "4" }),
-                      "--formant-window は 5〜500"),
+    expect(fails_with(au({ "--transcript", "x", "--out", "o", "--formant-window", "4" }), "--formant-window は 5〜500"),
            "launch: 窓幅が範囲外");
-    expect(fails_with(with_ab({ "--auto-anchors", "--transcript", "x", "--save-session", "s", "--max-formant", "abc" }),
-                      "--max-formant は 2000〜10000"),
+    expect(fails_with(au({ "--transcript", "x", "--out", "o", "--max-formant", "abc" }), "--max-formant は 2000〜10000"),
            "launch: 最大フォルマントが数でない");
-    expect(fails_with(with_ab({ "--auto-anchors", "--transcript", "x", "--save-session", "s", "--acoustic-model=" }),
-                      "--acoustic-model の値が空です"),
+    expect(fails_with(au({ "--transcript", "x", "--out", "o", "--acoustic-model=" }), "--acoustic-model の値が空です"),
            "launch: モデル名が空");
 
     // 相対パスは絶対パスにし、空の項目はそのまま。
@@ -452,10 +458,12 @@ void test_launch_options() {
     o.base = u8"sub/../音声.wav";
     const std::filesystem::path expect_path =
       (std::filesystem::current_path() / std::filesystem::u8path(u8"音声.wav")).lexically_normal();
-    o.batch.out = "out";
+    o.out   = "out";
+    o.input = "in.json";
     make_paths_absolute(o);
     expect(std::filesystem::u8path(o.base) == expect_path && o.target.empty()
-             && std::filesystem::u8path(o.batch.out) == std::filesystem::current_path() / "out",
+             && std::filesystem::u8path(o.out) == std::filesystem::current_path() / "out"
+             && std::filesystem::u8path(o.input) == std::filesystem::current_path() / "in.json",
            "launch: 相対パスを絶対パスにする（日本語を含んでも UTF-8 のまま）");
 }
 
@@ -545,7 +553,7 @@ void test_auto_anchor_pipeline() {
            "auto pipeline: 記録に設定と音素列と個数を残す");
 }
 
-// ── batch サブコマンド ──────────────────────────────────────
+// ── サブコマンド（auto-anchors・convert・export） ─────────────
 // 一時ファイルに書かれた内容を読み出す。
 std::string read_all(std::FILE* f) {
     std::string s;
@@ -555,10 +563,18 @@ std::string read_all(std::FILE* f) {
     return s;
 }
 
-void test_batch_command() {
+// 書き出したセッションの JSON を読む（読めなければ discarded）。
+nlohmann::json read_json(const std::filesystem::path& p) {
+    std::ifstream      is(p);
+    std::ostringstream ss;
+    ss << is.rdbuf();
+    return nlohmann::json::parse(ss.str(), nullptr, false);
+}
+
+void test_cli_commands() {
     namespace fs = std::filesystem;
     std::error_code ec;
-    const fs::path  dir = fs::temp_directory_path() / u8"morphaligner_batch_cli_test";
+    const fs::path  dir = fs::temp_directory_path() / u8"morphaligner_cli_test";
     fs::remove_all(dir, ec);
     fs::create_directories(dir, ec);
 
@@ -569,7 +585,7 @@ void test_batch_command() {
         for (std::size_t i = 0; i < x.size(); ++i)
             for (int h = 1; h <= 10; ++h)
                 x[i] += 0.3 / h * std::sin(2.0 * 3.14159265358979 * f0 * h * static_cast<double>(i) / fs_hz);
-        expect(write_wav((dir / name).u8string(), x, fs_hz).ok(), std::string { "batch cli: テスト用の WAV を書ける: " } + name);
+        expect(write_wav((dir / name).u8string(), x, fs_hz).ok(), std::string { "cli: テスト用の WAV を書ける: " } + name);
     }
     SessionFile sf;
     sf.base_path   = (dir / "a.wav").u8string();
@@ -577,158 +593,152 @@ void test_batch_command() {
     sf.anchors     = { Anchor { 0.1, 0.12, {} } };
     std::ofstream(dir / "s.json") << session_to_json(sf);
 
-    const auto run = [&](std::vector<std::string> extra, std::string* out_text = nullptr) {
-        std::vector<std::string> args { "batch", "--session", (dir / "s.json").u8string(), "--count", "3", "--out",
-                                        (dir / u8"出力").u8string(), "--prefix", "x" };
-        args.insert(args.end(), extra.begin(), extra.end());
+    // 引数を解釈して、サブコマンドを走らせる（log_text に標準エラーの内容）。
+    const AutoAnchorTools tools = fake_tools({ "h", "a", "i" }, { "h", "a", "i" });
+    const auto run = [&](std::vector<std::string> args, std::string* out_text = nullptr, std::string* log_text = nullptr) {
         const Result<LaunchOptions> o = parse_launch_options(args);
         if (!o.ok()) return -1;
         std::FILE* out = std::tmpfile();
         std::FILE* log = std::tmpfile();
-        const int  rc  = run_batch_command(o.value, out, log);
+        int        rc  = -1;
+        switch (o.value.command) {
+        case LaunchCommand::AutoAnchors: rc = run_auto_anchors_command(o.value, out, log, &tools); break;
+        case LaunchCommand::Convert: rc = run_convert_command(o.value, out, log); break;
+        case LaunchCommand::Export: rc = run_export_command(o.value, out, log); break;
+        default: break;
+        }
         if (out_text) *out_text = read_all(out);
+        if (log_text) *log_text = read_all(log);
         std::fclose(out);
         std::fclose(log);
         return rc;
     };
+    const fs::path od   = dir / u8"出力";
+    const auto     exp3 = [&](std::vector<std::string> extra, std::string* out_text = nullptr) {
+        std::vector<std::string> args { "export", (dir / "s.json").u8string(), "--count", "3", "--out", od.u8string(),
+                                        "--prefix", "x" };
+        args.insert(args.end(), extra.begin(), extra.end());
+        return run(args, out_text);
+    };
 
+    // export
     std::string listed;
-    expect(run({}, &listed) == 0, "batch cli: セッションから書き出せる（出力先のフォルダは作る）");
-    const fs::path od = dir / u8"出力";
+    expect(exp3({}, &listed) == 0, "cli export: セッションから書き出せる（出力先のフォルダは作る）");
     expect(fs::exists(od / "x_r000.wav", ec) && fs::exists(od / "x_r050.wav", ec) && fs::exists(od / "x_r100.wav", ec)
              && fs::exists(od / "x_batch.json", ec),
-           "batch cli: GUI と同じ名前の WAV と JSON が揃う");
+           "cli export: GUI と同じ名前の WAV と JSON が揃う");
     expect(listed.find("x_r050.wav") != std::string::npos && listed.find("x_batch.json") != std::string::npos,
-           "batch cli: 書き出したファイルを標準出力に並べる");
-    expect(run({}) == 1, "batch cli: 同じ名前のファイルがあれば中止する");
-    expect(run({ "--overwrite" }) == 0, "batch cli: --overwrite なら上書きする");
-    expect(run({ "--sweep", "fo", "--no-manifest" }) == 0 && fs::exists(od / "x_fo_r050.wav", ec)
+           "cli export: 書き出したファイルを標準出力に並べる");
+    expect(exp3({}) == 1, "cli export: 同じ名前のファイルがあれば中止する");
+    expect(exp3({ "--overwrite" }) == 0, "cli export: --overwrite なら上書きする");
+    expect(exp3({ "--sweep", "fo", "--no-manifest" }) == 0 && fs::exists(od / "x_fo_r050.wav", ec)
              && !fs::exists(od / "x_fo_batch.json", ec),
-           "batch cli: 軸を選べば軸の名前入りのファイル名、--no-manifest なら JSON を書かない");
-    expect(run({ "--base", sf.base_path, "--target", sf.target_path }) == 1,
-           "batch cli: 音声のパスを含むセッションと --base / --target は同時に使えない");
+           "cli export: 軸を選べば軸の名前入りのファイル名、--no-manifest なら JSON を書かない");
 
-    // --auto-anchors（Python のツールは偽物）。アンカーだけを保存して止める。
-    const AutoAnchorTools tools = fake_tools({ "h", "a", "i" }, { "h", "a", "i" });
-    const auto run_auto = [&](std::vector<std::string> args) {
-        args.insert(args.begin(), "batch");
-        const Result<LaunchOptions> o = parse_launch_options(args);
-        if (!o.ok()) return -1;
-        std::FILE* out = std::tmpfile();
-        std::FILE* log = std::tmpfile();
-        const int  rc  = run_batch_command(o.value, out, log, &tools);
-        std::fclose(out);
-        std::fclose(log);
-        return rc;
-    };
+    // auto-anchors（Python のツールは偽物）
     const fs::path saved = dir / "auto.json";
-    expect(run_auto({ "--session", (dir / "s.json").u8string(), "--auto-anchors", "--transcript", "はい", "--save-session",
-                      saved.u8string(), "--divisions", "3" })
+    expect(run({ "auto-anchors", "--session", (dir / "s.json").u8string(), "--transcript", "はい", "--out", saved.u8string(),
+                 "--divisions", "3" })
              == 0,
-           "batch cli: --auto-anchors --save-session でアンカーだけを作って保存する");
+           "cli auto-anchors: アンカーを作ってセッションに保存する");
     {
         std::ifstream      is(saved);
         std::ostringstream ss;
         ss << is.rdbuf();
         const Result<SessionFile> back = parse_session_json(ss.str());
-        const nlohmann::json      j    = nlohmann::json::parse(ss.str(), nullptr, false);
+        const nlohmann::json      j    = read_json(saved);
         expect(back.ok() && back.value.transcript == "はい" && back.value.anchors.size() > 1
                  && back.value.base_path == sf.base_path && !j.is_discarded() && j["auto_anchors"]["divisions"] == 3
                  && j["auto_anchors"]["base_phones"] == "h a i",
-               "batch cli: 保存したセッションは読み直せて、生成の設定と音素列が残る");
+               "cli auto-anchors: 保存したセッションは読み直せて、生成の設定と音素列が残る");
     }
-    expect(run_auto({ "--session", (dir / "s.json").u8string(), "--auto-anchors", "--transcript", "はい", "--save-session",
-                      saved.u8string() })
+    expect(run({ "auto-anchors", "--base", sf.base_path, "--target", sf.target_path, "--transcript", "はい", "--out",
+                 saved.u8string() })
              == 1,
-           "batch cli: 保存先のセッションがすでにあれば中止する");
-    expect(run_auto({ "--session", (dir / "s.json").u8string(), "--auto-anchors", "--save-session", (dir / "b.json").u8string() })
+           "cli auto-anchors: 保存先がすでにあれば中止する");
+    expect(run({ "auto-anchors", "--session", (dir / "s.json").u8string(), "--out", (dir / "b.json").u8string() }) == 1,
+           "cli auto-anchors: 書き起こしがどこにも無ければ失敗");
+    expect(run({ "auto-anchors", "--session", (dir / "s.json").u8string(), "--base", sf.base_path, "--target",
+                 sf.target_path, "--transcript", "はい", "--out", (dir / "b.json").u8string() })
              == 1,
-           "batch cli: 書き起こしがどこにも無ければ失敗");
-    expect(run_auto({ "--session", (dir / "s.json").u8string(), "--auto-anchors", "--transcript", "はい", "--count", "3",
-                      "--out", od.u8string(), "--prefix", "auto" })
-               == 0
+           "cli auto-anchors: 音声のパスを含むセッションと --base / --target は同時に使えない");
+    expect(run({ "export", saved.u8string(), "--count", "3", "--out", od.u8string(), "--prefix", "auto" }) == 0
              && fs::exists(od / "auto_r050.wav", ec),
-           "batch cli: --auto-anchors で作ったアンカーで書き出す");
+           "cli export: auto-anchors で作ったセッションから書き出す");
     {
-        std::ifstream      is(od / "auto_batch.json");
-        std::ostringstream ss;
-        ss << is.rdbuf();
-        const nlohmann::json j = nlohmann::json::parse(ss.str(), nullptr, false);
+        const nlohmann::json j = read_json(od / "auto_batch.json");
         expect(!j.is_discarded() && j.contains("auto_anchors") && j.contains("batch") && j["anchors"].size() > 1,
-               "batch cli: 書き出しの JSON にも生成の設定とアンカーが残る");
+               "cli export: セッションの記録（auto_anchors）を書き出しの JSON に引き継ぐ");
     }
 
-    // tcmorph のアンカー JSON ＋ 同じフォルダの manifest.json（mat2json.py が書き出す形）。
+    // convert（tcmorph のアンカー JSON ＋ 同じフォルダの manifest.json。mat2json.py が書き出す形）
     const fs::path tc = dir / "for-cpp";
     fs::create_directories(tc, ec);
-    std::ofstream(tc / "anchors.json") << R"({"version": 1, "objects": [
+    const fs::path anchors_json = tc / "anchors.json";
+    std::ofstream(anchors_json) << R"({"version": 1, "objects": [
         {"name": "reference", "time_anchor": [0.1], "time_freq_anchor": [[700]]},
         {"name": "target", "time_anchor": [0.12], "time_freq_anchor": [[750]]}]})";
     // fileFullPath は、base を絶対パス、target を manifest.json からの相対パスにする。
     const auto write_manifest = [&](double base_fs, const std::string& target_name) {
-        nlohmann::json m = { { "version", 1 },
-                             { "source", "/x/edit.mat" },
-                             { "layout", "reftgt" },
-                             { "suggested_alpha", 0.5 } };
+        nlohmann::json m = { { "version", 1 }, { "source", "/x/edit.mat" }, { "layout", "reftgt" }, { "suggested_alpha", 0.5 } };
         m["objects"] = nlohmann::json::array(
           { { { "name", "reference" }, { "sampling_frequency", base_fs }, { "fileName", "a.wav" },
               { "fileFullPath", dir.u8string() } },
             { { "name", "target" }, { "sampling_frequency", 16000.0 }, { "fileName", target_name }, { "fileFullPath", ".." } } });
         std::ofstream(tc / "manifest.json") << m.dump(2);
     };
-    const auto run_tc = [&](std::vector<std::string> args, std::string* log_text = nullptr) {
-        args.insert(args.begin(), { "batch", "--session", (tc / "anchors.json").u8string() });
-        const Result<LaunchOptions> o = parse_launch_options(args);
-        if (!o.ok()) return -1;
-        std::FILE* out = std::tmpfile();
-        std::FILE* log = std::tmpfile();
-        const int  rc  = run_batch_command(o.value, out, log);
-        if (log_text) *log_text = read_all(log);
-        std::fclose(out);
-        std::fclose(log);
-        return rc;
+    const auto convert = [&](const fs::path& outp, std::vector<std::string> extra = {}, std::string* log_text = nullptr) {
+        std::vector<std::string> args { "convert", anchors_json.u8string(), "--out", outp.u8string() };
+        args.insert(args.end(), extra.begin(), extra.end());
+        return run(args, nullptr, log_text);
     };
     std::string tc_log;
-    expect(run_tc({ "--save-session", (dir / "tc.json").u8string() }, &tc_log) == 1
-             && tc_log.find("manifest.json がありません") != std::string::npos,
-           "batch cli: manifest.json が無く --base / --target も無ければ失敗");
+    expect(convert(dir / "tc.json", {}, &tc_log) == 1 && tc_log.find("manifest.json がありません") != std::string::npos,
+           "cli convert: manifest.json が無く --base / --target も無ければ失敗");
     write_manifest(16000.0, "b.wav");
     const fs::path tc_saved = dir / "tc.json";
-    expect(run_tc({ "--save-session", tc_saved.u8string() }) == 0, "batch cli: anchors.json と manifest.json からセッションを保存する");
+    expect(convert(tc_saved) == 0, "cli convert: anchors.json と manifest.json からセッションを保存する");
     {
         std::ifstream      is(tc_saved);
         std::ostringstream ss;
         ss << is.rdbuf();
         const Result<SessionFile> back = parse_session_json(ss.str());
-        const nlohmann::json      j    = nlohmann::json::parse(ss.str(), nullptr, false);
+        const nlohmann::json      j    = read_json(tc_saved);
         expect(back.ok() && !back.value.anchors_only && back.value.anchors.size() == 1
                  && near(back.value.anchors[0].target_t, 0.12) && fs::u8path(back.value.base_path) == dir / "a.wav"
                  && fs::u8path(back.value.target_path) == dir / "b.wav" && !j.is_discarded()
                  && j["tcmorph"]["source"] == "/x/edit.mat" && j["tcmorph"]["suggested_alpha"] == 0.5
                  && !j["tcmorph"].contains("objects"),
-               "batch cli: 保存したセッションは manifest の音声とアンカーを持ち、元の情報が tcmorph に残る");
+               "cli convert: 保存したセッションは manifest の音声とアンカーを持ち、元の情報が tcmorph に残る");
     }
-    expect(run_tc({ "--save-session", tc_saved.u8string() }) == 1, "batch cli: 保存先がすでにあれば中止する（変換でも）");
-    expect(run_tc({ "--count", "3", "--out", od.u8string(), "--prefix", "tc" }) == 0 && fs::exists(od / "tc_r050.wav", ec),
-           "batch cli: manifest.json から音声を決めて書き出す");
+    expect(convert(tc_saved) == 1, "cli convert: 保存先がすでにあれば中止する");
+    expect(run({ "export", tc_saved.u8string(), "--count", "3", "--out", od.u8string(), "--prefix", "tc" }) == 0
+             && fs::exists(od / "tc_r050.wav", ec),
+           "cli export: convert で作ったセッションから書き出す");
     {
-        std::ifstream      is(od / "tc_batch.json");
-        std::ostringstream ss;
-        ss << is.rdbuf();
-        const nlohmann::json j = nlohmann::json::parse(ss.str(), nullptr, false);
-        expect(!j.is_discarded() && j.contains("tcmorph") && j.contains("batch"), "batch cli: 書き出しの JSON にも tcmorph が残る");
+        const nlohmann::json j = read_json(od / "tc_batch.json");
+        expect(!j.is_discarded() && j.contains("tcmorph") && j.contains("batch"), "cli export: 書き出しの JSON にも tcmorph が残る");
     }
+    expect(run({ "export", anchors_json.u8string(), "--count", "3", "--out", od.u8string(), "--prefix", "raw" }, nullptr,
+               &tc_log)
+               == 1
+             && tc_log.find("先に convert") != std::string::npos,
+           "cli export: tcmorph のアンカー JSON は、convert するよう案内して失敗");
+    expect(convert(dir / "tc2.json", {}, &tc_log) == 0, "cli convert: 別の保存先なら変換できる");
+    expect(run({ "convert", (dir / "s.json").u8string(), "--out", (dir / "tc3.json").u8string() }, nullptr, &tc_log) == 1
+             && tc_log.find("そのまま") != std::string::npos,
+           "cli convert: セッションを渡せば、そのまま export に渡せると案内して失敗");
     write_manifest(48000.0, "b.wav");
-    expect(run_tc({ "--save-session", (dir / "tc2.json").u8string() }, &tc_log) == 1
-             && tc_log.find("標本化周波数が manifest.json と違います") != std::string::npos
-             && !fs::exists(dir / "tc2.json", ec),
-           "batch cli: 音声の標本化周波数が manifest と違えば失敗");
+    expect(convert(dir / "tc4.json", {}, &tc_log) == 1
+             && tc_log.find("標本化周波数が manifest.json と違います") != std::string::npos && !fs::exists(dir / "tc4.json", ec),
+           "cli convert: 音声の標本化周波数が manifest と違えば失敗");
     write_manifest(16000.0, "no_such.wav");
-    expect(run_tc({ "--save-session", (dir / "tc2.json").u8string() }, &tc_log) == 1
-             && tc_log.find("音声が見つかりません") != std::string::npos,
-           "batch cli: manifest の音声が見つからなければ失敗");
-    expect(run_tc({ "--base", sf.base_path, "--target", sf.target_path, "--save-session", (dir / "tc2.json").u8string() }) == 0,
-           "batch cli: --base / --target があれば manifest.json は読まない");
+    expect(convert(dir / "tc4.json", {}, &tc_log) == 1 && tc_log.find("音声が見つかりません") != std::string::npos,
+           "cli convert: manifest の音声が見つからなければ失敗");
+    expect(convert(dir / "tc4.json", { "--base", sf.base_path, "--target", sf.target_path }) == 0,
+           "cli convert: --base / --target があれば manifest.json は読まない");
+    expect(convert(dir / "tc5.json", { "--base", sf.base_path, "--target", (dir / "nope.wav").u8string() }) == 1,
+           "cli convert: --base / --target の音声が無ければ失敗");
 
     fs::remove_all(dir, ec);
 }
@@ -1345,7 +1355,7 @@ int main() {
     test_envelope_transport();
     test_batch_export();
     test_auto_anchor_pipeline();
-    test_batch_command();
+    test_cli_commands();
     test_session_json();
 
     if (g_failures > 0) {
