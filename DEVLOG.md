@@ -1170,10 +1170,18 @@ OT 由来の周波数アンカー）は従来法に対する優位性をあま�
 - 検証: ビルドとコアの単体テスト（計 175 項目）が通り、GUI が起動する。マージ前に `batch` で書き出した
   `.test/b-anch_fromBatch` と同じセッションから書き出した率 0 / 0.5 / 1 の WAV は、バイト単位で一致した。
 
+### 不具合修正: 試作の単体テストが MSVC でコンパイルできない（2026-11-17、`tests/core_test.cpp`）
+- 試作のブランチを push したときの ci #22 で、Windows のビルドが `core_test.cpp` のコンパイルで落ちていた
+  （`error C3493: 'fs' cannot be implicitly captured`）。マージの前に、このブランチの ci の結果を確かめていなかった。
+- 原因: `test_ot_anchors`・`test_restore_contrast`・`test_envelope_transport` のラムダが、関数のローカルの
+  `constexpr int fs` / `nbin` をキャプチャせずに使っていた。GCC は通すが、MSVC はキャプチャを求める。
+  この3つの変数を `static constexpr` にした（静的な変数はキャプチャしなくても使える）。
+- Windows のコンパイラは手元に無いので、直ったことは ci で確かめる。Linux ではビルドとコアの単体テストが通る。
+
 ### 版を 26.11.17 に更新（2026-11-17）
-- 上の「batch: tcmorph の anchors.json と manifest.json からセッションを作る」と「試作のブランチ
-  `experiment/morph-quality` を main にマージ」を入れた版を `v26.11.17` としてリリース。新しい日付の版なので
-  接尾辞は空に戻した。
+- 上の「batch: tcmorph の anchors.json と manifest.json からセッションを作る」「試作のブランチ
+  `experiment/morph-quality` を main にマージ」と、MSVC でのコンパイルの修正を入れた版を `v26.11.17` として
+  リリース。新しい日付の版なので接尾辞は空に戻した。
 
 ## MATLAB版との差分
 
@@ -1285,6 +1293,8 @@ install-win.bat          # Windows（-Yes で非対話）
 - **リリースは ci の結果を待たない**: `release.yml` はコアの単体テストを実行する（2026-11-16 から）が、
   Sanitizer のジョブと音声解析の結合テストは `ci.yml` にしかない。タグを打つ前に、そのコミットの ci が通っているかを
   確かめること（v26.11.16 は ci が落ちたままリリースされた）。
+- **ブランチは ci を確かめてからマージする**: ci は push ごとにブランチでも走る。マージの前に、そのブランチの ci が
+  通っているかを確かめること（2026-11-17、試作のブランチの Windows のビルドが落ちたままマージした）。
 
 ## 次にやること
 

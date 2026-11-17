@@ -760,7 +760,9 @@ MorphChannel make_flat_channel(const std::vector<double>& frame, int fs, int fra
 }
 
 void test_ot_anchors() {
-    constexpr int fs = 16000, nbin = 513;
+    // static にしておく。MSVC は、ラムダの中で使う constexpr のローカル変数にもキャプチャを求める
+    // （GCC は通す。CI の Windows のビルドで落ちた。2026-11-17）。
+    static constexpr int fs = 16000, nbin = 513;
     OtAnchorParams p;
     p.min_hz = 1000;
     p.max_hz = 5000;
@@ -916,7 +918,7 @@ std::shared_ptr<const MorphChannel> analyze_vowel(const std::vector<double>& for
 }
 
 void test_restore_contrast() {
-    constexpr int fs = 16000, nbin = 513;
+    static constexpr int fs = 16000, nbin = 513;    // static の理由は test_ot_anchors と同じ
     const auto    hz = [](int k) { return k * (fs / 2.0) / (nbin - 1); };
 
     // 3つとも同じなら何もしない。
@@ -985,7 +987,7 @@ void test_restore_contrast() {
 
 // ── 包絡を OT で補間する ────────────────────────────────────
 void test_envelope_transport() {
-    constexpr int nbin = 513;
+    static constexpr int nbin = 513;    // static の理由は test_ot_anchors と同じ
     // bin の位置 c に幅 8 bin の山を1つ持つ包絡（線形パワー）。
     const auto peak = [](double c) {
         std::vector<double> v(nbin);
