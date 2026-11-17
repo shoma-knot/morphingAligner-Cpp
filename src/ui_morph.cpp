@@ -65,12 +65,8 @@ bool draw_morph_sliders(App& app, bool& released) {
     bool post_changed = false;
     post_changed |= ImGui::RadioButton("平均（tcmorph のまま）", &mix, static_cast<int>(EnvelopeMix::Average));
     ImGui::SameLine();
-    post_changed |= ImGui::RadioButton("平均＋凹凸を戻す", &mix, static_cast<int>(EnvelopeMix::AverageRestore));
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("base と target の包絡を平均すると、山の位置や形のわずかな違いで平らになります\n"
-                          "（スペクトルの率が 0.5 付近で最も強い）。その分をフレームごとに戻します。\n"
-                          "ずれそのものは直さないので、ずれた山が二重にくっきりすることがあります。");
-    ImGui::SameLine();
+    // 「平均＋凹凸を戻す」（EnvelopeMix::AverageRestore）は、ユーザーの指示で一旦 UI から外した
+    // （2026-11-17）。処理（restore_envelope_contrast）と単体テストは残してある。
     post_changed |= ImGui::RadioButton("OT で補間", &mix, static_cast<int>(EnvelopeMix::Transport));
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("右の範囲の中だけ、平均の代わりに、揃えた base と target の包絡の間で質量を運んで補間します\n"

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -273,7 +274,10 @@ MorphOutput morphing_channels(const MorphChannel& B, const MorphChannel& T,
             }
         }
 
-        R.warnings = std::move(o.warnings);
+        // tcmorph の警告を先に並べる。代入で置き換えると、上で足した包絡の混ぜ方の警告が消える
+        // （2026-11-17 に直した）。
+        R.warnings.insert(R.warnings.begin(), std::make_move_iterator(o.warnings.begin()),
+                          std::make_move_iterator(o.warnings.end()));
         if (am.dropped_time > 0)
             R.warnings.push_back("範囲外または順序が逆の時間アンカーを "
                                  + std::to_string(am.dropped_time) + " 個読み飛ばしました");
