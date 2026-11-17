@@ -1,7 +1,7 @@
 #pragma once
 
 /// @file speech_controller.hpp
-/// @brief 音声解析（Python ツール）の実行と結果の反映、アンカー自動生成。
+/// @brief 音声解析（Python ツール）の実行と結果の反映、アンカー自動生成（OT による周波数アンカーを含む）。
 ///
 /// ツールは App::jobs.tools で実行する（他の操作を止めず、base/target を同時に走らせてよい）。
 /// 結果は完了回収時にメインスレッドで Track に反映し、実行中に音声が差し替わっていたら捨てる。
@@ -36,3 +36,17 @@ bool auto_anchors_ready(const App& app);
 
 // 音素アライメントとフォルマントの移動平均からアンカーを作り、既存のアンカーと置き換える。
 void run_auto_anchors(App& app);
+
+// OT による周波数アンカーを作れるか（base/target の解析が済み、時間アンカーが1本以上ある）。
+// Python は使わないので、音声解析の環境が無くても使える。
+bool ot_anchors_ready(const App& app);
+
+// 次に OT をかけると、直前にかける前のアンカーから作り直すか（直前の結果から変えていない）。
+bool ot_would_rerun(const App& app);
+
+// 次に OT をかけると捨てられる既存の周波数アンカーの数（全帯域のときだけ。帯ごとは捨てないので 0）。
+int ot_replaced_freq_count(const App& app);
+
+// 周波数アンカーを OT（分位点の対応）で作る。全帯域なら置き換え、帯ごとなら既存の周波数アンカーの
+// 間に足す（時間アンカーはどちらもそのまま）。直前の結果から変えていなければ、かける前から作り直す。
+void run_ot_freq_anchors(App& app);

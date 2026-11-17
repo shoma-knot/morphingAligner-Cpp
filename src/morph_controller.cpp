@@ -53,8 +53,9 @@ void request_morph(App& app) {
     const auto target  = m.ch[side_index(Side::Target)];
     const auto anchors = app.anchors;    // コピー（ジョブ中の編集と分離）
     const auto rates   = m.rates;
-    m.job              = std::async(std::launch::async, [base, target, anchors, rates] {
-        return morphing_channels(*base, *target, anchors, rates);
+    const auto post    = m.post;
+    m.job              = std::async(std::launch::async, [base, target, anchors, rates, post] {
+        return morphing_channels(*base, *target, anchors, rates, post);
     });
 }
 
@@ -100,9 +101,23 @@ void poll_morph_job(App& app) {
         if (!m.out.ok()) {
             applog::add(m.out.error);
         } else {
-            char buf[128];
+            char buf[160];
             std::snprintf(buf, sizeof buf, "モーフィング生成: %zu samples (%.2f ms)", m.out.wave.size(), ms);
-            applog::add(buf);
+            std::string line = buf;
+            if (m.out.contrast_gain > 0.0) {
+                std::snprintf(buf, sizeof buf, "（包絡の凹凸を平均 %.2f 倍に戻しました）", m.out.contrast_gain);
+                line += buf;
+            }
+            if (m.out.transport_frames > 0) {
+                std::snprintf(buf, sizeof buf, "（包絡を %.0f〜%.0f Hz で OT で補間: %d フレーム、帯の数 平均 %.1f）",
+                              m.post.transport_lo_hz, m.post.transport_hi_hz, m.out.transport_frames, m.out.transport_bands);
+                line += buf;
+            }
+            if (m.out.transport_skipped > 0) {
+                std::snprintf(buf, sizeof buf, "（周波数アンカーの逆転で %d フレームは平均のまま）", m.out.transport_skipped);
+                line += buf;
+            }
+            applog::add(line);
         }
         rebuild_morphed_texture(m);
         if (m.job_play && m.out.ok()) play_wave(app, m.out.wave, m.out.fs);
@@ -147,6 +162,7 @@ void start_batch_export(App& app) {
     req.target_path = app.target.path;
     req.transcript  = app.speech.transcript;
     req.settings    = m.batch;
+    req.post        = m.post;
 
     auto       progress = std::make_shared<BatchExportProgress>();
     const bool started  = app.jobs.ui.try_launch(

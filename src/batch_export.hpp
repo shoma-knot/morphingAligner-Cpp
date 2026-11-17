@@ -45,6 +45,7 @@ struct BatchExportRequest {
     // 設定の JSON の最上位に足す項目（JSON のオブジェクトの文字列。空なら足さない）。
     // batch の --auto-anchors が、アンカーを自動で作ったときの設定と音素列を残すのに使う。
     std::string manifest_extra;
+    MorphPostOptions    post;    // 合成前の仕上げ（包絡の混ぜ方）
 };
 
 // 進捗と中止。UI スレッドとワーカーで共有する（JobQueue はどちらも持たないため）。
@@ -74,19 +75,21 @@ MorphRates batch_point_rates(const BatchExportSettings& s, double rate);
 
 // 掃引の値 rate の WAV のファイル名。全軸なら "<接頭辞>_r050.wav"、選んだ軸だけなら
 // "<接頭辞>_fo+sl_r050.wav" のように軸の名前を入れる（同じフォルダで別の軸を掃引しても
-// 上書きし合わないように）。百分率を3桁のゼロ詰めにするのは、ファイル一覧で r010 が
+// 上書きし合わないように）。包絡の混ぜ方が平均のままでなければ、凹凸を戻すときは "_contrast"、
+// OT で補間するときは "_ot030_5000-12000"（圧縮 gamma の百分率と範囲 [Hz]）も入れる（混ぜ方を変えたものを同じフォルダに
+// 書き出して聴き比べられるように）。百分率を3桁のゼロ詰めにするのは、ファイル一覧で r010 が
 // r100 より先に並ぶようにするため。
-std::string batch_wav_name(const BatchExportSettings& s, double rate);
+std::string batch_wav_name(const BatchExportSettings& s, double rate, const MorphPostOptions& post = {});
 
-// 設定を残す JSON のファイル名（"<接頭辞>[_<軸>]_batch.json"）。
-std::string batch_manifest_name(const BatchExportSettings& s);
+// 設定を残す JSON のファイル名（"<接頭辞>[_<軸>][_contrast | _ot030_5000-12000]_batch.json"）。
+std::string batch_manifest_name(const BatchExportSettings& s, const MorphPostOptions& post = {});
 
 // 設定を検査する（本数の範囲・掃引する軸・固定値の範囲・出力先の存在・接頭辞の文字）。
 // 問題があれば理由を返す。
 Status validate_batch_settings(const BatchExportSettings& s);
 
 // 設定どおりに書き出したときに上書きすることになる既存ファイルの数（実行前の確認用）。
-int count_existing_batch_files(const BatchExportSettings& s);
+int count_existing_batch_files(const BatchExportSettings& s, const MorphPostOptions& post = {});
 
 // 率を変えながらモーフィングして WAV を書き出す（ブロックするのでワーカーで呼ぶこと）。
 // 1本書くごとに progress.done を進め、progress.cancel が立っていたらそこで止める。

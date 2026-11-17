@@ -29,14 +29,24 @@ std::string out_path(const std::string& dir, const std::string& name) {
 // BatchExportSettings::sweep の既定値（全軸）が軸の数と合っていること。
 static_assert(kMorphAxisCount == 5, "BatchExportSettings::sweep の初期値を軸の数に合わせること");
 
-// ファイル名に入れる軸の名前（全軸なら空、選んだ軸だけなら "_fo+sl"）。
-std::string axes_tag(const BatchExportSettings& s) {
-    if (batch_sweeps_all_axes(s)) return {};
+// ファイル名に入れる軸の名前（全軸なら空、選んだ軸だけなら "_fo+sl"）と、仕上げの印。
+std::string name_tag(const BatchExportSettings& s, const MorphPostOptions& post) {
     std::string tag;
-    for (int i = 0; i < kMorphAxisCount; ++i) {
-        if (!s.sweep[i]) continue;
-        tag += tag.empty() ? "_" : "+";
-        tag += kMorphAxes[i].key;
+    if (!batch_sweeps_all_axes(s)) {
+        for (int i = 0; i < kMorphAxisCount; ++i) {
+            if (!s.sweep[i]) continue;
+            tag += tag.empty() ? "_" : "+";
+            tag += kMorphAxes[i].key;
+        }
+    }
+    // 包絡の混ぜ方（平均のままなら何も入れない）。OT は圧縮の値も入れる（値を変えて聴き比べられるように）。
+    if (post.envelope == EnvelopeMix::AverageRestore) {
+        tag += "_contrast";
+    } else if (post.envelope == EnvelopeMix::Transport) {
+        char buf[48];
+        std::snprintf(buf, sizeof buf, "_ot%03d_%.0f-%.0f", static_cast<int>(std::lround(post.transport_gamma * 100.0)),
+                      post.transport_lo_hz, post.transport_hi_hz);
+        tag += buf;
     }
     return tag;
 }
@@ -72,14 +82,14 @@ MorphRates batch_point_rates(const BatchExportSettings& s, double rate) {
     return r;
 }
 
-std::string batch_wav_name(const BatchExportSettings& s, double rate) {
+std::string batch_wav_name(const BatchExportSettings& s, double rate, const MorphPostOptions& post) {
     char buf[16];
     std::snprintf(buf, sizeof buf, "_r%03d.wav", static_cast<int>(std::lround(rate * 100.0)));
-    return s.prefix + axes_tag(s) + buf;
+    return s.prefix + name_tag(s, post) + buf;
 }
 
-std::string batch_manifest_name(const BatchExportSettings& s) {
-    return s.prefix + axes_tag(s) + "_batch.json";
+std::string batch_manifest_name(const BatchExportSettings& s, const MorphPostOptions& post) {
+    return s.prefix + name_tag(s, post) + "_batch.json";
 }
 
 Status validate_batch_settings(const BatchExportSettings& s) {
@@ -107,13 +117,14 @@ Status validate_batch_settings(const BatchExportSettings& s) {
     return {};
 }
 
-int count_existing_batch_files(const BatchExportSettings& s) {
+int count_existing_batch_files(const BatchExportSettings& s, const MorphPostOptions& post) {
     if (s.dir.empty() || s.prefix.empty()) return 0;
     std::error_code ec;
     int             n = 0;
     for (double rate : batch_rates(s.count))
-        if (std::filesystem::exists(std::filesystem::u8path(out_path(s.dir, batch_wav_name(s, rate))), ec)) ++n;
-    if (s.write_manifest && std::filesystem::exists(std::filesystem::u8path(out_path(s.dir, batch_manifest_name(s))), ec))
+        if (std::filesystem::exists(std::filesystem::u8path(out_path(s.dir, batch_wav_name(s, rate, post))), ec)) ++n;
+    if (s.write_manifest
+        && std::filesystem::exists(std::filesystem::u8path(out_path(s.dir, batch_manifest_name(s, post))), ec))
         ++n;
     return n;
 }
@@ -141,7 +152,7 @@ BatchExportResult run_batch_export(const BatchExportRequest& req, BatchExportPro
         // 1本ぶんの結果は morphed の f0/sp/ap も抱えていて大きい。ここで寿命を切り、
         // 書き出したら捨てる（全本ぶん溜めると簡単に GB 級になる）。
         const MorphRates  rates = batch_point_rates(s, rate);
-        const MorphOutput o     = morphing_channels(*req.base, *req.target, req.anchors, rates);
+        const MorphOutput o     = morphing_channels(*req.base, *req.target, req.anchors, rates, req.post);
         if (!o.ok()) {
             R.error = o.error;
             return R;
@@ -149,7 +160,7 @@ BatchExportResult run_batch_export(const BatchExportRequest& req, BatchExportPro
         // 警告はアンカー由来なので率によらず同じ内容になる。1本目のものだけ持ち帰る。
         if (R.written == 0) R.warnings = o.warnings;
 
-        const std::string name = batch_wav_name(s, rate);
+        const std::string name = batch_wav_name(s, rate, req.post);
         if (const Status st = write_wav(out_path(s.dir, name), o.wave, o.fs); !st.ok()) {
             R.error = "WAV 保存失敗: " + st.error;
             return R;
@@ -183,11 +194,18 @@ BatchExportResult run_batch_export(const BatchExportRequest& req, BatchExportPro
                 const nlohmann::json extra = nlohmann::json::parse(req.manifest_extra);
                 for (const auto& [k, v] : extra.items()) j[k] = v;
             }
-            j["batch"] = { { "count", s.count },           { "sweep", std::move(sweep) },
-                           { "fixed", std::move(fixed) },  { "canceled", R.canceled },
+            j["batch"] = { { "count", s.count },
+                           { "sweep", std::move(sweep) },
+                           { "fixed", std::move(fixed) },
+                           { "envelope_mix", req.post.envelope == EnvelopeMix::AverageRestore ? "average_restore"
+                                             : req.post.envelope == EnvelopeMix::Transport    ? "transport"
+                                                                                              : "average" },
+                           { "transport_gamma", req.post.transport_gamma },
+                           { "transport_range_hz", { req.post.transport_lo_hz, req.post.transport_hi_hz } },
+                           { "canceled", R.canceled },
                            { "files", std::move(files) } };
 
-            const std::string path = out_path(s.dir, batch_manifest_name(s));
+            const std::string path = out_path(s.dir, batch_manifest_name(s, req.post));
             std::ofstream     os(std::filesystem::u8path(path), std::ios::binary);
             if (!os) {
                 R.error = "設定の JSON を書けません: " + path;

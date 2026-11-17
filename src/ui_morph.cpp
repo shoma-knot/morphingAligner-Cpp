@@ -54,6 +54,58 @@ bool draw_morph_sliders(App& app, bool& released) {
     ImGui::Checkbox("離したら再生", &app.morph.autoplay);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("スライダーのつまみを離したら、その率で合成し直して自動で再生します。");
+
+    // 2行目: 包絡の混ぜ方（試作）。切り替えたら合成し直す（「離したら再生」がオンなら再生もして、
+    // すぐ聴き比べられるようにする）。圧縮 γ はつまみの動かし方を率のスライダーと同じ扱いにする。
+    MorphPostOptions& post = app.morph.post;
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("包絡の混ぜ方");
+    ImGui::SameLine();
+    int  mix          = static_cast<int>(post.envelope);
+    bool post_changed = false;
+    post_changed |= ImGui::RadioButton("平均（tcmorph のまま）", &mix, static_cast<int>(EnvelopeMix::Average));
+    ImGui::SameLine();
+    // 「平均＋凹凸を戻す」（EnvelopeMix::AverageRestore）は、ユーザーの指示で一旦 UI から外した
+    // （2026-11-17）。処理（restore_envelope_contrast）と単体テストは残してある。
+    post_changed |= ImGui::RadioButton("OT で補間", &mix, static_cast<int>(EnvelopeMix::Transport));
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("右の範囲の中だけ、平均の代わりに、揃えた base と target の包絡の間で質量を運んで補間します\n"
+                          "（1次元の最適輸送）。範囲の外は平均のままです。ずれた山は、平らな2つの山ではなく中間の位置の\n"
+                          "1つの山になります。周波数アンカーがあれば、その構造ごとの帯の中だけで運びます。");
+    post.envelope = static_cast<EnvelopeMix>(mix);
+
+    ImGui::SameLine();
+    ImGui::BeginDisabled(post.envelope != EnvelopeMix::Transport);
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6.0f);
+    const bool gamma_changed = ImGui::SliderScalar("##ot_gamma", ImGuiDataType_Double, &post.transport_gamma,
+                                                   &MorphPostOptions::kGammaMin, &MorphPostOptions::kGammaMax, "γ %.2f");
+    const bool gamma_done = ImGui::IsItemDeactivatedAfterEdit();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("OT で補間するときの質量 = パワー^γ。1 ならパワーそのもの（強い山で運び方がほぼ決まる）。\n"
+                          "小さくするほど、弱い山や谷の形も運び方に効きます。Ctrl+クリックで数値を入力できます。");
+    // 範囲（Hz は対数で動かす）。下限 < 上限を保つ。
+    ImGui::SameLine();
+    const double lo_max = post.transport_hi_hz - 100.0, hi_min = post.transport_lo_hz + 100.0;
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6.5f);
+    bool range_changed = ImGui::SliderScalar("##ot_lo", ImGuiDataType_Double, &post.transport_lo_hz,
+                                             &MorphPostOptions::kRangeMinHz, &lo_max, "%.0f Hz", ImGuiSliderFlags_Logarithmic);
+    bool range_done = ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+    ImGui::TextUnformatted("〜");
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6.5f);
+    range_changed |= ImGui::SliderScalar("##ot_hi", ImGuiDataType_Double, &post.transport_hi_hz, &hi_min,
+                                         &MorphPostOptions::kRangeMaxHz, "%.0f Hz", ImGuiSliderFlags_Logarithmic);
+    range_done |= ImGui::IsItemDeactivatedAfterEdit();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("OT で補間する範囲。既定は 5000〜12000 Hz（5 kHz 以下は平均のまま）。\n"
+                          "上限はナイキスト周波数で切り詰めます。300 Hz〜5500 Hz にすると、以前の OT と同じ範囲になります。");
+    ImGui::EndDisabled();
+    released |= gamma_done || range_done;
+    const bool gamma_or_range_changed = gamma_changed || range_changed;
+    const bool gamma_or_range_done    = gamma_done || range_done;
+    if (post_changed || gamma_or_range_changed || gamma_or_range_done)
+        app.morph.batch_existing = -1;    // 連続書き出しのファイル名が変わる
     ImGui::Separator();
 
     // スライダーを中央揃えにする。バー位置が行間で揃うよう、最長ラベルを基準に
@@ -84,6 +136,11 @@ bool draw_morph_sliders(App& app, bool& released) {
         trigger |= rate_slider("非周期性 (ap)", app.morph.rates.ap, slider_w, app.morph.realtime, released);
     }
     ImGui::Unindent(offset);
+    if (post_changed) {
+        trigger  = true;
+        released = true;
+    }
+    if (app.morph.realtime ? gamma_or_range_changed : gamma_or_range_done) trigger = true;
     return trigger;
 }
 
@@ -372,7 +429,7 @@ void draw_batch_dialog(App& app) {
 
     // 上書きの数を数えるのはディスクを見るので、設定が変わったときだけにする。
     if (changed) m.batch_existing = -1;
-    if (m.batch_existing < 0 && !running) m.batch_existing = count_existing_batch_files(m.batch);
+    if (m.batch_existing < 0 && !running) m.batch_existing = count_existing_batch_files(m.batch, m.post);
 
     // ── 下端: 結果の見込みと操作 ──
     ImGui::Separator();
@@ -383,7 +440,8 @@ void draw_batch_dialog(App& app) {
     } else {
         const std::vector<double> rates = batch_rates(m.batch.count);
         ImGui::Text("%d ファイル: %s … %s", static_cast<int>(rates.size()),
-                    batch_wav_name(m.batch, rates.front()).c_str(), batch_wav_name(m.batch, rates.back()).c_str());
+                    batch_wav_name(m.batch, rates.front(), m.post).c_str(),
+                    batch_wav_name(m.batch, rates.back(), m.post).c_str());
         // 所要時間は直前の対話的な生成の実測から見積もる（未生成なら出せない）。
         if (m.last_ms > 0.0)
             ImGui::TextDisabled("直前の生成 %.0f ms/本 → 所要 約 %.0f 秒", m.last_ms,
@@ -447,9 +505,10 @@ void draw_morph_tab(App& app) {
     const float wpy     = ImGui::GetStyle().WindowPadding.y;
     // 出力設定はボタン1行ぶんの高さ（子ウィンドウのパディング＋枠込み）。
     const float out_h = fh + wpy * 2.0f + 2.0f;
-    // スライダー部は「ラベル行＋区切り＋スライダー5本」の固定高さ。
+    // スライダー部は「ラベル行＋包絡の混ぜ方の行＋区切り＋スライダー5本」の固定高さ。
     // 一括操作の切替（1本/5本）でレイアウトが変わらないよう、常に5本分を確保する。
     const float slider_h = (fh + spacing)              // ラベル＋チェックボックス行
+                         + (fh + spacing)              // 包絡の混ぜ方の行
                          + (1.0f + spacing)            // セパレータ
                          + (5 * fh + 4 * spacing)      // スライダー5本
                          + wpy * 2.0f + 2.0f;          // 子ウィンドウのパディング＋枠

@@ -21,6 +21,7 @@
 #include "gl_texture.hpp"
 #include "jobs.hpp"
 #include "morphing.hpp"    // MorphRates / MorphOutput
+#include "ot_anchors.hpp"    // OtAnchorParams
 #include "speech_tools.hpp"    // Formants / Segmentation
 
 // スペクトログラムのテクスチャと画面上のカラースケールで共有するカラーマップ。
@@ -92,6 +93,7 @@ struct MorphState {
     bool       link     = true;     // 全軸を一括操作するか
     bool       realtime = true;     // スライダー操作中も逐次再合成するか（OFF=離した時のみ）
     bool       autoplay = false;    // スライダーのつまみを離したら自動で再生するか
+    MorphPostOptions post;          // 合成前の仕上げ（包絡の凹凸を戻す。試作）
 
     // テクスチャを作った base/target の解析チャンネル（添字は side_index）。Track::channel と
     // 同じものを指す。タブ表示時に Track と食い違っていたら取り直してテクスチャを作り直す。
@@ -168,6 +170,17 @@ struct ViewState {
     std::string license_text;
 };
 
+// OT による周波数アンカー（試作）の設定と、直前にかけたときのアンカー。
+// 直前の結果から変えずにもう一度かけたら、かける前のアンカーから作り直す（run_ot_freq_anchors）。
+// 帯ごとのとき、前回足した点が次の回の帯の端になって点が増え続けるのを防ぐため
+// （圧縮などの設定を変えて何度もかけ直す使い方が多い）。
+struct OtState {
+    OtAnchorParams      params;
+    std::vector<Anchor> before;    // 直前に OT をかける前のアンカー
+    std::vector<Anchor> after;     // そのときの結果
+    bool                has_last = false;
+};
+
 // 実行中の非同期ジョブ（モーフィングは MorphState::job で別に持つ）。
 struct Jobs {
     // ファイルダイアログや音声の解析など。同時に1本に限る（try_launch）。実行中はタブの
@@ -183,6 +196,7 @@ struct App {
     Track               base { "base" };
     Track               target { "target" };
     std::vector<Anchor> anchors;    // base と target の対応
+    OtState             ot;         // OT による周波数アンカーの生成（試作）
 
     SpeechState speech;
     MorphState  morph;

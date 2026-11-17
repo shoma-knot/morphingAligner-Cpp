@@ -11,6 +11,7 @@
 #include "auto_anchors.hpp"
 #include "formant_smoothing.hpp"
 #include "log.hpp"
+#include "ot_anchors.hpp"
 #include "speech_tools.hpp"
 
 namespace {
@@ -191,4 +192,70 @@ void run_auto_anchors(App& app) {
                   static_cast<int>(app.anchors.size()), r.n_freq, app.speech.auto_anchor_divisions,
                   app.speech.formant_ma_ms);
     applog::add(buf);
+}
+
+bool ot_anchors_ready(const App& app) {
+    return app.base.channel && app.target.channel && !app.anchors.empty();
+}
+
+namespace {
+
+bool same_anchors(const std::vector<Anchor>& x, const std::vector<Anchor>& y) {
+    if (x.size() != y.size()) return false;
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        const Anchor &a = x[i], &b = y[i];
+        if (a.base_t != b.base_t || a.target_t != b.target_t || a.freqs.size() != b.freqs.size()) return false;
+        for (std::size_t j = 0; j < a.freqs.size(); ++j)
+            if (a.freqs[j].base_f != b.freqs[j].base_f || a.freqs[j].target_f != b.freqs[j].target_f) return false;
+    }
+    return true;
+}
+
+// 次に OT をかけるときの入力（直前の結果から変えていなければ、かける前のアンカー）。
+const std::vector<Anchor>& ot_input(const App& app) {
+    return ot_would_rerun(app) ? app.ot.before : app.anchors;
+}
+
+}    // namespace
+
+bool ot_would_rerun(const App& app) {
+    return app.ot.has_last && same_anchors(app.anchors, app.ot.after);
+}
+
+int ot_replaced_freq_count(const App& app) {
+    if (app.ot.params.mode != OtMode::Global) return 0;
+    int n = 0;
+    for (const Anchor& a : ot_input(app)) n += static_cast<int>(a.freqs.size());
+    return n;
+}
+
+// 生成の中身は ot_anchors.cpp。
+void run_ot_freq_anchors(App& app) {
+    if (!ot_anchors_ready(app)) return;
+    const OtAnchorParams&     p     = app.ot.params;
+    const bool                rerun = ot_would_rerun(app);
+    const std::vector<Anchor> input = ot_input(app);    // コピー（下で before を書き換えるため）
+    OtAnchorResult            r     = make_ot_freq_anchors(*app.base.channel, *app.target.channel, input, p);
+    for (const std::string& w : r.warnings) applog::add("警告: " + w);
+    if (!r.ok()) {
+        applog::add("OT 周波数アンカーの生成失敗: " + r.error);
+        return;
+    }
+    app.ot.before   = input;
+    app.ot.after    = r.anchors;
+    app.ot.has_last = true;
+    app.anchors     = std::move(r.anchors);
+
+    char buf[256];
+    if (p.mode == OtMode::Bands)
+        std::snprintf(buf, sizeof buf,
+                      "OT 周波数アンカー（帯ごと）: 時間アンカー %d 本、既存の周波数アンカー %d 個の間に計 %d 個を追加"
+                      "（帯の本数 %d、圧縮 %.2f、%.0f〜%.0f Hz）",
+                      static_cast<int>(app.anchors.size()), r.n_edges, r.n_freq, p.band_count, p.gamma, p.min_hz,
+                      p.max_hz);
+    else
+        std::snprintf(buf, sizeof buf, "OT 周波数アンカー（全帯域）: 時間アンカー %d 本に計 %d 個（本数 %d、圧縮 %.2f、%.0f〜%.0f Hz）",
+                      static_cast<int>(app.anchors.size()), r.n_freq, p.count, p.gamma, p.min_hz, p.max_hz);
+    applog::add(buf);
+    if (rerun) applog::add("  （直前の結果から変えていなかったので、OT をかける前のアンカーから作り直しました）");
 }

@@ -60,6 +60,95 @@ void draw_auto_anchor_controls(App& app) {
     }
 }
 
+// 見出し（左）と入力欄（右いっぱい）の1行。見出しは入力欄と縦位置を揃える。
+void row_label(const char* label) {
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-1);
+}
+
+// 「OT 周波数アンカー（試作）」: 既存の時間アンカーの時刻ごとに、base/target の包絡の分位点を
+// 対応させて周波数アンカーを作る（1次元の最適輸送。中身は ot_anchors.cpp）。Python は使わない。
+// 全帯域なら置き換え、帯ごとなら既存の周波数アンカー（フォルマントの対応など）の間に足す。
+void draw_ot_anchor_controls(App& app) {
+    if (!ImGui::CollapsingHeader("OT 周波数アンカー（試作）")) return;
+    OtAnchorParams& p = app.ot.params;
+
+    int mode = p.mode == OtMode::Bands ? 1 : 0;
+    ImGui::RadioButton("全帯域", &mode, 0);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("範囲全体で対応させ、既存の周波数アンカーは置き換えます。\n"
+                          "フォルマントの強さの比が base と target で違うと、山の対応がずれることがあります。");
+    ImGui::SameLine();
+    ImGui::RadioButton("帯ごと", &mode, 1);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("既存の周波数アンカー（アンカー自動生成のフォルマントなど）で周波数軸を帯に区切り、\n"
+                          "対応する帯の中だけで対応させて、帯の間に周波数アンカーを足します。\n"
+                          "既存の周波数アンカーは残します（山どうしの対応はそのまま）。\n"
+                          "周波数アンカーが無い時刻は、範囲全体を1つの帯として扱います。");
+    p.mode = mode == 1 ? OtMode::Bands : OtMode::Global;
+
+    if (p.mode == OtMode::Global) {
+        row_label("本数");
+        if (ImGui::InputInt("##ot_count", &p.count, 1, 1))
+            p.count = std::clamp(p.count, OtAnchorParams::kCountMin, OtAnchorParams::kCountMax);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("時間アンカー1本あたりの周波数アンカーの数（%d〜%d）。\n"
+                              "包絡の質量を本数+1 等分する点どうしを対応させます。",
+                              OtAnchorParams::kCountMin, OtAnchorParams::kCountMax);
+    } else {
+        row_label("帯の本数");
+        if (ImGui::InputInt("##ot_band_count", &p.band_count, 1, 1))
+            p.band_count = std::clamp(p.band_count, OtAnchorParams::kBandCountMin, OtAnchorParams::kBandCountMax);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("帯1つあたりに足す周波数アンカーの数（%d〜%d）。\n"
+                              "帯の中の質量を本数+1 等分する点どうしを対応させます。",
+                              OtAnchorParams::kBandCountMin, OtAnchorParams::kBandCountMax);
+    }
+
+    row_label("圧縮");
+    ImGui::SliderScalar("##ot_gamma", ImGuiDataType_Double, &p.gamma, &OtAnchorParams::kGammaMin,
+                        &OtAnchorParams::kGammaMax, "γ = %.2f");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("質量 = パワー^γ。1 ならパワーそのもの（強い低域のフォルマントで対応がほぼ決まる）。\n"
+                          "小さくするほど、弱い高域のフォルマントも対応に効くようになります。");
+
+    row_label("下限");
+    if (ImGui::InputDouble("##ot_min", &p.min_hz, 50.0, 500.0, "%.0f Hz")) p.min_hz = std::max(0.0, p.min_hz);
+    row_label("上限");
+    if (ImGui::InputDouble("##ot_max", &p.max_hz, 50.0, 500.0, "%.0f Hz")) p.max_hz = std::max(p.min_hz + 1.0, p.max_hz);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("この範囲の包絡だけを質量として使います。帯ごとのときは、いちばん下と上の帯の端にもなります。");
+
+    const char* kConfirm = "OT 周波数アンカー";
+    ImGui::BeginDisabled(!ot_anchors_ready(app));
+    if (ImGui::Button("周波数アンカーを OT で作る", ImVec2(-1, 0))) {
+        if (ot_replaced_freq_count(app) == 0) run_ot_freq_anchors(app);
+        else ImGui::OpenPopup(kConfirm);
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("各時間アンカーの時刻で、base / target のスペクトル包絡を周波数上の質量の分布とみなし、\n"
+                          "同じ累積質量に当たる周波数どうしを周波数アンカーにします（1次元の最適輸送）。\n"
+                          "時間アンカーはそのままです。\n"
+                          "base / target を読み込み、時間アンカーを1本以上打つと押せます（Python は不要）。");
+    // 直前の結果から変えていなければ、かける前のアンカーから作り直す（設定を変えてかけ直せる）。
+    if (ot_would_rerun(app)) ImGui::TextDisabled("前回 OT をかける前のアンカーから作り直します");
+
+    if (ImGui::BeginPopupModal(kConfirm, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("既存の周波数アンカー %d 個を、OT で作ったものに置き換えます（時間アンカーはそのまま）。",
+                    ot_replaced_freq_count(app));
+        if (ImGui::Button("置き換える")) {
+            run_ot_freq_anchors(app);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("キャンセル")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+}
+
 // 左パネルの「音声解析（Python）」: 表示切替、共通の書き起こしと音素アライメント、設定。
 // フォルマントは読み込み時に自動で推定する（ensure_formants）ので、ここでは表示の切替だけ。
 void draw_speech_tools_panel(App& app) {
@@ -388,6 +477,7 @@ void draw_left_panel(App& app) {
     ImGui::BeginDisabled(app.anchors.empty());
     if (right_aligned_button("全消去")) app.anchors.clear();
     ImGui::EndDisabled();
+    draw_ot_anchor_controls(app);
 
     // ── 表示設定 ─────────────────────────────────────────────
     ImGui::Spacing();
