@@ -107,6 +107,16 @@ Result<MorphChannel> analyze_channel(const std::string& path) {
     }
 }
 
+Result<int> read_sample_rate(const std::string& path) {
+    try {
+        // ヘッダだけ読む口が無いのでデコードする（WORLD の解析に比べれば軽い）。
+        const ma::decoder dec { path };
+        return Result<int>::success(static_cast<int>(dec.sample_rate()));
+    } catch (const std::exception& e) {
+        return Result<int>::failure(e.what());
+    }
+}
+
 F0Curve make_f0_curve(const MorphChannel& c) {
     F0Curve out;
     if (c.empty()) return out;

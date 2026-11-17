@@ -6,6 +6,8 @@ build
 audio
 .test
 .tmp
+# 評価用の素材（音声・MATLAB の .mat・tcmorph の書き出しなど。大きく、手元でだけ使う）
+.eval
 .venv
 # Python ツール（python/speech_tools.py）用の micromamba 環境
 .env

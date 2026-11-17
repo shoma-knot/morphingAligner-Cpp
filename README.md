@@ -119,6 +119,7 @@ morphingAlignerCpp batch --session work.json --count 7 --out stim/              
 morphingAlignerCpp batch --session work.json --count 11 --out stim/ --sweep fo --fixed tx=0.5   # F0 だけを変える
 morphingAlignerCpp batch --base a.wav --target b.wav --transcript はい --auto-anchors --count 7 --out stim/   # アンカーを自動で作って書き出す
 morphingAlignerCpp batch --base a.wav --target b.wav --transcript はい --auto-anchors --save-session auto.json  # アンカーを作って保存するだけ
+morphingAlignerCpp batch --session for-cpp/anchors.json --save-session work.json   # tcmorph の anchors.json と manifest.json をセッションにする
 ```
 
 `gui` のオプション:
@@ -134,10 +135,10 @@ morphingAlignerCpp batch --base a.wav --target b.wav --transcript はい --auto-
 
 | オプション | 内容 |
 |---|---|
-| `--session <JSON>` | 音声のパスとアンカーを含むセッション。tcmorph のアンカー JSON なら `--base` / `--target` も指定する |
+| `--session <JSON>` | 音声のパスとアンカーを含むセッション。tcmorph のアンカー JSON なら、音声は `--base` / `--target` か、同じフォルダの `manifest.json` から決める |
 | `--base <音声>` / `--target <音声>` | base / target の音声（両方を指定する） |
-| `--count <本数>` | 書き出す本数（両端を含む。2〜101。必須） |
-| `--out <フォルダ>` | 出力先（無ければ作る。必須） |
+| `--count <本数>` | 書き出す本数（両端を含む。2〜101。`--out` と一緒に指定する） |
+| `--out <フォルダ>` | 出力先（無ければ作る） |
 | `--prefix <接頭辞>` | ファイル名の接頭辞（既定: base と target のファイル名をつないだもの） |
 | `--sweep <軸,...>` | 変化させる軸（`tx`, `fx`, `fo`, `sl`, `ap` をコンマで区切る。既定: `all`） |
 | `--fixed <軸=率,...>` | 変化させない軸の率（既定: 0） |
@@ -149,7 +150,7 @@ morphingAlignerCpp batch --base a.wav --target b.wav --transcript はい --auto-
 | `--formant-window <ms>` | フォルマントの移動平均の窓幅（5〜500。既定: 50） |
 | `--max-formant <Hz>` | 最大フォルマント（base / target 共通。2000〜10000。既定: 5500） |
 | `--acoustic-model <名前>` / `--dictionary <名前>` | MFA の音響モデル / 辞書（既定: `japanese_mfa`） |
-| `--save-session <JSON>` | 作ったアンカーをセッションとして保存する。`--count` / `--out` を省けば、保存して止める |
+| `--save-session <JSON>` | 使うアンカーと音声をセッションとして保存する。`--count` / `--out` を省けば、保存して止める |
 
 - 共通: `--version` / `-h`, `--help`（サブコマンドの後に書けば、そのサブコマンドの説明）。
 - 値は `--base a.wav` と `--base=a.wav` のどちらでも書けます。相対パスは起動したときのカレントディレクトリが基準です。
@@ -158,6 +159,11 @@ morphingAlignerCpp batch --base a.wav --target b.wav --transcript はい --auto-
   保存したセッションを渡してください）。`--auto-anchors` を付けると、セッションのアンカーは使わずに作り直します。
   自動のアンカーは誤ることがあるので、`--save-session` で保存したものを GUI で開いて確かめてから書き出すと安心です。
   生成の設定と音素列は、保存したセッションと書き出しの JSON の `auto_anchors` に残ります。
+- `batch` に tcmorph の `anchors.json`（`mat2json.py` の出力）を `--base` / `--target` なしで渡すと、同じフォルダの
+  `manifest.json` の `fileFullPath` と `fileName` から音声を決めます（相対パスは `manifest.json` のフォルダが基準）。
+  `manifest.json` が無いとき、音声が見つからないとき、音声の標本化周波数が manifest と違うときは、エラーで止まります。
+  元の `.mat` のパスなど manifest の情報は、保存したセッションと書き出しの JSON の `tcmorph` に残ります。
+  WORLD パラメータ（npy）は使わず、音声はこのアプリで解析し直します。
 - 経過は標準エラーに、書き出したファイル（と保存したセッション）の一覧は標準出力に出ます。終了コードは
   0 = 成功、1 = 処理の失敗、2 = 引数の誤り、130 = Ctrl+C で中止です。
 - フォント・ライセンスの条文・音声解析の環境（`.env`）はカレントディレクトリ（とその1つ上）から探すので、

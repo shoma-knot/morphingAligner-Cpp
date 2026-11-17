@@ -19,6 +19,7 @@
 #include "analysis.hpp"
 #include "batch_export.hpp"
 #include "session_io.hpp"
+#include "tcmorph_manifest.hpp"
 
 namespace {
 
@@ -58,7 +59,29 @@ void say(std::FILE* f, const std::string& s) {
 struct BatchInput {
     std::string         base_path, target_path, transcript;
     std::vector<Anchor> anchors;
+    // 保存するセッションと書き出しの JSON に足す項目（manifest.json から音声を決めたときの "tcmorph" など）。
+    nlohmann::json records = nlohmann::json::object();
 };
+
+// tcmorph のアンカー JSON と同じフォルダの manifest.json から、音声を決める。標本化周波数が
+// manifest と違えば、別の音声を指しているおそれがあるので誤りにする。
+Status apply_manifest(const std::string& anchors_path, BatchInput& in, std::FILE* log) {
+    const Result<TcmorphManifest> m = read_tcmorph_manifest(anchors_path);
+    if (!m.ok()) return Status::failure(m.error);
+    const Result<int> bfs = read_sample_rate(m.value.base_path);
+    if (!bfs.ok()) return Status::failure("base の音声を読めません: " + m.value.base_path + "（" + bfs.error + "）");
+    const Result<int> tfs = read_sample_rate(m.value.target_path);
+    if (!tfs.ok()) return Status::failure("target の音声を読めません: " + m.value.target_path + "（" + tfs.error + "）");
+    if (const Status st = check_manifest_sample_rates(m.value, bfs.value, tfs.value); !st.ok()) return st;
+
+    in.base_path          = m.value.base_path;
+    in.target_path        = m.value.target_path;
+    in.records["tcmorph"] = nlohmann::json::parse(m.value.record);
+    say(log, "manifest.json から音声を決めました: " + m.value.path);
+    say(log, "  base:   " + in.base_path);
+    say(log, "  target: " + in.target_path);
+    return {};
+}
 
 // --session / --base / --target / --transcript から、使う音声・アンカー・書き起こしを決める。
 Result<BatchInput> resolve_input(const LaunchOptions& o, std::FILE* log) {
@@ -81,8 +104,10 @@ Result<BatchInput> resolve_input(const LaunchOptions& o, std::FILE* log) {
             if (auto_anchors)
                 return Result<BatchInput>::failure("--auto-anchors と tcmorph のアンカー JSON は同時に使えません"
                                                    "（アンカーの指定が2通りになるため）");
+            // --base / --target が無ければ、同じフォルダの manifest.json から音声を決める（あれば --base / --target を優先）。
             if (o.base.empty())
-                return Result<BatchInput>::failure("tcmorph のアンカー JSON には --base と --target が要ります: " + o.session);
+                if (const Status st = apply_manifest(o.session, in, log); !st.ok())
+                    return Result<BatchInput>::failure(st.error);
         } else {
             // GUI の起動時の読み込みと同じく、どちらの音声を使うか決められないので誤りにする。
             if (!o.base.empty())
@@ -108,9 +133,10 @@ std::string default_prefix(const BatchInput& in) {
          + std::filesystem::u8path(in.target_path).stem().u8string();
 }
 
-// 作ったアンカーをセッション形式で保存する（"auto_anchors" に生成の設定と音素列を足す）。
+// アンカーをセッション形式で保存する（records の項目を足す。"auto_anchors" なら生成の設定と音素列、
+// "tcmorph" なら元の anchors.json / manifest.json）。
 Status save_session_file(const std::string& path, const BatchInput& in, const std::vector<Anchor>& anchors,
-                         const std::string& record) {
+                         const nlohmann::json& records) {
     try {
         SessionFile sf;
         sf.base_path     = in.base_path;
@@ -118,7 +144,7 @@ Status save_session_file(const std::string& path, const BatchInput& in, const st
         sf.transcript    = in.transcript;
         sf.anchors       = anchors;
         nlohmann::json j = nlohmann::json::parse(session_to_json(sf));
-        j["auto_anchors"] = nlohmann::json::parse(record);
+        for (const auto& [k, v] : records.items()) j[k] = v;
         std::error_code ec;
         std::filesystem::create_directories(std::filesystem::u8path(path).parent_path(), ec);
         std::ofstream os(std::filesystem::u8path(path), std::ios::binary);
@@ -136,7 +162,7 @@ int run_batch_command(const LaunchOptions& opts, std::FILE* out, std::FILE* log,
     const BatchCliOptions& b = opts.batch;
     SigintScope            sigint;
 
-    const Result<BatchInput> in = resolve_input(opts, log);
+    Result<BatchInput> in = resolve_input(opts, log);
     if (!in.ok()) {
         say(log, "エラー: " + in.error);
         return kExitFailed;
@@ -176,10 +202,24 @@ int run_batch_command(const LaunchOptions& opts, std::FILE* out, std::FILE* log,
         }
     }
 
+    BatchInput& input = in.value;
+    // アンカーを作り直さないなら、解析より前に保存してしまう（保存するだけなら解析は要らない）。
+    const auto save = [&](const std::vector<Anchor>& anchors) {
+        if (const Status st = save_session_file(b.save_session, input, anchors, input.records); !st.ok()) {
+            say(log, "エラー: セッションを保存できません: " + st.error);
+            return false;
+        }
+        say(out, b.save_session);
+        say(log, "セッションを保存しました: " + b.save_session);
+        return true;
+    };
+    if (!b.auto_anchors && !b.save_session.empty() && !save(input.anchors)) return kExitFailed;
+    if (!b.auto_anchors && !b.exports()) return 0;    // セッションを保存するだけ
+
     // 解析（GUI で音声を開いたときと同じ WORLD の解析）。
     BatchExportRequest req;
-    for (const auto& [name, path, dst] : { std::tuple { "base", in.value.base_path, &req.base },
-                                           std::tuple { "target", in.value.target_path, &req.target } }) {
+    for (const auto& [name, path, dst] : { std::tuple { "base", input.base_path, &req.base },
+                                           std::tuple { "target", input.target_path, &req.target } }) {
         say(log, std::string { name } + " を解析中: " + path);
         Result<MorphChannel> c = analyze_channel(path);
         if (!c.ok()) {
@@ -188,16 +228,16 @@ int run_batch_command(const LaunchOptions& opts, std::FILE* out, std::FILE* log,
         }
         *dst = std::make_shared<const MorphChannel>(std::move(c.value));
     }
-    req.anchors     = in.value.anchors;
-    req.base_path   = in.value.base_path;
-    req.target_path = in.value.target_path;
-    req.transcript  = in.value.transcript;
+    req.anchors     = input.anchors;
+    req.base_path   = input.base_path;
+    req.target_path = input.target_path;
+    req.transcript  = input.transcript;
     req.settings    = s;
 
     // --auto-anchors: 音素アライメントとフォルマントからアンカーを作る。
     if (b.auto_anchors) {
         AutoAnchorSettings as = b.auto_settings;
-        as.transcript         = in.value.transcript;
+        as.transcript         = input.transcript;
         const AutoAnchorPipelineResult r =
           build_auto_anchors(AutoAnchorSource { req.base_path, req.base->duration },
                              AutoAnchorSource { req.target_path, req.target->duration }, as,
@@ -212,20 +252,12 @@ int run_batch_command(const LaunchOptions& opts, std::FILE* out, std::FILE* log,
             say(log, "エラー: " + r.error);
             return kExitFailed;
         }
-        req.anchors              = r.anchors;
-        const std::string record = auto_anchor_record_json(as, r);
-        req.manifest_extra       = nlohmann::json { { "auto_anchors", nlohmann::json::parse(record) } }.dump();
-
-        if (!b.save_session.empty()) {
-            if (const Status st = save_session_file(b.save_session, in.value, r.anchors, record); !st.ok()) {
-                say(log, "エラー: セッションを保存できません: " + st.error);
-                return kExitFailed;
-            }
-            say(out, b.save_session);
-            say(log, "セッションを保存しました: " + b.save_session);
-        }
+        req.anchors                   = r.anchors;
+        input.records["auto_anchors"] = nlohmann::json::parse(auto_anchor_record_json(as, r));
+        if (!b.save_session.empty() && !save(r.anchors)) return kExitFailed;
     }
-    if (!b.exports()) return 0;    // アンカーを保存するだけ
+    if (!b.exports()) return 0;    // 作ったアンカーを保存するだけ
+    if (!input.records.empty()) req.manifest_extra = input.records.dump();
 
     if (req.anchors.empty()) say(log, "注意: アンカーがありません（始点と終点だけで対応づけます）");
 

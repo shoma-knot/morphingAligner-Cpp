@@ -1,6 +1,6 @@
 # morphingAligner 開発ログ
 
-最終更新: 2026-11-16（現行版 v26.11.16a）
+最終更新: 2026-11-17（現行版 v26.11.16a）
 
 ## 最終目標
 
@@ -12,7 +12,8 @@
 - タブ構成: **アライメント**（アンカー編集）／**モーフィング**（5軸スライダー＋3×3 プロット＋再生/WAV 保存/連続書き出し）／**ライセンス表示**。下部に全タブ共通のログ。
 - モーフィングエンジンは同梱の **tcmorph**（Kawahara の `wordTV2WmorphingEngineRev.m` の C++ 移植）の
   `aligner::WordTV2WMorphing`。自前実装（下の「モーフィング（旧・自前実装）」「MATLAB版との差分」）は廃止済み。
-- セッションは独自 JSON に加え、tcmorph の `anchors.json`（アンカーのみ）も読める。
+- セッションは独自 JSON に加え、tcmorph の `anchors.json`（アンカーのみ）も読める。`batch` なら同じフォルダの
+  `manifest.json` から音声を決めて、セッションに変換できる（2026-11-17）。
 - **Python 連携**（2026-09-24）: `./.env` の Python を子プロセスで呼び、フォルマント（parselmouth）を
   スペクトログラムに重ね、音素セグメンテーション（MFA）を時間軸を共有した独立プロットに出す。
 - 配布: `v*` タグの push で GitHub Actions が Ubuntu / Windows 版をビルドしリリースに添付する。
@@ -82,6 +83,7 @@
 - `src/launch_options.hpp` / `.cpp` — コマンドライン引数の解釈（サブコマンド `gui` / `batch` と各オプション）と UTF-8 での取り出し（コア）
 - `src/batch_cli.hpp` / `.cpp` — `batch` サブコマンド（ウィンドウを開かずに連続書き出し。コア）
 - `src/auto_anchor_pipeline.hpp` / `.cpp` — 音声と書き起こしからアンカー自動生成までを一続きで行う（`batch --auto-anchors`。コア）
+- `src/tcmorph_manifest.hpp` / `.cpp` — tcmorph の `manifest.json` から音声のパスと標本化周波数を読む（`batch`。コア）
 - `src/speech_tools.hpp` / `src/speech_tools.cpp` — Python ツールの呼び出し（子プロセス起動・JSON の
   要求/応答・終了時の停止）と結果の型（`Formants` / `Segmentation`）
 - `src/speech_view.hpp` / `src/speech_view.cpp` — フォルマントの重ね描き、音素セグメンテーションのプロット
@@ -279,7 +281,9 @@ GUI への読み込みと、ウィンドウを開かない処理を、最初の�
 - **オプション**: `--auto-anchors`、`--transcript`（batch でも使えるようにした。セッションより優先）、
   `--divisions`・`--formant-window`・`--max-formant`（既定と範囲は GUI と同じ。範囲は `AutoAnchorSettings` に移し、
   `SpeechState` の定数はそれを参照する）、`--acoustic-model`・`--dictionary`（MFA のモデル名）、`--save-session`。
-  自動生成の設定・`--save-session`・batch の `--transcript` は `--auto-anchors` なしでは誤り。
+  自動生成の設定・`--save-session`・batch の `--transcript` は `--auto-anchors` なしでは誤り
+  （→ 2026-11-17 から `--save-session` は `--auto-anchors` なしでも使える。下の「batch: tcmorph の anchors.json と
+  manifest.json からセッションを作る」）。
   最大フォルマントは**ひとまず base / target 共通**（ユーザーの指示。GUI と同じ）。
 - **アンカーだけを作って止めるモード**（ユーザーの指示）: `--save-session` を付けて `--count` / `--out` を省くと、
   アンカーを作ってセッションに保存したところで終わる（自動のアンカーを GUI で確かめてから書き出せるように）。
@@ -902,6 +906,30 @@ AddressSanitizer で `stack-use-after-scope` として検出できた。
 - 上の不具合修正と CI の変更を入れた版を `v26.11.16a` としてリリース（同日の出し直しなので接尾辞 `"a"`）。
 
 
+### batch: tcmorph の anchors.json と manifest.json からセッションを作る（2026-11-17、`tcmorph_manifest.cpp`）
+tcmorph の `mat2json.py` が書き出した `anchors.json` と `manifest.json` を組み合わせて、セッションの JSON にできる
+ようにした（ユーザーの依頼）。使い方は `batch --session for-cpp/anchors.json --save-session out.json`。
+- tcmorph のアンカー JSON を `--base` / `--target` なしで渡すと、同じフォルダの `manifest.json` から音声を決める。
+  `objects[0]` を base、`objects[1]` を target として、`fileFullPath` と `fileName` をつないだパスを使う。
+  相対パスは `manifest.json` のフォルダが基準。`--base` / `--target` があればそちらを使い、`manifest.json` は読まない。
+- `manifest.json` が無いとき、音声が見つからないとき、音声の標本化周波数が manifest の `sampling_frequency` と
+  違うときは、エラーで止める（ユーザーの指示）。音声が見つからないのは、別のマシンで作った manifest などで、
+  エラーでは `--base` / `--target` での指定を案内する。標本化周波数が違えば音声を取り違えているおそれがあるので、
+  `read_sample_rate` で音声をデコードして確かめる。素材名は照合しない（manifest の名前は `reference` / `target` で、
+  WAV のファイル名と対応しないため）。
+- `--save-session` を `--auto-anchors` なしでも使えるようにした。このときは、読んだアンカーと音声をそのまま保存する。
+  保存するだけなら WORLD の解析はしない。`--count` / `--out` も付ければ、保存してから書き出す。
+- 保存するセッションと書き出しの JSON の最上位には、`tcmorph` という項目を足す。中身は manifest の `objects` と
+  `version` 以外の項目（`source`・`layout`・`suggested_alpha`・`vtl_ratio` など）と、`anchors.json` / `manifest.json` の
+  パス、素材名。セッションを読むときは知らない項目として読み飛ばされる。manifest の WORLD パラメータ（npy）と
+  モーフィング率は使わず、音声はこのアプリで解析し直す。
+- ユーザーの指示で、ひとまず `batch` だけに入れ、GUI は変えていない。GUI で `anchors.json` を開くと、今までどおり
+  読み込み済みの音声にアンカーだけを乗せる。
+- 検証（実データ）: `.eval/handmade_anchor/07-29_harigane/fhi-mya/_data/for-cpp` から、音声 2 本と時間アンカー 24 個の
+  セッションを作れた。別のマシンのパスを指す `.tmp/manifest.json` は「音声が見つかりません」で止まる。
+- 単体テスト（計 143 項目）: manifest なし・変換して保存（音声のパス・アンカー・`tcmorph` の記録）・保存先の既存・
+  manifest の音声で書き出し・標本化周波数の食い違い・音声なし・`--base` / `--target` の優先、引数の解釈。
+
 ## MATLAB版との差分
 
 ※ **旧・自前実装についての比較**。現在は tcmorph（MATLAB 版の移植、丸め誤差レベルで一致を
@@ -1027,6 +1055,10 @@ install-win.bat          # Windows（-Yes で非対話）
 - アンカー自動生成の改良: 音素数が違うときの対応づけ（ラベルの編集距離で揃える等）、
   使うフォルマントの選択（F4 は不安定なことがある）、無声区間の扱い。
 - フォルマント/セグメンテーション結果のセッション保存（再計算を省く）。
+- **`batch` の整理（必ずやる。ユーザーの指示、2026-11-17）**: 書き出し・アンカーの自動生成・セッションの保存・
+  tcmorph の変換が1つのサブコマンドに集まり、オプションの組み合わせの規則（`--count` / `--out` / `--save-session` /
+  `--auto-anchors` / `--session` と `--base` の関係）が込み入ってきた。サブコマンドを役割で分ける（例: アンカーを作る・
+  変換する・書き出す）などを検討する。
 - `batch` の拡張: 1本だけの書き出し（任意の率）、複数のペアの一括処理、最大フォルマントを base / target で
   別々に指定する（今は GUI と同じく共通）、MFA を使う結合テスト（CI に使える音声を用意する必要がある）。
 - CI に ThreadSanitizer を足す（GUI のジョブ（`JobQueue`・非同期のモーフィング・音声解析のジョブ）を GUI から

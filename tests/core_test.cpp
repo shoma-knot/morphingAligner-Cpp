@@ -422,8 +422,11 @@ void test_launch_options() {
            "launch: 自動生成の設定は --auto-anchors が要る");
     expect(fails_with(with_ab({ "--transcript", "x", "--count", "3", "--out", "o" }), "batch の --transcript は --auto-anchors"),
            "launch: batch の --transcript は --auto-anchors が要る");
-    expect(fails_with(with_ab({ "--save-session", "s.json" }), "--save-session は --auto-anchors と一緒に"),
-           "launch: --save-session は --auto-anchors が要る");
+    {
+        const Result<LaunchOptions> r = parse_launch_options(V { "batch", "--session", "anchors.json", "--save-session", "s.json" });
+        expect(r.ok() && !r.value.batch.auto_anchors && !r.value.batch.exports() && r.value.batch.save_session == "s.json",
+               "launch: --save-session は --auto-anchors なしでも使え、--count が無ければ保存だけ");
+    }
     expect(fails_with(with_ab({ "--auto-anchors", "--transcript", "x" }), "batch には --count"),
            "launch: 書き出しも保存もしなければ誤り");
     expect(fails_with(with_ab({ "--auto-anchors", "--transcript", "x", "--save-session", "s", "--out", "o" }), "batch には --count"),
@@ -651,6 +654,78 @@ void test_batch_command() {
         expect(!j.is_discarded() && j.contains("auto_anchors") && j.contains("batch") && j["anchors"].size() > 1,
                "batch cli: 書き出しの JSON にも生成の設定とアンカーが残る");
     }
+
+    // tcmorph のアンカー JSON ＋ 同じフォルダの manifest.json（mat2json.py が書き出す形）。
+    const fs::path tc = dir / "for-cpp";
+    fs::create_directories(tc, ec);
+    std::ofstream(tc / "anchors.json") << R"({"version": 1, "objects": [
+        {"name": "reference", "time_anchor": [0.1], "time_freq_anchor": [[700]]},
+        {"name": "target", "time_anchor": [0.12], "time_freq_anchor": [[750]]}]})";
+    // fileFullPath は、base を絶対パス、target を manifest.json からの相対パスにする。
+    const auto write_manifest = [&](double base_fs, const std::string& target_name) {
+        nlohmann::json m = { { "version", 1 },
+                             { "source", "/x/edit.mat" },
+                             { "layout", "reftgt" },
+                             { "suggested_alpha", 0.5 } };
+        m["objects"] = nlohmann::json::array(
+          { { { "name", "reference" }, { "sampling_frequency", base_fs }, { "fileName", "a.wav" },
+              { "fileFullPath", dir.u8string() } },
+            { { "name", "target" }, { "sampling_frequency", 16000.0 }, { "fileName", target_name }, { "fileFullPath", ".." } } });
+        std::ofstream(tc / "manifest.json") << m.dump(2);
+    };
+    const auto run_tc = [&](std::vector<std::string> args, std::string* log_text = nullptr) {
+        args.insert(args.begin(), { "batch", "--session", (tc / "anchors.json").u8string() });
+        const Result<LaunchOptions> o = parse_launch_options(args);
+        if (!o.ok()) return -1;
+        std::FILE* out = std::tmpfile();
+        std::FILE* log = std::tmpfile();
+        const int  rc  = run_batch_command(o.value, out, log);
+        if (log_text) *log_text = read_all(log);
+        std::fclose(out);
+        std::fclose(log);
+        return rc;
+    };
+    std::string tc_log;
+    expect(run_tc({ "--save-session", (dir / "tc.json").u8string() }, &tc_log) == 1
+             && tc_log.find("manifest.json がありません") != std::string::npos,
+           "batch cli: manifest.json が無く --base / --target も無ければ失敗");
+    write_manifest(16000.0, "b.wav");
+    const fs::path tc_saved = dir / "tc.json";
+    expect(run_tc({ "--save-session", tc_saved.u8string() }) == 0, "batch cli: anchors.json と manifest.json からセッションを保存する");
+    {
+        std::ifstream      is(tc_saved);
+        std::ostringstream ss;
+        ss << is.rdbuf();
+        const Result<SessionFile> back = parse_session_json(ss.str());
+        const nlohmann::json      j    = nlohmann::json::parse(ss.str(), nullptr, false);
+        expect(back.ok() && !back.value.anchors_only && back.value.anchors.size() == 1
+                 && near(back.value.anchors[0].target_t, 0.12) && fs::u8path(back.value.base_path) == dir / "a.wav"
+                 && fs::u8path(back.value.target_path) == dir / "b.wav" && !j.is_discarded()
+                 && j["tcmorph"]["source"] == "/x/edit.mat" && j["tcmorph"]["suggested_alpha"] == 0.5
+                 && !j["tcmorph"].contains("objects"),
+               "batch cli: 保存したセッションは manifest の音声とアンカーを持ち、元の情報が tcmorph に残る");
+    }
+    expect(run_tc({ "--save-session", tc_saved.u8string() }) == 1, "batch cli: 保存先がすでにあれば中止する（変換でも）");
+    expect(run_tc({ "--count", "3", "--out", od.u8string(), "--prefix", "tc" }) == 0 && fs::exists(od / "tc_r050.wav", ec),
+           "batch cli: manifest.json から音声を決めて書き出す");
+    {
+        std::ifstream      is(od / "tc_batch.json");
+        std::ostringstream ss;
+        ss << is.rdbuf();
+        const nlohmann::json j = nlohmann::json::parse(ss.str(), nullptr, false);
+        expect(!j.is_discarded() && j.contains("tcmorph") && j.contains("batch"), "batch cli: 書き出しの JSON にも tcmorph が残る");
+    }
+    write_manifest(48000.0, "b.wav");
+    expect(run_tc({ "--save-session", (dir / "tc2.json").u8string() }, &tc_log) == 1
+             && tc_log.find("標本化周波数が manifest.json と違います") != std::string::npos
+             && !fs::exists(dir / "tc2.json", ec),
+           "batch cli: 音声の標本化周波数が manifest と違えば失敗");
+    write_manifest(16000.0, "no_such.wav");
+    expect(run_tc({ "--save-session", (dir / "tc2.json").u8string() }, &tc_log) == 1
+             && tc_log.find("音声が見つかりません") != std::string::npos,
+           "batch cli: manifest の音声が見つからなければ失敗");
+    expect(run_tc({ "--base", sf.base_path, "--target", sf.target_path, "--save-session", (dir / "tc2.json").u8string() }) == 0,
+           "batch cli: --base / --target があれば manifest.json は読まない");
 
     fs::remove_all(dir, ec);
 }

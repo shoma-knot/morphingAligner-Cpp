@@ -42,8 +42,8 @@ const OptionSpec kOptions[] = {
 };
 
 // --auto-anchors と一緒にだけ使えるオプション。
-const char* const kAutoAnchorOptions[] = { "--divisions",      "--formant-window", "--max-formant",
-                                           "--acoustic-model", "--dictionary",     "--save-session" };
+const char* const kAutoAnchorOptions[] = { "--divisions", "--formant-window", "--max-formant", "--acoustic-model",
+                                           "--dictionary" };
 
 Result<LaunchOptions> fail(std::string msg) {
     return Result<LaunchOptions>::failure(std::move(msg));
@@ -258,14 +258,16 @@ Result<LaunchOptions> parse_launch_options(const std::vector<std::string>& args)
         return Result<LaunchOptions>::success(std::move(o));
     }
 
-    // batch: 書き出すなら本数と出力先の両方が要る。書き出さないのは、--auto-anchors で作ったアンカーを
-    // --save-session で保存するだけのとき。音声は、音声のパスを含むセッションか、--base と --target の
-    // 両方（tcmorph のアンカー JSON を --session で乗せてもよい）。セッションの中身は読むまで分からない
-    // ので、--session と --base / --target の組み合わせの可否は実行時に確かめる。
+    // batch: 書き出すなら本数と出力先の両方が要る。書き出さないのは、--save-session でセッションを
+    // 保存するだけのとき（--auto-anchors で作ったアンカーや、tcmorph のアンカー JSON を変換したもの）。
+    // 音声は、音声のパスを含むセッションか、--base と --target の両方（tcmorph のアンカー JSON を
+    // --session で乗せてもよい。--base / --target が無ければ同じフォルダの manifest.json から決める）。
+    // セッションの中身は読むまで分からないので、--session と --base / --target の組み合わせの可否は
+    // 実行時に確かめる。
     const BatchCliOptions& b    = o.batch;
     const auto             seen_opt = [&](const char* n) { return std::find(seen.begin(), seen.end(), n) != seen.end(); };
     if (b.count == 0 && (!b.out.empty() || b.save_session.empty()))
-        return fail("batch には --count（書き出す本数）が要ります（アンカーを保存するだけなら --auto-anchors と --save-session）");
+        return fail("batch には --count（書き出す本数）が要ります（セッションを保存するだけなら --save-session）");
     if (b.count > 0 && b.out.empty()) return fail("batch には --out（出力先のフォルダ）が要ります");
     for (const char* n : kAutoAnchorOptions)
         if (seen_opt(n) && !b.auto_anchors) return fail(std::string { n } + " は --auto-anchors と一緒に使います");
@@ -309,13 +311,13 @@ std::string launch_usage(LaunchCommand command) {
       "音声のパスを含むセッションと --base / --target は同時には指定できません。\n";
     static const char* kBatchUsage =
       "使い方: morphingAlignerCpp batch --count <本数> --out <フォルダ> [オプション]\n"
-      "        morphingAlignerCpp batch --auto-anchors --save-session <JSON> [オプション]\n"
+      "        morphingAlignerCpp batch --save-session <JSON> [オプション]\n"
       "  ウィンドウを開かずに、率を 0（base）から 1（target）まで等間隔に変えた WAV を書き出す\n"
       "  （GUI の「連続書き出し」と同じ処理）。アンカーはセッションのものを使うか、--auto-anchors で\n"
-      "  音素アライメントから作る。--count / --out を省けば、作ったアンカーを保存するだけで止める。\n"
+      "  音素アライメントから作る。--count / --out を省けば、セッションを保存するだけで止める。\n"
       "\n"
-      "  --session <JSON>       セッション（音声のパスとアンカー）。tcmorph のアンカー JSON なら\n"
-      "                         --base と --target も指定する\n"
+      "  --session <JSON>       セッション（音声のパスとアンカー）。tcmorph のアンカー JSON なら、\n"
+      "                         音声は --base / --target か、同じフォルダの manifest.json から決める\n"
       "  --base <音声>          base の音声（--target と一緒に指定する）\n"
       "  --target <音声>        target の音声\n"
       "  --count <本数>         書き出す本数（両端を含む。2〜101）\n"
@@ -325,6 +327,7 @@ std::string launch_usage(LaunchCommand command) {
       "  --fixed <軸=率,...>    変化させない軸の率（既定: 0）。例: --sweep fo --fixed tx=0.5\n"
       "  --no-manifest          率とアンカーを残す JSON（<接頭辞>_batch.json）を書かない\n"
       "  --overwrite            同じ名前のファイルがあれば上書きする（無ければ、あるときは中止する）\n"
+      "  --save-session <JSON>  使うアンカーと音声をセッションとして保存する（GUI で開いて確かめられる）\n"
       "\n"
       "  --auto-anchors         音素アライメント（MFA）とフォルマントから、アンカーを作り直して使う\n"
       "                         （音声解析の環境 .env が要る。配布物のルートで実行する）\n"
@@ -334,7 +337,6 @@ std::string launch_usage(LaunchCommand command) {
       "  --max-formant <Hz>     最大フォルマント（base / target 共通。2000〜10000。既定: 5500）\n"
       "  --acoustic-model <名前> MFA の音響モデル（既定: japanese_mfa）\n"
       "  --dictionary <名前>    MFA の辞書（既定: japanese_mfa）\n"
-      "  --save-session <JSON>  作ったアンカーをセッションとして保存する（GUI で開いて確かめられる）\n"
       "  -h, --help             この説明を表示して終了する\n"
       "\n"
       "ファイル名は <接頭辞>_r050.wav（軸を選んだときは <接頭辞>_fo_r050.wav）。\n"

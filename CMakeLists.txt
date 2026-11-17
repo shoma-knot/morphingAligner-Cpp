@@ -61,7 +61,8 @@ add_library(morphaligner_core STATIC
     src/morphing.cpp
     src/resource_path.cpp
     src/session_io.cpp
-    src/speech_tools.cpp)
+    src/speech_tools.cpp
+    src/tcmorph_manifest.cpp)
 target_include_directories(morphaligner_core PUBLIC
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/tcmorph/include)    # tcmorph はヘッダオンリーの外部ライブラリ

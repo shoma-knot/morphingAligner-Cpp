@@ -66,6 +66,9 @@ F0Curve make_f0_curve(const MorphChannel& c);
 // 1音源を WORLD で解析して f0/sp/ap のチャンネルを作る。失敗時は error に理由（デコードの失敗など）。
 Result<MorphChannel> analyze_channel(const std::string& path);
 
+// 音声ファイルの標本化周波数 [Hz]（解析はしない）。デコードできなければ error に理由。
+Result<int> read_sample_rate(const std::string& path);
+
 // チャンネルから表示用の要約（dB の範囲など）を作る。
 Spectrogram summarize_spectrogram(const MorphChannel& c);
 
