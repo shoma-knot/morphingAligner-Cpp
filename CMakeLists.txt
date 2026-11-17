@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 4.0)
-project(morphingAlignerCpp VERSION 26.11.17)
+project(morphingAlignerCpp VERSION 26.11.18)
 # 同じ日付の版を出し直すときの接尾辞（英小文字1字。例: "a" → 26.09.25a。無ければ空）。
 # project() の VERSION は数字しか書けないので別に持つ。タイトルバーの版は「VERSION + 接尾辞」
 # になり、リリースのタグ（v<VERSION><接尾辞>）との一致も build.yml がこの2つを合わせて検査する。
