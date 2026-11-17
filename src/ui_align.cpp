@@ -76,17 +76,17 @@ void draw_ot_anchor_controls(App& app) {
     OtAnchorParams& p = app.ot.params;
 
     int mode = p.mode == OtMode::Bands ? 1 : 0;
-    ImGui::RadioButton("全帯域", &mode, 0);
+    ImGui::RadioButton("範囲全体", &mode, 0);
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("範囲全体で対応させ、既存の周波数アンカーは置き換えます。\n"
+        ImGui::SetTooltip("周波数範囲の全体で base と target の質量を対応させ、既存の周波数アンカーは置き換えます。\n"
                           "フォルマントの強さの比が base と target で違うと、山の対応がずれることがあります。");
     ImGui::SameLine();
-    ImGui::RadioButton("帯ごと", &mode, 1);
+    ImGui::RadioButton("周波数区間ごと", &mode, 1);
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("既存の周波数アンカー（アンカー自動生成のフォルマントなど）で周波数軸を帯に区切り、\n"
-                          "対応する帯の中だけで対応させて、帯の間に周波数アンカーを足します。\n"
+        ImGui::SetTooltip("既存の周波数アンカー（アンカー自動生成のフォルマントなど）で周波数軸を区間に区切り、\n"
+                          "base と target の対応する区間の中だけで質量を対応させて、既存の周波数アンカーの間に周波数アンカーを足します。\n"
                           "既存の周波数アンカーは残します（山どうしの対応はそのまま）。\n"
-                          "周波数アンカーが無い時刻は、範囲全体を1つの帯として扱います。");
+                          "周波数アンカーが無い時刻は、範囲全体を1つの区間として扱います。");
     p.mode = mode == 1 ? OtMode::Bands : OtMode::Global;
 
     if (p.mode == OtMode::Global) {
@@ -98,12 +98,12 @@ void draw_ot_anchor_controls(App& app) {
                               "包絡の質量を本数+1 等分する点どうしを対応させます。",
                               OtAnchorParams::kCountMin, OtAnchorParams::kCountMax);
     } else {
-        row_label("帯の本数");
+        row_label("区間あたりの本数");
         if (ImGui::InputInt("##ot_band_count", &p.band_count, 1, 1))
             p.band_count = std::clamp(p.band_count, OtAnchorParams::kBandCountMin, OtAnchorParams::kBandCountMax);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("帯1つあたりに足す周波数アンカーの数（%d〜%d）。\n"
-                              "帯の中の質量を本数+1 等分する点どうしを対応させます。",
+            ImGui::SetTooltip("周波数区間1つあたりに足す周波数アンカーの数（%d〜%d）。\n"
+                              "その区間の中の質量を本数+1 等分する点どうしを対応させます。",
                               OtAnchorParams::kBandCountMin, OtAnchorParams::kBandCountMax);
     }
 
@@ -111,15 +111,16 @@ void draw_ot_anchor_controls(App& app) {
     ImGui::SliderScalar("##ot_gamma", ImGuiDataType_Double, &p.gamma, &OtAnchorParams::kGammaMin,
                         &OtAnchorParams::kGammaMax, "γ = %.2f");
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("質量 = パワー^γ。1 ならパワーそのもの（強い低域のフォルマントで対応がほぼ決まる）。\n"
-                          "小さくするほど、弱い高域のフォルマントも対応に効くようになります。");
+        ImGui::SetTooltip("質量 = パワー^γ。γ が 1 ならパワーそのもの（強い低域のフォルマントで対応がほぼ決まる）。\n"
+                          "小さくするほど、弱い高域のフォルマントも対応に影響するようになります。");
 
     row_label("下限");
     if (ImGui::InputDouble("##ot_min", &p.min_hz, 50.0, 500.0, "%.0f Hz")) p.min_hz = std::max(0.0, p.min_hz);
     row_label("上限");
     if (ImGui::InputDouble("##ot_max", &p.max_hz, 50.0, 500.0, "%.0f Hz")) p.max_hz = std::max(p.min_hz + 1.0, p.max_hz);
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("この範囲の包絡だけを質量として使います。帯ごとのときは、いちばん下と上の帯の端にもなります。");
+        ImGui::SetTooltip("この範囲の包絡だけを質量として使います。\n"
+                          "周波数区間ごとのときは、範囲の下限と上限が、いちばん下の区間と上の区間の端にもなります。");
 
     const char* kConfirm = "OT 周波数アンカー";
     ImGui::BeginDisabled(!ot_anchors_ready(app));
@@ -227,7 +228,7 @@ void draw_speech_tools_panel(App& app) {
         const std::string py = find_python();
         ImGui::TextDisabled("Python: %s", py.empty() ? "（見つかりません）" : "検出済み");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", py.empty() ? "./.env に環境を置くか、環境変数 MORPHALIGNER_PYTHON で指定してください"
+            ImGui::SetTooltip("%s", py.empty() ? "./.env に環境を置くか、環境変数 MORPHALIGNER_PYTHON で Python を指定してください。"
                                                : py.c_str());
         ImGui::TreePop();
     }

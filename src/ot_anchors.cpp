@@ -117,7 +117,7 @@ OtAnchorResult make_ot_freq_anchors(const MorphChannel& base, const MorphChannel
         return R;
     }
     if (bands && (p.band_count < OtAnchorParams::kBandCountMin || p.band_count > OtAnchorParams::kBandCountMax)) {
-        R.error = "帯ごとの本数は " + std::to_string(OtAnchorParams::kBandCountMin) + "〜"
+        R.error = "区間あたりの本数は " + std::to_string(OtAnchorParams::kBandCountMin) + "〜"
                 + std::to_string(OtAnchorParams::kBandCountMax) + " で指定してください";
         return R;
     }
@@ -194,6 +194,6 @@ OtAnchorResult make_ot_freq_anchors(const MorphChannel& base, const MorphChannel
         R.warnings.push_back("無音に近い時間アンカー " + std::to_string(R.skipped) + " 本には OT をかけませんでした");
     if (R.crossed > 0)
         R.warnings.push_back("周波数アンカーが交差している時間アンカー " + std::to_string(R.crossed)
-                             + " 本には OT をかけませんでした（帯が対応しないため）");
+                             + " 本には OT をかけませんでした（区間が対応しないため）");
     return R;
 }

@@ -249,12 +249,12 @@ void run_ot_freq_anchors(App& app) {
     char buf[256];
     if (p.mode == OtMode::Bands)
         std::snprintf(buf, sizeof buf,
-                      "OT 周波数アンカー（帯ごと）: 時間アンカー %d 本、既存の周波数アンカー %d 個の間に計 %d 個を追加"
-                      "（帯の本数 %d、圧縮 %.2f、%.0f〜%.0f Hz）",
+                      "OT 周波数アンカー（周波数区間ごと）: 時間アンカー %d 本、既存の周波数アンカー %d 個の間に計 %d 個を追加"
+                      "（区間あたりの本数 %d、圧縮 %.2f、%.0f〜%.0f Hz）",
                       static_cast<int>(app.anchors.size()), r.n_edges, r.n_freq, p.band_count, p.gamma, p.min_hz,
                       p.max_hz);
     else
-        std::snprintf(buf, sizeof buf, "OT 周波数アンカー（全帯域）: 時間アンカー %d 本に計 %d 個（本数 %d、圧縮 %.2f、%.0f〜%.0f Hz）",
+        std::snprintf(buf, sizeof buf, "OT 周波数アンカー（範囲全体）: 時間アンカー %d 本に計 %d 個（本数 %d、圧縮 %.2f、%.0f〜%.0f Hz）",
                       static_cast<int>(app.anchors.size()), r.n_freq, p.count, p.gamma, p.min_hz, p.max_hz);
     applog::add(buf);
     if (rerun) applog::add("  （直前の結果から変えていなかったので、OT をかける前のアンカーから作り直しました）");

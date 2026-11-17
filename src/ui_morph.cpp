@@ -69,9 +69,9 @@ bool draw_morph_sliders(App& app, bool& released) {
     // （2026-11-17）。処理（restore_envelope_contrast）と単体テストは残してある。
     post_changed |= ImGui::RadioButton("OT で補間", &mix, static_cast<int>(EnvelopeMix::Transport));
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("右の範囲の中だけ、平均の代わりに、揃えた base と target の包絡の間で質量を運んで補間します\n"
-                          "（1次元の最適輸送）。範囲の外は平均のままです。ずれた山は、平らな2つの山ではなく中間の位置の\n"
-                          "1つの山になります。周波数アンカーがあれば、その構造ごとの帯の中だけで運びます。");
+        ImGui::SetTooltip("右の範囲の中では、揃えた base と target の包絡を平均せず、包絡の間で質量を運んで補間します\n"
+                          "（1次元の最適輸送）。範囲の外は平均のままです。ずれた山は平らな2つの山ではなく中間の位置の\n"
+                          "1つの山になります。周波数アンカーがあれば、周波数アンカーで区切った区間の中だけで運びます。");
     post.envelope = static_cast<EnvelopeMix>(mix);
 
     ImGui::SameLine();
@@ -82,7 +82,7 @@ bool draw_morph_sliders(App& app, bool& released) {
     const bool gamma_done = ImGui::IsItemDeactivatedAfterEdit();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("OT で補間するときの質量 = パワー^γ。1 ならパワーそのもの（強い山で運び方がほぼ決まる）。\n"
-                          "小さくするほど、弱い山や谷の形も運び方に効きます。Ctrl+クリックで数値を入力できます。");
+                          "小さくするほど、弱い山や谷の形も運び方に影響します。Ctrl+クリックで数値を入力できます。");
     // 範囲（Hz は対数で動かす）。下限 < 上限を保つ。
     ImGui::SameLine();
     const double lo_max = post.transport_hi_hz - 100.0, hi_min = post.transport_lo_hz + 100.0;
@@ -99,7 +99,7 @@ bool draw_morph_sliders(App& app, bool& released) {
     range_done |= ImGui::IsItemDeactivatedAfterEdit();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("OT で補間する範囲。既定は 5000〜12000 Hz（5 kHz 以下は平均のまま）。\n"
-                          "上限はナイキスト周波数で切り詰めます。300 Hz〜5500 Hz にすると、以前の OT と同じ範囲になります。");
+                          "上限はナイキスト周波数で切り詰めます。");
     ImGui::EndDisabled();
     released |= gamma_done || range_done;
     const bool gamma_or_range_changed = gamma_changed || range_changed;

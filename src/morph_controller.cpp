@@ -109,7 +109,7 @@ void poll_morph_job(App& app) {
                 line += buf;
             }
             if (m.out.transport_frames > 0) {
-                std::snprintf(buf, sizeof buf, "（包絡を %.0f〜%.0f Hz で OT で補間: %d フレーム、帯の数 平均 %.1f）",
+                std::snprintf(buf, sizeof buf, "（包絡を %.0f〜%.0f Hz で OT で補間: %d フレーム、区間の数 平均 %.1f）",
                               m.post.transport_lo_hz, m.post.transport_hi_hz, m.out.transport_frames, m.out.transport_bands);
                 line += buf;
             }
