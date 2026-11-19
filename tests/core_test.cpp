@@ -368,8 +368,12 @@ void test_launch_options() {
         const Result<LaunchOptions> r = parse_launch_options(V { "export", "--count", "2", "--out", "o", "s.json" });
         const ExportCliOptions&     b = r.value.exp;
         expect(r.ok() && r.value.input == "s.json" && b.manifest && !r.value.overwrite && b.prefix.empty() && b.sweep[0]
-                 && b.sweep[4],
-               "launch: export の既定は全軸・JSON あり・上書きしない。入力はどこに書いてもよい");
+                 && b.sweep[4] && !b.swap,
+               "launch: export の既定は全軸・JSON あり・上書きしない・入れ替えない。入力はどこに書いてもよい");
+        const Result<LaunchOptions> s = parse_launch_options(V { "export", "s.json", "--count", "2", "--out", "o", "--swap" });
+        expect(s.ok() && s.value.exp.swap, "launch: export の --swap を読める");
+        expect(fails_with(parse_launch_options(V { "gui", "--swap" }), "--swap は gui では使えません"),
+               "launch: --swap は export だけ");
     }
     const auto ex = [&](V extra) {
         V v { "export", "s.json" };
@@ -691,6 +695,47 @@ void test_cli_commands() {
         expect(ex_mix({ "--envelope-mix", "ot", "--sweep", "tx,fx,fo,ap", "--fixed", "sl=1" }, &ot_log) == 0
                  && ot_log.find("OT は効きません") != std::string::npos,
                "cli export: sl を 0 か 1 に固定して OT を選ぶと警告する");
+    }
+
+    // export --swap（base と target を入れ替える。入力のセッションは変えない）
+    {
+        SessionFile s2 = sf;
+        s2.anchors     = { Anchor { 0.1, 0.12, { FreqAnchor { 500.0, 600.0 } } } };
+        std::ofstream(dir / "s2.json") << session_to_json(s2);
+        SessionFile swapped = s2;    // 手で入れ替えたセッション（中身の比べ先）
+        std::swap(swapped.base_path, swapped.target_path);
+        swapped.anchors = { Anchor { 0.12, 0.1, { FreqAnchor { 600.0, 500.0 } } } };
+        std::ofstream(dir / "s2_swapped.json") << session_to_json(swapped);
+
+        const fs::path sd = dir / "swap";
+        const auto     ex = [&](const char* input, std::vector<std::string> extra) {
+            std::vector<std::string> args { "export", (dir / input).u8string(), "--count", "3", "--out", sd.u8string() };
+            args.insert(args.end(), extra.begin(), extra.end());
+            return run(args);
+        };
+        expect(ex("s2.json", { "--swap" }) == 0 && fs::exists(sd / "b-a_r050.wav", ec) && fs::exists(sd / "b-a_batch.json", ec),
+               "cli export: --swap なら既定の接頭辞も target-base の順になる");
+        const nlohmann::json j = read_json(sd / "b-a_batch.json");
+        expect(!j.is_discarded() && j["waves"]["base"] == (dir / "b.wav").u8string()
+                 && j["waves"]["target"] == (dir / "a.wav").u8string() && j["anchors"][0]["time"]["base"] == 0.12
+                 && j["anchors"][0]["time"]["target"] == 0.1 && j["anchors"][0]["freqs"][0]["base"] == 600.0
+                 && j["anchors"][0]["freqs"][0]["target"] == 500.0
+                 && j["swapped_from"]["base"] == (dir / "a.wav").u8string()
+                 && j["swapped_from"]["target"] == (dir / "b.wav").u8string(),
+               "cli export: --swap の書き出しの JSON は、入れ替えた音声とアンカー、入れ替える前のパスを持つ");
+        const auto bytes = [](const fs::path& p) {
+            std::ifstream is(p, std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(is), {});
+        };
+        expect(ex("s2_swapped.json", { "--prefix", "hand" }) == 0 && bytes(sd / "b-a_r050.wav") == bytes(sd / "hand_r050.wav")
+                 && bytes(sd / "b-a_r000.wav") == bytes(sd / "hand_r000.wav"),
+               "cli export: --swap の音は、手で入れ替えたセッションから書き出したものと同じ");
+        std::ifstream             is(dir / "s2.json");
+        std::stringstream         ss;
+        ss << is.rdbuf();
+        const Result<SessionFile> kept = parse_session_json(ss.str());
+        expect(kept.ok() && kept.value.base_path == s2.base_path && kept.value.extras.empty(),
+               "cli export: --swap でも入力のセッションは変えない");
     }
 
     // auto-anchors（Python のツールは偽物）

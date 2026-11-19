@@ -50,6 +50,8 @@ struct ExportCliOptions {
     // --envelope-mix / --ot-gamma / --ot-range: 包絡の混ぜ方（GUI のモーフィングタブと同じ。既定は平均）。
     // 「平均＋凹凸を戻す」は UI から外してあるので、コマンドラインでも選べない。
     MorphPostOptions post;
+    // --swap: base と target を入れ替えて書き出す（入力のセッションは変えない）。
+    bool swap = false;
 };
 
 struct LaunchOptions {

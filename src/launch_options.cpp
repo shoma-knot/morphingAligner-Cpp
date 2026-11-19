@@ -52,6 +52,7 @@ const OptionSpec kOptions[] = {
     { "--sweep", true, kExport },
     { "--fixed", true, kExport },
     { "--no-manifest", false, kExport },
+    { "--swap", false, kExport },
     { "--envelope-mix", true, kExport },
     { "--ot-gamma", true, kExport },
     { "--ot-range", true, kExport },
@@ -170,6 +171,8 @@ std::string apply_option(LaunchOptions& o, bool fixed_set[], const std::string& 
         b.post.transport_hi_hz = hi;
     } else if (name == "--no-manifest") {
         b.manifest = false;
+    } else if (name == "--swap") {
+        b.swap = true;
     } else if (name == "--overwrite") {
         o.overwrite = true;
     } else if (name == "--transcript") {
@@ -427,6 +430,8 @@ std::string launch_usage(LaunchCommand command) {
       "  --sweep <軸,...>       変化させる軸（tx, fx, fo, sl, ap をコンマで区切る。既定: all）\n"
       "  --fixed <軸=率,...>    変化させない軸の率（既定: 0）。例: --sweep fo --fixed tx=0.5\n"
       "  --no-manifest          率とアンカーを残す JSON（<接頭辞>_batch.json）を書かない\n"
+      "  --swap                 base と target を入れ替えて書き出す（率 0 が元の target になる。--fixed の率も\n"
+      "                         入れ替えた向きで読む。入力のセッションは変えない）\n"
       "  --overwrite            同じ名前のファイルがあれば上書きする（付けなければ、あるときは中止する）\n"
       "  --envelope-mix <方式>  包絡の混ぜ方。average は平均のまま、ot は範囲の中だけ OT で補間する\n"
       "                         （GUI の「OT で補間」。1本ごとの合成に 2〜3 倍の時間がかかる。既定: average）\n"

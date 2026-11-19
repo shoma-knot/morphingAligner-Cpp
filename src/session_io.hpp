@@ -33,3 +33,8 @@ std::string session_to_json(const SessionFile& s);
 
 // JSON 文字列を読む。形式が不正なら error に理由（例: "anchors が不正: ..."）。
 Result<SessionFile> parse_session_json(const std::string& text);
+
+// base と target を入れ替える（音声のパス、時間アンカーの base_t / target_t、周波数アンカーの base_f / target_f）。
+// 入れ替える前のパスを extras の swapped_from に残す。extras のほかの記録（auto_anchors・tcmorph など）は入れ替える前の
+// 向きのまま書かれているが、書き換えない（swapped_from を見れば向きが分かる）。
+void swap_base_target(SessionFile& s);

@@ -33,6 +33,12 @@ int run_export_command(const LaunchOptions& opts, std::FILE* out, std::FILE* log
         return kExitFailed;
     }
     SessionFile& sf = in.value;
+    // --swap: base と target を入れ替える（既定の接頭辞も target-base の順になる）。書き出しの JSON には、
+    // 入れ替える前のパスが swapped_from に残る。
+    if (opts.exp.swap) {
+        swap_base_target(sf);
+        say(log, "base と target を入れ替えます（base: " + sf.base_path + "、target: " + sf.target_path + "）");
+    }
 
     // 書き出しの設定（GUI のダイアログの項目と同じ）。
     const ExportCliOptions& e = opts.exp;

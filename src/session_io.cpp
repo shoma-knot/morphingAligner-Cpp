@@ -157,6 +157,18 @@ SessionFile parse_session_json_or_throw(const std::string& text) {
 
 }    // namespace
 
+void swap_base_target(SessionFile& s) {
+    json extra = s.extras.empty() ? json::object() : json::parse(s.extras, nullptr, false);
+    if (!extra.is_object()) extra = json::object();
+    extra["swapped_from"] = { { "base", s.base_path }, { "target", s.target_path } };
+    s.extras              = extra.dump();
+    std::swap(s.base_path, s.target_path);
+    for (Anchor& a : s.anchors) {
+        std::swap(a.base_t, a.target_t);
+        for (FreqAnchor& f : a.freqs) std::swap(f.base_f, f.target_f);
+    }
+}
+
 Result<SessionFile> parse_session_json(const std::string& text) {
     try {
         return Result<SessionFile>::success(parse_session_json_or_throw(text));
