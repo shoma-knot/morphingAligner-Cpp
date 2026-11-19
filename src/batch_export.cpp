@@ -1,5 +1,6 @@
 #include "batch_export.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <exception>
@@ -107,6 +108,8 @@ Status validate_batch_settings(const BatchExportSettings& s) {
             return Status::failure(std::string { "固定する率は 0〜1 で指定してください（" } + kMorphAxes[i].key + "）");
     }
     if (!any) return Status::failure("変化させる軸を1つ以上選んでください");
+    if (!(s.normalize_peak >= 0.0 && s.normalize_peak <= BatchExportSettings::kNormalizePeakMax))
+        return Status::failure("正規化する最大振幅は 0 より大きく 1 以下で指定してください（0 なら正規化しない）");
     if (s.prefix.empty()) return Status::failure("ファイル名の接頭辞を入力してください");
     if (s.prefix.find_first_of(kForbidden) != std::string::npos)
         return Status::failure(R"(接頭辞に使えない文字が含まれています（ / \ : * ? " < > | ）)");
@@ -160,13 +163,29 @@ BatchExportResult run_batch_export(const BatchExportRequest& req, BatchExportPro
         // 警告はアンカー由来なので率によらず同じ内容になる。1本目のものだけ持ち帰る。
         if (R.written == 0) R.warnings = o.warnings;
 
+        // 最大振幅の正規化（normalize_peak > 0 のとき）。無音（最大振幅 0）はそのまま書く。
+        double gain = 1.0;
+        if (s.normalize_peak > 0.0) {
+            double peak = 0.0;
+            for (const double v : o.wave) peak = std::max(peak, std::fabs(v));
+            if (peak > 0.0) gain = s.normalize_peak / peak;
+        }
+        std::vector<double> scaled;
+        if (gain != 1.0) {
+            scaled.resize(o.wave.size());
+            for (std::size_t i = 0; i < o.wave.size(); ++i) scaled[i] = o.wave[i] * gain;
+        }
+        const std::vector<double>& wave = gain != 1.0 ? scaled : o.wave;
+
         const std::string name = batch_wav_name(s, rate, req.post);
-        if (const Status st = write_wav(out_path(s.dir, name), o.wave, o.fs); !st.ok()) {
+        if (const Status st = write_wav(out_path(s.dir, name), wave, o.fs); !st.ok()) {
             R.error = "WAV 保存失敗: " + st.error;
             return R;
         }
 
-        files.push_back({ { "file", name }, { "rate", rate }, { "rates", rates_json(rates) } });
+        nlohmann::json file = { { "file", name }, { "rate", rate }, { "rates", rates_json(rates) } };
+        if (s.normalize_peak > 0.0) file["gain"] = gain;    // 正規化で掛けた倍率
+        files.push_back(std::move(file));
         ++R.written;
         progress.done.store(R.written);
     }
@@ -202,6 +221,7 @@ BatchExportResult run_batch_export(const BatchExportRequest& req, BatchExportPro
                                                                                               : "average" },
                            { "transport_gamma", req.post.transport_gamma },
                            { "transport_range_hz", { req.post.transport_lo_hz, req.post.transport_hi_hz } },
+                           { "normalize_peak", s.normalize_peak },
                            { "canceled", R.canceled },
                            { "files", std::move(files) } };
 

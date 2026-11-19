@@ -10,7 +10,9 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -372,6 +374,13 @@ void test_launch_options() {
                "launch: export の既定は全軸・JSON あり・上書きしない・入れ替えない。入力はどこに書いてもよい");
         const Result<LaunchOptions> s = parse_launch_options(V { "export", "s.json", "--count", "2", "--out", "o", "--swap" });
         expect(s.ok() && s.value.exp.swap, "launch: export の --swap を読める");
+        expect(r.ok() && b.normalize_peak == 0.0, "launch: export の既定は正規化しない");
+        const Result<LaunchOptions> n = parse_launch_options(V { "export", "s.json", "--count", "2", "--out", "o", "--normalize", "0.8" });
+        expect(n.ok() && near(n.value.exp.normalize_peak, 0.8), "launch: export の --normalize を読める");
+        for (const char* bad : { "0", "1.5", "-0.5", "x" })
+            expect(fails_with(parse_launch_options(V { "export", "s.json", "--count", "2", "--out", "o", "--normalize", bad }),
+                              "--normalize は 0 より大きく 1 以下"),
+                   std::string { "launch: --normalize の範囲外を拒む: " } + bad);
         expect(fails_with(parse_launch_options(V { "gui", "--swap" }), "--swap は gui では使えません"),
                "launch: --swap は export だけ");
     }
@@ -695,6 +704,49 @@ void test_cli_commands() {
         expect(ex_mix({ "--envelope-mix", "ot", "--sweep", "tx,fx,fo,ap", "--fixed", "sl=1" }, &ot_log) == 0
                  && ot_log.find("OT は効きません") != std::string::npos,
                "cli export: sl を 0 か 1 に固定して OT を選ぶと警告する");
+    }
+
+    // export --normalize（1本ごとに最大振幅をそろえる）
+    {
+        // 32 ビット浮動小数の WAV の最大振幅（data チャンクだけを読む）。
+        const auto wav_peak = [](const fs::path& p) {
+            std::ifstream     is(p, std::ios::binary);
+            const std::string b((std::istreambuf_iterator<char>(is)), {});
+            const std::size_t at = b.find("data");
+            if (at == std::string::npos || at + 8 > b.size()) return -1.0;
+            std::uint32_t n = 0;
+            std::memcpy(&n, b.data() + at + 4, 4);
+            double peak = 0.0;
+            for (std::size_t i = 0; i + 4 <= n && at + 8 + i + 4 <= b.size(); i += 4) {
+                float v = 0.0f;
+                std::memcpy(&v, b.data() + at + 8 + i, 4);
+                peak = std::max(peak, static_cast<double>(std::fabs(v)));
+            }
+            return peak;
+        };
+        const fs::path nd = dir / "norm";
+        const auto     ex = [&](std::vector<std::string> extra) {
+            std::vector<std::string> args { "export", (dir / "s.json").u8string(), "--count", "3", "--out", nd.u8string() };
+            args.insert(args.end(), extra.begin(), extra.end());
+            return run(args);
+        };
+        expect(ex({ "--prefix", "n", "--normalize", "0.8" }) == 0 && ex({ "--prefix", "raw" }) == 0,
+               "cli export: --normalize ありとなしで書き出せる");
+        bool all = true;
+        for (const char* r : { "000", "050", "100" })
+            all &= std::fabs(wav_peak(nd / (std::string { "n_r" } + r + ".wav")) - 0.8) < 1e-6;
+        expect(all && std::fabs(wav_peak(nd / "raw_r050.wav") - 0.8) > 1e-3,
+               "cli export: --normalize 0.8 なら、どのファイルも最大振幅が 0.8 になる（なしなら元のまま）");
+        const nlohmann::json jn = read_json(nd / "n_batch.json"), jr = read_json(nd / "raw_batch.json");
+        expect(!jn.is_discarded() && jn["batch"]["normalize_peak"] == 0.8 && jn["batch"]["files"][1].contains("gain")
+                 && near(jn["batch"]["files"][1]["gain"].get<double>(), 0.8 / wav_peak(nd / "raw_r050.wav"), 1e-5)
+                 && !jr.is_discarded() && jr["batch"]["normalize_peak"] == 0.0 && !jr["batch"]["files"][1].contains("gain"),
+               "cli export: 書き出しの JSON に正規化の値と、ファイルごとの倍率が残る");
+        BatchExportSettings bs;
+        bs.prefix = "p";
+        bs.dir    = nd.u8string();
+        bs.normalize_peak = 1.5;
+        expect(!validate_batch_settings(bs).ok(), "batch: 正規化の最大振幅が 1 を超えれば失敗");
     }
 
     // export --swap（base と target を入れ替える。入力のセッションは変えない）

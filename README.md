@@ -175,6 +175,7 @@ morphingAlignerCpp export work.json --count 11 --out stim/ --sweep fo --fixed tx
 | `--envelope-mix <average\|ot>` | 包絡の混ぜ方。`average` は平均のまま、`ot` は範囲の中だけ OT で補間する（GUI の「OT で補間」。既定: `average`） |
 | `--ot-gamma <γ>` | OT の質量 = パワー^γ（0.05〜1。既定: 0.3。`--envelope-mix ot` と一緒に使う） |
 | `--ot-range <下限>-<上限>` | OT で補間する範囲 [Hz]（300〜24000。既定: `5000-12000`。`--envelope-mix ot` と一緒に使う） |
+| `--normalize <ピーク>` | 1本ごとに最大振幅をこの値にそろえる（0 より大きく 1 以下。既定: 正規化しない） |
 | `--swap` | base と target を入れ替えて書き出す（率 0 が元の target になる。入力のセッションは変えない） |
 
 - 共通: `--version` / `-h`, `--help`（サブコマンドの後に書けば、そのサブコマンドの説明）。
@@ -189,6 +190,9 @@ morphingAlignerCpp export work.json --count 11 --out stim/ --sweep fo --fixed tx
 - `export --envelope-mix ot` のファイル名には、γ と範囲の印が入ります（例: `<接頭辞>_ot030_5000-12000_r050.wav`）。
   平均のものとは名前が違うので、同じ出力先に両方を書き出して聴き比べられます。OT は1本ごとの合成に 2〜3 倍の
   時間がかかります。sl を 0 か 1 に固定すると OT は効かないので、警告が出ます。
+- `export --normalize 0.8` は、MATLAB 版の morphingSoundGenerator と同じく、1本ごとに最大振幅を 0.8 にそろえて
+  書き出します。1本ごとにそろえるので、モーフィングで生じた音量の差は残りません。掛けた倍率は書き出しの JSON の
+  `gain` に残ります。正規化しないとき（既定）は、合成した音をそのまま書きます。
 - `export --swap` は、音声とアンカーの base と target を入れ替えてから書き出します。既定の接頭辞も target-base の順に
   なり、書き出しの JSON の `swapped_from` に入れ替える前の音声のパスが残ります。`--fixed` の率も入れ替えた向きで
   読みます（`--swap --fixed tx=0.3` は、元の向きの tx = 0.7）。入れ替えた率 r の音は、元の向きの率 1 − r の音と

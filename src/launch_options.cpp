@@ -53,6 +53,7 @@ const OptionSpec kOptions[] = {
     { "--fixed", true, kExport },
     { "--no-manifest", false, kExport },
     { "--swap", false, kExport },
+    { "--normalize", true, kExport },
     { "--envelope-mix", true, kExport },
     { "--ot-gamma", true, kExport },
     { "--ot-range", true, kExport },
@@ -173,6 +174,11 @@ std::string apply_option(LaunchOptions& o, bool fixed_set[], const std::string& 
         b.manifest = false;
     } else if (name == "--swap") {
         b.swap = true;
+    } else if (name == "--normalize") {
+        double& v = b.normalize_peak;
+        if (!parse_double(value, v) || !(v > 0.0) || v > BatchExportSettings::kNormalizePeakMax)
+            return "--normalize は 0 より大きく " + format_number(BatchExportSettings::kNormalizePeakMax)
+                 + " 以下の数で指定してください: " + value;
     } else if (name == "--overwrite") {
         o.overwrite = true;
     } else if (name == "--transcript") {
@@ -430,6 +436,8 @@ std::string launch_usage(LaunchCommand command) {
       "  --sweep <軸,...>       変化させる軸（tx, fx, fo, sl, ap をコンマで区切る。既定: all）\n"
       "  --fixed <軸=率,...>    変化させない軸の率（既定: 0）。例: --sweep fo --fixed tx=0.5\n"
       "  --no-manifest          率とアンカーを残す JSON（<接頭辞>_batch.json）を書かない\n"
+      "  --normalize <ピーク>   1本ごとに最大振幅をこの値にそろえる（0 より大きく 1 以下。MATLAB 版の\n"
+      "                         morphingSoundGenerator と同じにするなら 0.8。既定: 正規化しない）\n"
       "  --swap                 base と target を入れ替えて書き出す（率 0 が元の target になる。--fixed の率も\n"
       "                         入れ替えた向きで読む。入力のセッションは変えない）\n"
       "  --overwrite            同じ名前のファイルがあれば上書きする（付けなければ、あるときは中止する）\n"

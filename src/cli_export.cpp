@@ -49,6 +49,7 @@ int run_export_command(const LaunchOptions& opts, std::FILE* out, std::FILE* log
                                             + std::filesystem::u8path(sf.target_path).stem().u8string()
                                         : e.prefix;    // 既定は GUI の連続書き出しと同じ
     s.write_manifest = e.manifest;
+    s.normalize_peak = e.normalize_peak;
     for (int i = 0; i < kMorphAxisCount; ++i) {
         s.sweep[i]                  = e.sweep[i];
         s.fixed.*kMorphAxes[i].rate = e.fixed[i];

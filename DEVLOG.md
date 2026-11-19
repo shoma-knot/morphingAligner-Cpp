@@ -1277,6 +1277,17 @@ GUI のモーフィングタブの「包絡の混ぜ方」を、`export` でも�
 - 単体テスト（計 203 項目）: `--swap` を読めること、export だけで使えること、既定の接頭辞、書き出しの JSON の中身、
   手で入れ替えたセッションから書き出した音と同じこと、入力のセッションを変えないこと。
 
+### export: 最大振幅を正規化する `--normalize`（2026-11-19、`batch_export.cpp`）
+MATLAB 版の morphingSoundGenerator は、書き出す WAV を1本ごとに `x / max(abs(x)) * 0.8` で正規化している
+（`docs/morphingSoundGenerator_worldParameter.md`）。本アプリは正規化せずに書いていたので、選べるようにした（ユーザーの指示）。
+- `BatchExportSettings::normalize_peak`（0 = 正規化しない、既定）を足し、`run_batch_export` で1本ごとに最大振幅（絶対値）が
+  この値になるよう定数倍してから書く。無音（最大振幅 0）はそのまま書く。GUI の連続書き出しは既定（正規化しない）のまま。
+- `export --normalize <ピーク>`（0 より大きく 1 以下）。MATLAB と同じにするなら 0.8。ファイル名は変えない。
+- 書き出しの JSON の `batch` に `normalize_peak`（正規化しないときは 0）を、`files` の各項目に掛けた倍率 `gain` を残す。
+- 実データ（`harigane_batch_session.json`、5 本）で、どのファイルも最大振幅が 0.8 になった（倍率 1.30〜2.90）。
+- 単体テスト（計 213 項目）: 引数の解釈（既定・値・範囲外）、書き出したファイルの最大振幅、JSON の記録、設定の検査。
+- WAV の形式は変えていない（32 ビット浮動小数。MATLAB 版は 24 ビット）。
+
 ## MATLAB版との差分
 
 ※ **旧・自前実装についての比較**。現在は tcmorph（MATLAB 版の移植、丸め誤差レベルで一致を

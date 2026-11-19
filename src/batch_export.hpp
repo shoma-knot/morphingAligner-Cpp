@@ -28,6 +28,11 @@ struct BatchExportSettings {
     std::string dir;                    // 出力先フォルダ（UTF-8）
     std::string prefix;                 // ファイル名の接頭辞
     bool        write_manifest = true;  // 率とアンカーを JSON に残すか
+    // 最大振幅の正規化。0 なら正規化しない（既定）。0 より大きければ、1本ごとに最大振幅（絶対値）がこの値になるよう
+    // 定数倍してから書く。MATLAB 版の morphingSoundGenerator は 0.8 に正規化している（x / max(abs(x)) * 0.8）。
+    // 1本ごとにそろえるので、モーフィングで生じた音量の差は残らない。
+    double      normalize_peak = 0.0;
+    static constexpr double kNormalizePeakMax = 1.0;
 
     // 本数の上限は、ファイル名に使う百分率（3桁）が隣どうしでぶつからない範囲。101 本なら
     // 刻みがちょうど 1% で、これを超えると 1% を割って同じ名前のファイルが2本できてしまう。

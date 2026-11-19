@@ -52,6 +52,8 @@ struct ExportCliOptions {
     MorphPostOptions post;
     // --swap: base と target を入れ替えて書き出す（入力のセッションは変えない）。
     bool swap = false;
+    // --normalize: 1本ごとに最大振幅をこの値にそろえる（0 = 正規化しない）。
+    double normalize_peak = 0.0;
 };
 
 struct LaunchOptions {
