@@ -164,6 +164,19 @@ inline MatrixXd InterpTime(const VectorXd& t_src, const MatrixXd& m,
   return out;
 }
 
+/// MATLAB の interp1 が格子 x のせいで例外を出すか。重複点か NaN / inf があるときだけ。
+/// 単調でないだけなら、interp1 は x と y をまとめて並べ替えて補間する（例外にはならない）ので、
+/// ここでは失敗に数えない。R2025b で、並べ替えて補間すること、NaN を含む格子が例外
+/// （「サンプル点は有限でなければなりません」）になること、重複点を含む格子が例外
+/// （「サンプル点は一意でなければなりません」）になることを確かめた。
+inline bool Interp1WouldThrow(const VectorXd& x) {
+  std::vector<double> v(x.data(), x.data() + x.size());
+  for (double e : v)
+    if (!std::isfinite(e)) return true;
+  std::sort(v.begin(), v.end());
+  return std::adjacent_find(v.begin(), v.end()) != v.end();
+}
+
 inline VectorXd Diff(const VectorXd& v) {
   return v.tail(v.size() - 1) - v.head(v.size() - 1);
 }
@@ -367,7 +380,8 @@ inline Output WordTV2WMorphing(const WorldParameter& ref, const WorldParameter& 
     idx_on_morph[k] = std::min<Index>(
         n_frame - 1, static_cast<Index>(std::floor(ta_mrph[k] / delta_t)));
 
-  VectorXd cur_ref(n_fbin), cur_tgt(n_fbin), xq(n_fbin), tmp(n_fbin);
+  VectorXd cur_ref(n_fbin), cur_tgt(n_fbin), tmp(n_fbin);
+  // 0: 未処理、1: 書き込んだ、2: interp1 の例外で欠落した（MATLAB の空 catch 相当）
   std::vector<char> written(static_cast<std::size_t>(n_frame), 0);
 
   for (Index ii = 0; ii <= n_anch; ++ii) {
@@ -384,40 +398,37 @@ inline Output WordTV2WMorphing(const WorldParameter& ref, const WorldParameter& 
       cur_ref = (1.0 - frac) * map_ref.col(ii) + frac * map_ref.col(ii + 1);
       cur_tgt = (1.0 - frac) * map_tgt.col(ii) + frac * map_tgt.col(ii + 1);
 
-      bool bad = false;
-      xq = cur_ref + safeguard;
-      for (Index b = 1; b < n_fbin; ++b)
-        if (!(xq[b] > xq[b - 1])) { bad = true; break; }
-      if (!bad) {
-        xq = cur_tgt + safeguard;
-        for (Index b = 1; b < n_fbin; ++b)
-          if (!(xq[b] > xq[b - 1])) { bad = true; break; }
-      }
-      // MATLAB は interp1 の失敗を空の catch で握りつぶすため、
-      // そのフレームは 0 のまま残る（後段で 0 dB 平坦 + 完全非周期になる）
-      if (bad && opt.emulate_catch_dropout) {
+      // MATLAB は interp1 の失敗を空の catch で握りつぶすため、そのフレームは 0 のまま残る
+      // （後段で 0 dB 平坦 + 完全非周期になる）。interp1 が失敗するのは格子に重複点か NaN / inf が
+      // あるときだけ（Interp1WouldThrow）。単調でないだけの格子は、並べ替えて補間する。
+      // （2026-11-19 まで「狭義の単調増加でなければ失敗」とみなしていて、周波数アンカーが逆転すると
+      // MATLAB 版には無い欠落フレームを作っていた。）
+      VectorXd x1 = cur_ref + safeguard;
+      VectorXd x2 = cur_tgt + safeguard;
+      if (opt.emulate_catch_dropout && (detail_tv::Interp1WouldThrow(x1) || detail_tv::Interp1WouldThrow(x2))) {
         ++out.n_dropped_frames;
+        // 前の区間で書けていれば、その値が残る（MATLAB でも混合の代入まで進まないので同じ）
+        if (written[static_cast<std::size_t>(jj)] == 0) written[static_cast<std::size_t>(jj)] = 2;
         continue;
       }
 
-      VectorXd x1 = cur_ref + safeguard;
       Interp1(x1, sg_ref_on.col(jj), fx_ref, &tmp);
       sg_mix.col(jj) = (1.0 - m.sl) * tmp;
       Interp1(x1, ap_ref_on.col(jj), fx_ref, &tmp);
       ap_mix.col(jj) = (1.0 - m.ap) * tmp;
 
-      VectorXd x2 = cur_tgt + safeguard;
       Interp1(x2, sg_tgt_on.col(jj), fx_ref, &tmp);
       sg_mix.col(jj) += m.sl * tmp;
       Interp1(x2, ap_tgt_on.col(jj), fx_ref, &tmp);
       ap_mix.col(jj) += m.ap * tmp;
 
-      written[static_cast<std::size_t>(jj)] = 1;
+      written[static_cast<std::size_t>(jj)] = 1;  // 欠落した後の区間で書けたら上書き
     }
   }
 
   int n_unwritten = 0;
-  for (Index k = 0; k < n_frame; ++k) if (!written[k]) ++n_unwritten;
+  // 欠落したフレーム（written == 2）は下の警告で数えるので、ここでは数えない
+  for (Index k = 0; k < n_frame; ++k) if (written[k] == 0) ++n_unwritten;
   if (n_unwritten > 0)
     out.warnings.push_back(
         "どの区間にも書き込まれなかったフレームが " + std::to_string(n_unwritten) +

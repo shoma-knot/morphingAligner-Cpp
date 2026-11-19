@@ -37,6 +37,7 @@
 #include "envelope_transport.hpp"
 
 #include <nlohmann/json.hpp>
+#include <tcmorph/word_tv2w_morphing.hpp>
 
 namespace {
 
@@ -289,6 +290,48 @@ void test_analysis() {
     const Result<AnalyzedAudio> bad =
       analyze_file((std::filesystem::temp_directory_path() / "morphaligner_no_such_file.wav").string());
     expect(!bad.ok() && !bad.error.empty() && !bad.value.channel, "analysis: 開けないファイルは失敗（理由つき）");
+}
+
+// ── tcmorph のエンジン（MATLAB 版との一致に関わる所） ─────────────────
+void test_tcmorph_engine() {
+    // 式で作った WORLD パラメータ（fs 16000 Hz、513 ビン、5 ms × 101 フレーム、包絡は 1 kHz ごとの山）。
+    const auto make = [](double f0_hz) {
+        tcmorph::WorldParameter w;
+        constexpr int           nbin = 513, nf = 101;
+        w.sampling_frequency           = 16000.0;
+        w.span_length                  = 8000;
+        Eigen::VectorXd t(nf);
+        for (int j = 0; j < nf; ++j) t[j] = 0.005 * j;
+        w.source_parameter.temporal_positions   = t;
+        w.spectrum_parameter.temporal_positions = t;
+        w.spectrum_parameter.fs                 = 16000.0;
+        w.source_parameter.f0                   = Eigen::VectorXd::Constant(nf, f0_hz);
+        w.source_parameter.vuv                  = Eigen::VectorXd::Ones(nf);
+        w.source_parameter.aperiodicity         = Eigen::MatrixXd::Constant(nbin, nf, 0.5);
+        Eigen::MatrixXd sp(nbin, nf);
+        for (int k = 0; k < nbin; ++k)
+            sp.row(k).setConstant(1e-3 + std::pow(std::sin(3.14159265358979 * k * 8000.0 / 512 / 1000.0), 2));
+        w.spectrum_parameter.spectrogram = sp;
+        return w;
+    };
+    const tcmorph::WorldParameter ref = make(120.0), tgt = make(200.0);
+    Eigen::VectorXd               t_ref(1), t_tgt(1);
+    t_ref << 0.25;
+    t_tgt << 0.25;
+    // target 側で 1 本目と 2 本目が逆転した周波数アンカー。MATLAB の interp1 は重複の無い格子なら並べ替えて
+    // 補間するので（R2025b で確かめた）、どのフレームも欠落しない。
+    Eigen::MatrixXd f_ref(2, 1), f_tgt(2, 1);
+    f_ref << 700, 1200;
+    f_tgt << 1500, 900;
+    for (const double r : { 0.0, 0.25, 1.0 }) {
+        const tcmorph::aligner::Output o = tcmorph::aligner::WordTV2WMorphing(
+          ref, tgt, t_ref, f_ref, t_tgt, f_tgt, tcmorph::aligner::MorphRate::Uniform(r));
+        int flat = 0;
+        for (Eigen::Index j = 0; j < o.spectrogram.cols(); ++j) flat += (o.spectrogram.col(j).array() == 1.0).all();
+        expect(o.n_dropped_frames == 0 && flat == 0,
+               "tcmorph: 周波数アンカーが逆転しても、フレームは欠落しない（率 " + std::to_string(r) + "、欠落 "
+                 + std::to_string(o.n_dropped_frames) + "、平坦 " + std::to_string(flat) + "）");
+    }
 }
 
 // ── コマンドライン引数 ──────────────────────────────────────
@@ -1508,6 +1551,7 @@ int main() {
     test_ot_anchors();
     test_restore_contrast();
     test_envelope_transport();
+    test_tcmorph_engine();
     test_batch_export();
     test_auto_anchor_pipeline();
     test_cli_commands();
