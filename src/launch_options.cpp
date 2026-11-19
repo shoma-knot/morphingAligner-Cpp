@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <system_error>
@@ -51,6 +52,9 @@ const OptionSpec kOptions[] = {
     { "--sweep", true, kExport },
     { "--fixed", true, kExport },
     { "--no-manifest", false, kExport },
+    { "--envelope-mix", true, kExport },
+    { "--ot-gamma", true, kExport },
+    { "--ot-range", true, kExport },
 };
 
 // サブコマンドの名前とビット。
@@ -74,6 +78,13 @@ const CommandSpec& command_spec(LaunchCommand c) {
 
 Result<LaunchOptions> fail(std::string msg) {
     return Result<LaunchOptions>::failure(std::move(msg));
+}
+
+// 範囲の値を、誤りの文言に入れる短い形にする（0.05、1、300、24000）。
+std::string format_number(double v) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%g", v);
+    return buf;
 }
 
 std::string ascii_lower(std::string s) {
@@ -135,6 +146,28 @@ std::string apply_option(LaunchOptions& o, bool fixed_set[], const std::string& 
     AutoAnchorSettings& as = o.auto_settings;
     if (name == "--align") {
         o.align = true;
+    } else if (name == "--envelope-mix") {
+        const std::string v = ascii_lower(value);
+        if (v == "average") b.post.envelope = EnvelopeMix::Average;
+        else if (v == "ot") b.post.envelope = EnvelopeMix::Transport;
+        else return "--envelope-mix は average か ot で指定してください: " + value;
+    } else if (name == "--ot-gamma") {
+        double& v = b.post.transport_gamma;
+        if (!parse_double(value, v) || v < MorphPostOptions::kGammaMin || v > MorphPostOptions::kGammaMax)
+            return "--ot-gamma は " + format_number(MorphPostOptions::kGammaMin) + "〜"
+                 + format_number(MorphPostOptions::kGammaMax) + " の数で指定してください: " + value;
+    } else if (name == "--ot-range") {
+        // 「下限-上限」（Hz）。GUI と同じく、下限は上限より 100 Hz 以上低くする。
+        const std::size_t dash = value.find('-', 1);
+        double            lo = 0.0, hi = 0.0;
+        if (dash == std::string::npos || !parse_double(value.substr(0, dash), lo) || !parse_double(value.substr(dash + 1), hi))
+            return "--ot-range は「下限-上限」（Hz）で指定してください（例: 5000-12000）: " + value;
+        if (lo < MorphPostOptions::kRangeMinHz || hi > MorphPostOptions::kRangeMaxHz || lo > hi - 100.0)
+            return "--ot-range は " + format_number(MorphPostOptions::kRangeMinHz) + "〜"
+                 + format_number(MorphPostOptions::kRangeMaxHz) + " Hz の中で、下限を上限より 100 Hz 以上低くしてください: "
+                 + value;
+        b.post.transport_lo_hz = lo;
+        b.post.transport_hi_hz = hi;
     } else if (name == "--no-manifest") {
         b.manifest = false;
     } else if (name == "--overwrite") {
@@ -318,6 +351,11 @@ Result<LaunchOptions> parse_launch_options(const std::vector<std::string>& args)
     const ExportCliOptions& b = o.exp;
     if (b.count == 0) return fail("export には --count（書き出す本数）が要ります");
     if (o.out.empty()) return fail("export には --out（出力先のフォルダ）が要ります");
+    // 黙って無視すると、OT が効いていると思い込んだまま書き出してしまうので誤りにする（ユーザーの指示）。
+    if (b.post.envelope != EnvelopeMix::Transport)
+        for (const char* n : { "--ot-gamma", "--ot-range" })
+            if (std::find(seen.begin(), seen.end(), n) != seen.end())
+                return fail(std::string { n } + " は --envelope-mix ot と一緒に使います");
     for (int i = 0; i < kMorphAxisCount; ++i)
         if (fixed_set[i] && b.sweep[i])
             return fail(std::string { "--fixed の " } + kMorphAxes[i].key
@@ -390,9 +428,14 @@ std::string launch_usage(LaunchCommand command) {
       "  --fixed <軸=率,...>    変化させない軸の率（既定: 0）。例: --sweep fo --fixed tx=0.5\n"
       "  --no-manifest          率とアンカーを残す JSON（<接頭辞>_batch.json）を書かない\n"
       "  --overwrite            同じ名前のファイルがあれば上書きする（付けなければ、あるときは中止する）\n"
+      "  --envelope-mix <方式>  包絡の混ぜ方。average は平均のまま、ot は範囲の中だけ OT で補間する\n"
+      "                         （GUI の「OT で補間」。1本ごとの合成に 2〜3 倍の時間がかかる。既定: average）\n"
+      "  --ot-gamma <γ>         OT の質量 = パワー^γ（0.05〜1。既定: 0.3）\n"
+      "  --ot-range <下限-上限> OT で補間する範囲 [Hz]（300〜24000。既定: 5000-12000）\n"
       "  -h, --help             この説明を表示して終了する\n"
       "\n"
-      "ファイル名は <接頭辞>_r050.wav（軸を選んだときは <接頭辞>_fo_r050.wav）。\n";
+      "ファイル名は <接頭辞>_r050.wav（軸を選んだときは <接頭辞>_fo_r050.wav、OT のときは\n"
+      "<接頭辞>_ot030_5000-12000_r050.wav）。--ot-gamma と --ot-range は --envelope-mix ot と一緒に使う。\n";
     static const char* kExitCodes =
       "\n"
       "作ったファイルの一覧は標準出力に、経過は標準エラーに出す。\n"

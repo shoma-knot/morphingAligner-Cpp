@@ -55,7 +55,7 @@ int run_export_command(const LaunchOptions& opts, std::FILE* out, std::FILE* log
         say(log, "エラー: " + v.error);
         return kExitFailed;
     }
-    if (const int n = count_existing_batch_files(s); n > 0 && !opts.overwrite) {
+    if (const int n = count_existing_batch_files(s, e.post); n > 0 && !opts.overwrite) {
         say(log, "エラー: 出力先に同じ名前のファイルが " + std::to_string(n)
                    + " 個あります（上書きするなら --overwrite を付けてください）: " + s.dir);
         return kExitFailed;
@@ -78,9 +78,21 @@ int run_export_command(const LaunchOptions& opts, std::FILE* out, std::FILE* log
     req.target_path = sf.target_path;
     req.transcript  = sf.transcript;
     req.settings    = s;
+    req.post        = e.post;
     // セッションの記録（auto_anchors・tcmorph など）を、書き出しの JSON に引き継ぐ。
     req.manifest_extra = sf.extras;
     if (req.anchors.empty()) say(log, "注意: アンカーがありません（始点と終点だけで対応づけます）");
+    // OT は sl（スペクトルの率）が 0 と 1 の間のときだけ効く。sl を 0 か 1 に固定すると、ファイル名に OT の印が
+    // 付くのに中身は平均と同じになるので知らせる。
+    if (e.post.envelope == EnvelopeMix::Transport) {
+        for (int i = 0; i < kMorphAxisCount; ++i) {
+            if (std::string { kMorphAxes[i].key } != "sl" || s.sweep[i]) continue;
+            const double sl = s.fixed.*kMorphAxes[i].rate;
+            if (sl <= 0.0 || sl >= 1.0)
+                say(log, "警告: sl を " + std::string { sl <= 0.0 ? "0" : "1" }
+                           + " に固定しているので、OT は効きません（すべて平均と同じ音になります）");
+        }
+    }
 
     // 書き出しは別スレッドで走らせ、1本書けるごとに経過を出す。Ctrl+C なら次の1本の前で止める。
     const std::vector<double> rates = batch_rates(s.count);
@@ -99,7 +111,7 @@ int run_export_command(const LaunchOptions& opts, std::FILE* out, std::FILE* log
     const auto show_done = [&]() {
         for (const int done = progress.done.load(); shown < done && shown < static_cast<int>(rates.size()); ++shown)
             say(log, "[" + std::to_string(shown + 1) + "/" + std::to_string(s.count) + "] "
-                       + batch_wav_name(s, rates[static_cast<std::size_t>(shown)]));
+                       + batch_wav_name(s, rates[static_cast<std::size_t>(shown)], e.post));
     };
     while (!finished.load()) {
         if (g_interrupted.load()) progress.cancel.store(true);
@@ -117,7 +129,7 @@ int run_export_command(const LaunchOptions& opts, std::FILE* out, std::FILE* log
 
     // 書き出したファイルの一覧（スクリプトから使いやすいよう、標準出力に1行1ファイル）。
     for (int k = 0; k < result.written; ++k)
-        say(out, (std::filesystem::u8path(s.dir) / std::filesystem::u8path(batch_wav_name(s, rates[static_cast<std::size_t>(k)])))
+        say(out, (std::filesystem::u8path(s.dir) / std::filesystem::u8path(batch_wav_name(s, rates[static_cast<std::size_t>(k)], e.post)))
                    .u8string());
     if (!result.manifest.empty()) say(out, result.manifest);
     if (result.canceled) {

@@ -13,6 +13,7 @@
 ///                                   [--overwrite]
 ///   morphingAlignerCpp export       <セッション> --count <本数> --out <フォルダ> [--prefix <接頭辞>]
 ///                                   [--sweep <軸,...>] [--fixed <軸=率,...>] [--no-manifest] [--overwrite]
+///                                   [--envelope-mix <average|ot>] [--ot-gamma <γ>] [--ot-range <下限>-<上限>]
 ///   morphingAlignerCpp --help | --version
 ///
 /// gui は起動時に音声・セッションを読み込んで GUI を開く。ほかの3つはウィンドウを開かずに動き、
@@ -46,6 +47,9 @@ struct ExportCliOptions {
     // --fixed: 変化させない軸の率。指定しなかった軸は 0（base 側）。
     double fixed[kMorphAxisCount] = {};
     bool   manifest = true;    // --no-manifest で false（率とアンカーの JSON を書かない）
+    // --envelope-mix / --ot-gamma / --ot-range: 包絡の混ぜ方（GUI のモーフィングタブと同じ。既定は平均）。
+    // 「平均＋凹凸を戻す」は UI から外してあるので、コマンドラインでも選べない。
+    MorphPostOptions post;
 };
 
 struct LaunchOptions {

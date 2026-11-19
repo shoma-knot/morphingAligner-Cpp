@@ -172,6 +172,9 @@ morphingAlignerCpp export work.json --count 11 --out stim/ --sweep fo --fixed tx
 | `--fixed <軸=率,...>` | 変化させない軸の率（既定: 0） |
 | `--no-manifest` | 率とアンカーを残す JSON（`<接頭辞>_batch.json`）を書かない |
 | `--overwrite` | 同じ名前のファイルがあれば上書きする（付けなければ、あるときは中止する） |
+| `--envelope-mix <average\|ot>` | 包絡の混ぜ方。`average` は平均のまま、`ot` は範囲の中だけ OT で補間する（GUI の「OT で補間」。既定: `average`） |
+| `--ot-gamma <γ>` | OT の質量 = パワー^γ（0.05〜1。既定: 0.3。`--envelope-mix ot` と一緒に使う） |
+| `--ot-range <下限>-<上限>` | OT で補間する範囲 [Hz]（300〜24000。既定: `5000-12000`。`--envelope-mix ot` と一緒に使う） |
 
 - 共通: `--version` / `-h`, `--help`（サブコマンドの後に書けば、そのサブコマンドの説明）。
 - 値は `--base a.wav` と `--base=a.wav` のどちらでも書けます。相対パスは起動したときのカレントディレクトリが基準です。
@@ -182,6 +185,9 @@ morphingAlignerCpp export work.json --count 11 --out stim/ --sweep fo --fixed tx
   `fileFullPath` と `fileName` から音声を決めます（相対パスは `manifest.json` のフォルダが基準）。`manifest.json` が
   無いとき、音声が見つからないとき、音声の標本化周波数が manifest と違うときは、エラーで止まります。
   WORLD パラメータ（npy）は使わず、音声はこのアプリで解析し直します。
+- `export --envelope-mix ot` のファイル名には、γ と範囲の印が入ります（例: `<接頭辞>_ot030_5000-12000_r050.wav`）。
+  平均のものとは名前が違うので、同じ出力先に両方を書き出して聴き比べられます。OT は1本ごとの合成に 2〜3 倍の
+  時間がかかります。sl を 0 か 1 に固定すると OT は効かないので、警告が出ます。
 - 生成の設定と音素列（`auto_anchors`）や、元の `.mat` のパスなど manifest の情報（`tcmorph`）はセッションに残り、
   `export` の書き出しの JSON にも引き継がれます。
 - 経過は標準エラーに、作ったファイルの一覧は標準出力に出ます。終了コードは 0 = 成功、1 = 処理の失敗、

@@ -398,6 +398,37 @@ void test_launch_options() {
            "launch: export は音声をセッションからだけ取る");
     expect(fails_with(ex({ "--count", "3", "--out", "o", "--divisions", "3" }), "--divisions は export では使えません"),
            "launch: 自動生成の設定は export で使えない");
+    {
+        const Result<LaunchOptions> r = ex({ "--count", "3", "--out", "o" });
+        const MorphPostOptions&     p = r.value.exp.post;
+        expect(r.ok() && p.envelope == EnvelopeMix::Average && near(p.transport_gamma, 0.3) && near(p.transport_lo_hz, 5000.0)
+                 && near(p.transport_hi_hz, 12000.0),
+               "launch: export の包絡の混ぜ方の既定は平均（γ と範囲は GUI と同じ）");
+    }
+    {
+        const Result<LaunchOptions> r =
+          ex({ "--count", "3", "--out", "o", "--envelope-mix", "OT", "--ot-gamma=0.5", "--ot-range", "4000-10000" });
+        const MorphPostOptions& p = r.value.exp.post;
+        expect(r.ok() && p.envelope == EnvelopeMix::Transport && near(p.transport_gamma, 0.5) && near(p.transport_lo_hz, 4000.0)
+                 && near(p.transport_hi_hz, 10000.0),
+               "launch: --envelope-mix ot と γ・範囲を読める" + (r.ok() ? "" : "（" + r.error + "）"));
+    }
+    expect(fails_with(ex({ "--count", "3", "--out", "o", "--envelope-mix", "restore" }), "--envelope-mix は average か ot"),
+           "launch: 知らない混ぜ方（凹凸を戻す方式は選べない）");
+    expect(fails_with(ex({ "--count", "3", "--out", "o", "--ot-gamma", "0.5" }), "--ot-gamma は --envelope-mix ot と一緒に"),
+           "launch: ot なしの --ot-gamma は誤り");
+    expect(fails_with(ex({ "--count", "3", "--out", "o", "--envelope-mix", "average", "--ot-range", "4000-10000" }),
+                      "--ot-range は --envelope-mix ot と一緒に"),
+           "launch: average と --ot-range は誤り");
+    expect(fails_with(ex({ "--count", "3", "--out", "o", "--envelope-mix", "ot", "--ot-gamma", "1.5" }), "--ot-gamma は 0.05〜1"),
+           "launch: γ が範囲外");
+    expect(fails_with(ex({ "--count", "3", "--out", "o", "--envelope-mix", "ot", "--ot-range", "5000" }), "--ot-range は「下限-上限」"),
+           "launch: 範囲の書式");
+    expect(fails_with(ex({ "--count", "3", "--out", "o", "--envelope-mix", "ot", "--ot-range", "5000-5050" }),
+                      "--ot-range は 300〜24000 Hz の中で、下限を上限より 100 Hz 以上低く"),
+           "launch: 範囲が狭すぎる");
+    expect(fails_with(ex({ "--count", "3", "--out", "o", "--envelope-mix", "ot", "--ot-range", "200-5000" }), "--ot-range は 300〜24000 Hz"),
+           "launch: 範囲の下限が小さすぎる");
 
     // convert
     {
@@ -634,6 +665,33 @@ void test_cli_commands() {
     expect(exp3({ "--sweep", "fo", "--no-manifest" }) == 0 && fs::exists(od / "x_fo_r050.wav", ec)
              && !fs::exists(od / "x_fo_batch.json", ec),
            "cli export: 軸を選べば軸の名前入りのファイル名、--no-manifest なら JSON を書かない");
+
+    // export --envelope-mix ot（ファイル名の印・JSON の記録・率 0 / 0.5 での中身）
+    {
+        std::string ot_log;
+        const auto  ex_mix = [&](std::vector<std::string> extra, std::string* log_text = nullptr) {
+            std::vector<std::string> args { "export", (dir / "s.json").u8string(), "--count", "3", "--out", od.u8string(),
+                                            "--prefix", "m" };
+            args.insert(args.end(), extra.begin(), extra.end());
+            return run(args, nullptr, log_text);
+        };
+        expect(ex_mix({}) == 0 && ex_mix({ "--envelope-mix", "ot" }) == 0, "cli export: 平均と OT を同じ出力先に書き出せる");
+        const fs::path ot50 = od / "m_ot030_5000-12000_r050.wav", ot0 = od / "m_ot030_5000-12000_r000.wav";
+        expect(fs::exists(ot50, ec) && fs::exists(od / "m_r050.wav", ec) && fs::exists(od / "m_ot030_5000-12000_batch.json", ec),
+               "cli export: OT のファイル名には γ と範囲の印が入り、平均のものを上書きしない");
+        const auto bytes = [](const fs::path& p) {
+            std::ifstream is(p, std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(is), {});
+        };
+        expect(bytes(ot0) == bytes(od / "m_r000.wav") && bytes(ot50) != bytes(od / "m_r050.wav"),
+               "cli export: 率 0 は平均と同じ音、率 0.5 は OT で変わる");
+        const nlohmann::json j = read_json(od / "m_ot030_5000-12000_batch.json");
+        expect(!j.is_discarded() && j["batch"]["envelope_mix"] == "transport" && j["batch"]["transport_gamma"] == 0.3,
+               "cli export: 書き出しの JSON に包絡の混ぜ方が残る");
+        expect(ex_mix({ "--envelope-mix", "ot", "--sweep", "tx,fx,fo,ap", "--fixed", "sl=1" }, &ot_log) == 0
+                 && ot_log.find("OT は効きません") != std::string::npos,
+               "cli export: sl を 0 か 1 に固定して OT を選ぶと警告する");
+    }
 
     // auto-anchors（Python のツールは偽物）
     const fs::path saved = dir / "auto.json";
