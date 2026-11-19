@@ -39,7 +39,38 @@ std::vector<double> to_mono(const ma::decoder& dec) {
 
 }    // namespace
 
-Result<MorphChannel> analyze_channel(const std::string& path) {
+AnalysisOptions legacy_analysis_options() {
+    AnalysisOptions o;
+    o.f0_original          = AnalysisOptions::F0Original::Empty;
+    o.first_frame_unvoiced = false;
+    o.f0_floor             = 71.0;
+    o.f0_ceil              = 800.0;
+    o.fft_size             = 0;
+    return o;
+}
+
+Eigen::VectorXd continuous_f0(const Eigen::VectorXd& f0) {
+    const Eigen::Index n = f0.size();
+    // 各有声区間の最初と最後のフレーム（worldHandler の onsetIdx / offsetIdx）。
+    std::vector<Eigen::Index> on, off;
+    for (Eigen::Index i = 0; i < n; ++i) {
+        const bool v = f0[i] > 0.0;
+        if (v && (i == 0 || !(f0[i - 1] > 0.0))) on.push_back(i);
+        if (v && (i == n - 1 || !(f0[i + 1] > 0.0))) off.push_back(i);
+    }
+    if (on.empty()) return {};
+    VectorXd c = f0;
+    for (Eigen::Index i = 0; i < on.front(); ++i) c[i] = f0[on.front()];
+    for (Eigen::Index i = off.back() + 1; i < n; ++i) c[i] = f0[off.back()];
+    for (std::size_t s = 1; s < on.size(); ++s) {
+        const Eigen::Index a = off[s - 1], b = on[s];
+        for (Eigen::Index i = a + 1; i < b; ++i)
+            c[i] = f0[a] + (f0[b] - f0[a]) * static_cast<double>(i - a) / static_cast<double>(b - a);
+    }
+    return c;
+}
+
+Result<MorphChannel> analyze_channel(const std::string& path, const AnalysisOptions& opt) {
     try {
         ma::decoder dec { path };
 
@@ -57,6 +88,8 @@ Result<MorphChannel> analyze_channel(const std::string& path) {
         HarvestOption h_opt;
         InitializeHarvestOption(&h_opt);
         h_opt.frame_period = kFramePeriodMs;
+        h_opt.f0_floor     = opt.f0_floor;
+        h_opt.f0_ceil      = opt.f0_ceil;
         const int f0_len   = GetSamplesForHarvest(fs, x_length, kFramePeriodMs);
 
         VectorXd& t  = w.source_parameter.temporal_positions;
@@ -64,6 +97,8 @@ Result<MorphChannel> analyze_channel(const std::string& path) {
         t.resize(f0_len);
         f0.resize(f0_len);
         Harvest(x.data(), x_length, fs, &h_opt, t.data(), f0.data());
+        // worldHandler と同じく先頭フレームを無声にする（CheapTrick・D4C にも無声として渡る）。
+        if (opt.first_frame_unvoiced) f0[0] = 0.0;
 
         // WORLD は無声フレームの F0 を 0 にするので、そこから VUV を作る。
         w.source_parameter.vuv = (f0.array() > 0.0).cast<double>().matrix();
@@ -71,6 +106,8 @@ Result<MorphChannel> analyze_channel(const std::string& path) {
         // ── スペクトル包絡 (CheapTrick) / 非周期性 (D4C) ──
         CheapTrickOption c_opt;
         InitializeCheapTrickOption(fs, &c_opt);
+        // FFT 長を指定するときは、CheapTrick が下限の F0 を FFT 長から決める（GetF0FloorForCheapTrick）。
+        if (opt.fft_size > 0) c_opt.fft_size = opt.fft_size;
         D4COption d_opt;
         InitializeD4COption(&d_opt);
         const int fft_size = c_opt.fft_size;
@@ -92,8 +129,11 @@ Result<MorphChannel> analyze_channel(const std::string& path) {
 
         w.spectrum_parameter.temporal_positions = t;
         w.spectrum_parameter.fs                 = fs;
-        // f0_original は空のまま（tcmorph が source_parameter.f0 で代用する）。
-        // MATLAB 版の f0_original は GUI で編集する前の F0 で、本アプリには編集機能がない。
+        // f0_original はエンジンが F0 の材料にする値。MATLAB 版（worldHandler）では、無声区間を埋めた途切れのない
+        // F0 になっている（GUI で描き直せるが、本アプリには編集機能がない）。空にするとエンジンは
+        // source_parameter.f0（無声が 0）で代用し、無声のフレームが最小の F0 で埋められる。
+        // （2026-11-19 までは空にしていて、そのコメントの「GUI で編集する前の F0」という説明は誤りだった。）
+        if (opt.f0_original == AnalysisOptions::F0Original::WorldHandler) w.f0_original = continuous_f0(f0);
 
         c.fs           = fs;
         c.fft_size     = fft_size;
@@ -151,8 +191,8 @@ Spectrogram summarize_spectrogram(const MorphChannel& c) {
     return s;
 }
 
-Result<AnalyzedAudio> analyze_file(const std::string& path) {
-    Result<MorphChannel> c = analyze_channel(path);
+Result<AnalyzedAudio> analyze_file(const std::string& path, const AnalysisOptions& opt) {
+    Result<MorphChannel> c = analyze_channel(path, opt);
     if (!c.ok()) return Result<AnalyzedAudio>::failure(std::move(c.error));
     AnalyzedAudio a;
     a.spec    = summarize_spectrogram(c.value);

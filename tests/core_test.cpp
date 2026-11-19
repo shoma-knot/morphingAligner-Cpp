@@ -259,6 +259,32 @@ void test_analysis() {
         expect(make_f0_curve(MorphChannel {}).empty(), "make_f0_curve: 空のチャンネルなら空");
     }
 
+    // f0_original（既定は worldHandler と同じ）: 先頭フレームは無声、f0_original は 0 の無い途切れのない F0。
+    {
+        const Eigen::VectorXd& fo = c.world.f0_original;
+        expect(c.f0()[0] == 0.0 && c.world.source_parameter.vuv[0] == 0.0, "analysis: 既定では先頭フレームを無声にする");
+        expect(fo.size() == c.f0().size() && (fo.array() > 0.0).all() && fo[0] == c.f0()[1],
+               "analysis: 既定では f0_original が無声区間を埋めた F0 になる");
+        expect(c.fft_size == 4096 && c.nbin == 2049 && c.sp().rows() == 2049 && c.ap().rows() == 2049,
+               "analysis: 既定の FFT 長は worldHandler と同じ 4096（標本化周波数によらない）");
+        expect(write_wav(wav.string(), x, fs).ok(), "analysis: テスト用の WAV をもう一度書ける");
+        const Result<MorphChannel> e = analyze_channel(wav.string(), legacy_analysis_options());
+        std::filesystem::remove(wav, ec);
+        expect(e.ok() && e.value.world.f0_original.size() == 0 && e.value.fft_size == 1024 && e.value.nbin == 513
+                 && e.value.f0().size() == c.f0().size() && e.value.f0()[0] > 0.0,
+               "analysis: legacy_analysis_options で 2026-11-19 までの解析に戻せる（f0_original は空、FFT 長は WORLD の既定）");
+    }
+    // continuous_f0: 前後は端の有声の値で埋め、有声区間の間は Hz のまま直線でつなぐ。有声が無ければ空。
+    {
+        Eigen::VectorXd f0(9), want(9);
+        f0 << 0, 0, 100, 110, 0, 0, 0, 150, 0;
+        want << 100, 100, 100, 110, 120, 130, 140, 150, 150;
+        expect(continuous_f0(f0).isApprox(want), "continuous_f0: worldHandler と同じく埋める");
+        expect(continuous_f0(Eigen::VectorXd::Zero(5)).size() == 0, "continuous_f0: 有声が無ければ空");
+        expect(continuous_f0(Eigen::VectorXd::Constant(3, 120.0)) == Eigen::VectorXd::Constant(3, 120.0),
+               "continuous_f0: すべて有声ならそのまま");
+    }
+
     // 同じチャンネルどうしのモーフィング（アンカーなし）が最後まで通る。
     const MorphOutput o = morphing_channels(c, c, {}, MorphRates::uniform(0.5));
     expect(o.ok() && o.fs == fs && !o.wave.empty() && std::fabs(static_cast<double>(o.wave.size()) - c.duration * fs) < fs * 0.02,
